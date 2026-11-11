@@ -1,0 +1,234 @@
+{
+  "real_optimizer_updates": 20,
+  "e1_updates": 2,
+  "e5_updates": 18,
+  "skipped_updates_corrected_runs": 0,
+  "all_successful_updates_finite_nonzero": true,
+  "resume_step": 9,
+  "resume_next_frames_match": true,
+  "final_optimizer_steps": [
+    18
+  ],
+  "training_code_unchanged_across_resume": true,
+  "training_worktree_sha256": "5ca9a0df9c0538cc9ee2947aa7c9c4fcfca06f3d44b6531aff52f69716579af0",
+  "last_checkpoint_sha256": "bc808c4217b1b43824c5ed2fc96f6f82383c4e5ad23d0c7ab3d43a1835164137",
+  "peak_gpu_tensor_bytes": 6432461312,
+  "peak_rss_bytes": 3058647040,
+  "e1_first_loss": {
+    "q0": 0.4566993936896324,
+    "q": 0.3268597796559334,
+    "normal": 0.2059917114675045,
+    "total": 1.1955426037311554
+  },
+  "e1_final_loss": {
+    "q0": 0.43801721185445786,
+    "q": 0.31222399324178696,
+    "normal": 0.18862146511673927,
+    "total": 1.1274841129779816
+  },
+  "e5_first_loss": {
+    "q0": 0.47897133976221085,
+    "q": 0.3583371713757515,
+    "normal": 0.2059917114675045,
+    "seal": 0.39122021198272705,
+    "wrench": 0.2066325768828392,
+    "collision_free": 0.727089136838913,
+    "total": 1.5692690908908844
+  },
+  "e5_final_loss": {
+    "q0": 0.20456968247890472,
+    "q": 0.22927998378872871,
+    "normal": 0.18886114284396172,
+    "seal": 0.376478835940361,
+    "wrench": 0.1833876594901085,
+    "collision_free": 0.7007797658443451,
+    "total": 1.1157362461090088
+  },
+  "e5_update_seconds_total": 627.8656411659904,
+  "inference_roundtrip": {
+    "arrays": 16,
+    "max_float_absolute_error": 0.0,
+    "tolerance": 1e-06,
+    "integer_identity_exact": true,
+    "all_arrays_bitwise_equal": true
+  },
+  "date": "2026-11-11",
+  "scope": "bounded integration smoke; not convergence or physical success",
+  "repository_base_commit": "2e4ae5374d36f2ce96f9803341704a588877a3f1",
+  "dataset_release": "suctionnet-r20-v1/full-20261110",
+  "release_manifest_sha256": "37c4336b839b9621fa8317ec6f701846b9e8c073a494c8fa7a66b13cb62ae6a8",
+  "source_label_config_sha256": "c847aa56aa4bb4581909029f178e9f060a1e8d9f7bf4352c4536b27aa3aab6c7",
+  "train_frames": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      8
+    ],
+    [
+      0,
+      16
+    ],
+    [
+      0,
+      24
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      1,
+      8
+    ],
+    [
+      1,
+      16
+    ],
+    [
+      1,
+      24
+    ]
+  ],
+  "development_frames": [
+    [
+      9,
+      0
+    ],
+    [
+      19,
+      8
+    ]
+  ],
+  "model_seed": 42,
+  "sampling_seed": 20261110,
+  "voxel_size_m": 0.002,
+  "seed_slots": 512,
+  "effective_batch_size": 4,
+  "gpu": "NVIDIA H20-3e",
+  "cuda": "12.4",
+  "torch": "2.5.1+cu124",
+  "spconv": "2.3.6 (spconv-cu120)",
+  "python": "3.10.12",
+  "core_source_sha256": {
+    "scripts/train_pretrain.py": "5f0bb93d5027fcc615be9431ba27e9f5c9c49e377262ed5a959049c58931b418",
+    "models/__init__.py": "3dbefd985985ec95b39582b0229386fc466be989b5dc65d0a524eca2988ea65b",
+    "models/contact_grouping.py": "53b89e3298d8514815e110db2a6332fb581b2f64e9b260e0820d73f818114ed6",
+    "models/backbones/__init__.py": "58435acd5ef38488d7f0fec80c88427b0edca8eb07aed158ff4fcf658d689133",
+    "models/backbones/spconv_resunet14.py": "a8cc88422b22802888a1ab746d62259a3ad3671f33fa355807a24eb66c06e388",
+    "models/suction20net.py": "e1b5bde260ba9f7e2b369a95a5c1f5128430f5a9d6f3ca82dbb43ec64d63dcf7",
+    "models/heads.py": "0c07fefe8703b8b35717cbb812ba21449613b1b7baf7634fcd7abba5fc5696f5",
+    "models/instance_fusion.py": "28138e95826f55fa09139bd1c88461c00d89acac2440ffa6249a80372c83ba9d",
+    "models/README.md": "2c88cfe177b3a6a3b4dc79db17b6cbf45bfb2a78e73aa255d2c01ba9d3a14680",
+    "models/candidate_sampler.py": "13ab2432a687ebd462a1a183c22042d9445ba5c75ba31dbe5b7ecb108e97e35d",
+    "configs/smoke_e5.yaml": "44ae69b9da7e86050b391b6043483d29e2b3088b9856e80db807121f28adf12d",
+    "suction20/observation.py": "d891458a1cea8aaa5d0903ee497609366184d5b5b7dea5678460bd8e07db3466",
+    "suction20/datasets.py": "67cb45196efb5bccf33db3e3d76828fe49f6a14667e31bbe14ac767faaab5384",
+    "suction20/training.py": "31497de8a81db9ec84c5bbc22164e3c51cacea67107349629349eae13629c160",
+    "suction20/losses.py": "69328cee587e6d28b0b94cfac0872d02706d03b6b96dc76a554d06f370bd3718",
+    "suction20/batching.py": "f90e3233aa11f86f7bd254fcce07f01beac023dcece9475d1dfe1290b36790fd",
+    "suction20/runner.py": "2aaa2fd0ba8a87938102ea5de19cfe151eba7ea91c5fe502d0a202993b419ec6"
+  },
+  "e5_final_development_metrics": {
+    "global_step": 18,
+    "AP_R20": 0.01557142098985164,
+    "collision_rate": 0.696969696969697,
+    "instance_Top1_Q20_at_0_4": 0.0,
+    "labeled_point_count": 62263.0,
+    "labeled_point_fraction": 0.07094083697676949,
+    "labeled_seed_count": 177.5,
+    "labeled_seed_fraction": 0.3567154255319149,
+    "masked_dense_q0_mae": 0.20718629658222198,
+    "masked_seed_q_mae": 0.2299051284790039,
+    "masked_seed_q_smooth_l1": 0.20490514487028122,
+    "no_candidate_rate": 0.0,
+    "normal_angle_median_deg": 19.690459527529416,
+    "normal_angle_p90_deg": 28.071606375831795,
+    "normal_count": 62263.0,
+    "proposal_coverage_at_512": 0.7083333333333333,
+    "proposal_covered_instances": 2.5,
+    "proposal_eligible_instances": 3.5,
+    "scene_candidate_count": 50.0,
+    "top1_candidate_count": 10.0,
+    "visible_instance_count": 10.0,
+    "scene_count": 2,
+    "view_count": 2,
+    "frames": [
+      {
+        "AP_R20": 0.03114284197970328,
+        "instance_Top1_Q20_at_0_4": 0.0,
+        "collision_rate": 0.7272727272727273,
+        "no_candidate_rate": 0.0,
+        "visible_instance_count": 11,
+        "top1_candidate_count": 11,
+        "scene_candidate_count": 50,
+        "scene_id": 9,
+        "frame_id": 0,
+        "normal_angle_median_deg": 19.254852990892342,
+        "normal_angle_p90_deg": 27.730532344510827,
+        "normal_count": 42624,
+        "masked_seed_q_mae": 0.22491829097270966,
+        "masked_seed_q_smooth_l1": 0.19991829991340637,
+        "labeled_seed_count": 115,
+        "labeled_seed_fraction": 0.24468085106382978,
+        "masked_dense_q0_mae": 0.210215762257576,
+        "labeled_point_count": 42624,
+        "labeled_point_fraction": 0.048708411182913657,
+        "proposal_coverage_at_512": 0.75,
+        "proposal_eligible_instances": 4,
+        "proposal_covered_instances": 3
+      },
+      {
+        "AP_R20": 0.0,
+        "instance_Top1_Q20_at_0_4": 0.0,
+        "collision_rate": 0.6666666666666666,
+        "no_candidate_rate": 0.0,
+        "visible_instance_count": 9,
+        "top1_candidate_count": 9,
+        "scene_candidate_count": 50,
+        "scene_id": 19,
+        "frame_id": 8,
+        "normal_angle_median_deg": 20.12606606416649,
+        "normal_angle_p90_deg": 28.412680407152763,
+        "normal_count": 81902,
+        "masked_seed_q_mae": 0.23489196598529816,
+        "masked_seed_q_smooth_l1": 0.20989198982715607,
+        "labeled_seed_count": 240,
+        "labeled_seed_fraction": 0.46875,
+        "masked_dense_q0_mae": 0.20415683090686798,
+        "labeled_point_count": 81902,
+        "labeled_point_fraction": 0.09317326277062532,
+        "proposal_coverage_at_512": 0.6666666666666666,
+        "proposal_eligible_instances": 3,
+        "proposal_covered_instances": 2
+      }
+    ],
+    "split": "smoke_val",
+    "evaluation_scope": "actual predicted poses; geometric proxy, not physical success"
+  },
+  "point_count_range": [
+    753624,
+    888283
+  ],
+  "voxel_count_range": [
+    128991,
+    158925
+  ],
+  "tests": {
+    "passed": 129,
+    "skipped": 1,
+    "skip": "explicit real release root required; separately executed32-candidate check passed"
+  },
+  "historical_failed_probe": {
+    "successful_updates": 0,
+    "cause": "column-major voxel coordinates at spconv kernel boundary",
+    "fix": "contiguous producer arrays and wrapper boundary conversion"
+  },
+  "evaluation_cli_comparison": {
+    "primary_metrics_exact": true,
+    "max_numeric_absolute_error": 5.108766352179828e-07,
+    "tolerance": 1e-06
+  }
+}

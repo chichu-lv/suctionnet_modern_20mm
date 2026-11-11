@@ -1,6 +1,6 @@
 # 公开数据适配器与批数据接口
 
-> 状态：拟实施规格。本文规定后续 `suction20/datasets.py` 的行为；当前仓库已经实现数据生成，尚未实现本文的数据加载器、体素批处理器及模型接口。源码核查覆盖旧数据方法 `dc4ad6b00535c89ece1feef2751ba86006e5f97e` 和当前仓库 `b2680fb47fe6f6a99fcb310e3428c77de1f55406`。
+> 状态：只读加载器、体素批处理器及模型接口已实现，见 [运行指南](../MODEL_USAGE.md)；本文保留设计合同与伪代码。源码核查覆盖旧数据方法 `dc4ad6b00535c89ece1feef2751ba86006e5f97e` 和当前仓库 `b2680fb47fe6f6a99fcb310e3428c77de1f55406`。
 
 本阶段使用已经生成的公开 SuctionNet R20 标签进行预训练。后续少量自有场景由 `suction20/target_dataset.py` 接入相同的观测输入接口；公开物理代理分数和真机成败标签保留各自语义，详见 [预训练策略](TRAINING.md) 与 [自有场景微调](FINETUNING.md)。
 
@@ -365,7 +365,7 @@ point_embeddings = voxel_embeddings[inverse_map]
 
 ## 10. Dataset、collate 与 forward 的伪代码
 
-以下定义的是待实现的函数职责；示例中的 helper 名称不是当前仓库已经提供的 API。
+以下伪代码说明函数职责；具体公开 API 以 `suction20/datasets.py`、`observation.py`、`batching.py` 为准。
 
 ```python
 class PublicSuction20Dataset(Dataset):

@@ -2,7 +2,7 @@
 
 本文规定 **Suction20Net 在公开 SuctionNet 场景上的预训练**。这一步获得可迁移的几何、接触质量与姿态表示，随后使用少量自有场景微调；公开数据上的模型选择实验不替代目标场景验证。
 
-**实现状态：** 本文和 `examples/*.yaml` 是待实现接口规格。当前仓库已有数据制作代码；本文中的 `scripts/train_pretrain.py`、模型、Dataset 与训练入口不表示已经实现或运行过。实现者应按本文件落地，不能把命令示例当作已有功能。
+**实现状态：** 训练入口、Dataset、模型及checkpoint恢复已实现；实际命令见 [运行指南](../MODEL_USAGE.md)。完整40轮配置未在本次交付中执行。
 
 相关文档：[现有数据字段](../DATA_SCHEMA.md)、[小样本微调规格](FINETUNING.md)。
 
@@ -305,7 +305,7 @@ L_{var}=\tfrac12\operatorname{mean}\left[(q_{GT}-\operatorname{stopgrad}(q))^2/v
 
 ## 10. 未来命令与实现完成条件
 
-以下命令是**待实现入口的约定**：
+以下命令对应已实现入口，运行前配置实际数据路径与预算：
 
 ```bash
 python scripts/train_pretrain.py \

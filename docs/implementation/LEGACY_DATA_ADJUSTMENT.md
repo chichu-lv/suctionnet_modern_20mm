@@ -134,7 +134,7 @@ T_cam_obj = inverse(T_world_cam) @ T_world_obj
 
 ### 4.2 可直接实现的派生函数
 
-以下代码给出算法接口，所属 `LegacyViewAdapter` 尚待实现；所引用的 `scene_frame0`、`load_seal`、`read_frame` 已存在于当前源码。
+以下代码是算法伪代码；实际只读入口为 `PublicSuction20Dataset`，所引用的 `scene_frame0`、`load_seal`、`read_frame` 已存在于当前源码。
 
 ```python
 def recover_original_axis(old, records, seal_cache, T_world_cam):
@@ -260,7 +260,7 @@ class LegacyViewAdapter:
         }
 ```
 
-示例中的 `read_old_view_npz`、`get_scene_geometry`、`get_object_arrays` 是待实现 helper；示例返回的是未增强的统一 Sample，后续增强必须更新观测法向及掩码。物体/场景数组按需缓存到 DataLoader worker，避免每帧重复打开同一批文件。预测分割实验只替换 `inputs.instance_id_input`，不覆盖 `targets.instance_id_gt`。读取输出进入 [统一 Sample 接口](DATA_ADAPTER.md#8-单帧-sample-与-batch-合约) 后，模型无需知道该样本来自旧文件还是新文件。
+示例中的 `read_old_view_npz`、`get_scene_geometry`、`get_object_arrays` 是说明用 helper 名称，实际入口见 `suction20/datasets.py`；示例返回的是未增强的统一 Sample，后续增强必须更新观测法向及掩码。物体/场景数组按需缓存到 DataLoader worker，避免每帧重复打开同一批文件。预测分割实验只替换 `inputs.instance_id_input`，不覆盖 `targets.instance_id_gt`。读取输出进入 [统一 Sample 接口](DATA_ADAPTER.md#8-单帧-sample-与-batch-合约) 后，模型无需知道该样本来自旧文件还是新文件。
 
 与模型统一的调用为 `model(inputs, sampler_mode="train", targets=targets)`；其中 `encode_scene` 始终只读 `inputs`，只有内部训练采样器可以读取 `targets`。推理使用 `model(inputs, sampler_mode="inference")`。各项损失按“实例内有效点均值 → 帧内有监督实例均值 → batch 内有监督帧均值”归约，不能将全 batch 的实例直接混成一层平均。
 

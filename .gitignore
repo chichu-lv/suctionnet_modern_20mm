@@ -10,3 +10,10 @@ datasets/
 checkpoints/
 wandb/
 *.log
+runs/
+external/
+*.pt
+*.pth
+*.egg-info/
+build/
+dist/

@@ -1,6 +1,6 @@
 # 模型实现规格
 
-> 状态：待实现的模型接口与首轮配置，不是已完成训练的结果。数据基线为用户已用 `codex-profile@dc4ad6b00535` 制作的缓存；当前仓库 producer 已有的字段修正不代表这些缓存已被更新。先读 [旧数据调整](LEGACY_DATA_ADJUSTMENT.md) 和 [数据适配](DATA_ADAPTER.md)。本文所有长度均为米，20 mm 指**吸盘半径**。
+> 状态：模型接口与E0–E5配置已实现；实际有界验证见 [验证记录](../MODEL_VALIDATION.md)，不代表完成正式训练。数据基线为用户已用 `codex-profile@dc4ad6b00535` 制作的缓存；当前仓库 producer 已有的字段修正不代表这些缓存已被更新。先读 [旧数据调整](LEGACY_DATA_ADJUSTMENT.md) 和 [数据适配](DATA_ADAPTER.md)。本文所有长度均为米，20 mm 指**吸盘半径**。
 
 ## 1. 本模型实际学习什么
 
@@ -297,7 +297,7 @@ score = q - lambda_ * sigma
 
 ## 11. 代码拆分与实现中必须保留的区别
 
-| 待实现模块 | 职责 |
+| 实现模块 | 职责 |
 |---|---|
 | `models/backbones/spconv_resunet14.py` | 固定参考版本主干包装、输出映射与投影 |
 | `models/instance_fusion.py` | packed 实例池化、可见几何、融合 |

@@ -2,7 +2,7 @@
 
 公开数据训练的目的是获得可迁移的预训练模型。目标域阶段默认复用选中的 `gt_B` checkpoint，用已有的少量自有场景训练 **1000 次 optimizer update**。本文件不要求重新制作公开物理标签、不新增整套目标域稠密标注工程，也不要求把六个公开数据消融都搬到目标域。源域 replay 同样沿用 [旧数据适配说明](LEGACY_DATA_ADJUSTMENT.md) 的只读入口。
 
-**实现状态：** `suction20/target_dataset.py`、`scripts/finetune.py` 和本文件中的 CLI 为待实现规格；以下示例不表示已有训练结果或已支持的运行命令。
+**实现状态：** target Dataset、两种损失、分阶段微调入口和固定查询验证已实现；通过合成数据初始化/恢复检查。本次没有真实目标域训练结果。
 
 ## 1. 先按已有标签选模式
 
@@ -319,7 +319,7 @@ step 200 与后续 best 的对比可直接判断解冻 decoder 是否值得；�
 
 同时保存完整 model state、fresh optimizer 的当前 state、AMP、RNG、target/source sampler 状态及解析后的配置；从 source checkpoint 继承的 frozen config 不被目标字段覆盖。
 
-以下是**实现完成后**约定的运行方式：
+以下是已实现的运行方式；数据与预算需按实际任务配置：
 
 ```bash
 python scripts/finetune.py \
