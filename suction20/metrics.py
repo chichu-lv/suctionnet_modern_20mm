@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import numpy as np
+from scipy.integrate import trapezoid
 
 
 def pose_nms(points, normals, scores, instance_ids, proposal_scores=None,
@@ -201,7 +202,7 @@ def attempt_metrics(scores, outcomes, *, calibrated=False):
             precision = tp[1:] / (tp[1:] + fp[1:])
             out["attempt_PR_AUC"] = float(np.sum(np.diff(recall) * precision))
         if positives and negatives:
-            out["attempt_AUROC"] = float(np.trapz(tp / positives, fp / negatives))
+            out["attempt_AUROC"] = float(trapezoid(tp / positives, fp / negatives))
     if calibrated:
         if np.any((scores < 0) | (scores > 1)):
             raise ValueError("task success scores must be probabilities in [0,1]")
