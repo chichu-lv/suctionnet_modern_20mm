@@ -122,5 +122,5 @@ def test_official_wrench_g0_replay_keeps_sqrt2_formula(tmp_path):
 def test_wrench_g0_source_without_historical_formula_is_rejected(tmp_path):
     upstream = tmp_path / "wrench_annotate.py"
     upstream.write_text("radius = 0.01\nfor scene_idx in range(190):\n    pass\n")
-    with pytest.raises(RuntimeError, match=r"sqrt\(2\)"):
+    with pytest.raises(RuntimeError, match="Original 10mm Wrench formula"):
         create_wrench_g0_variant(upstream, tmp_path / "patched.py", [0])

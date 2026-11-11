@@ -59,7 +59,8 @@ def test_stage2_and_view_gt(tmp_path):
         assert f['gt_normal'].shape == (len(f['xyz']),3)
         assert f['gt_normal_pca'].shape == f['gt_normal'].shape
         assert f['normals_raw'].shape == f['gt_normal'].shape
-        np.testing.assert_allclose(f['gt_normal'][f['gt_valid']], [0., 0., -1.], atol=1e-6)
+        np.testing.assert_allclose(f['gt_normal'][f['gt_valid']],
+                                   np.tile([0., 0., -1.], (int(f['gt_valid'].sum()), 1)), atol=1e-6)
         assert np.all(cid[~v]==-1)
         assert np.all(np.isfinite(f['gt_B']))
         assert np.all(f['gt_B'][v] <= f['gt_A'][v]+1e-7)

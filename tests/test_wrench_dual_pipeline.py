@@ -109,7 +109,6 @@ def test_old_scene_wrench_schema_must_be_regenerated(tmp_path, monkeypatch):
     np.savez(wd / "0000_realsense_wrench_scores.npz", arr_0=np.array([0.5]))
     np.savez(cd / "0000_realsense_collision.npz", arr_0=np.array([False]))
     (md / "0000_realsense.json").write_text(json.dumps({
-        "configuration_hash": fd.stable_hash(cfg),
         "objects": [{"obj_id": 3, "row": 0}]
     }))
     with pytest.raises(ValueError, match="Old scene Wrench schema"):
