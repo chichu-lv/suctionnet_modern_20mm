@@ -1,5 +1,7 @@
 # 训练数据字段说明
 
+> 本页表格描述当前producer的 `r20-v2.1` 输出。用户已用旧 `dc4ad6b` 方法制作的缓存可能没有观测法向，且同名 `gt_normal` 可能是PCA；旧数据可通过 [训练适配方案](implementation/LEGACY_DATA_ADJUSTMENT.md) 直接复用，不能根据本页的新字段表要求重制旧数据。
+
 ## 文件层级
 
 | 文件（`$OUT` 相对路径） | 数据粒度 | 主要字段 |
@@ -38,7 +40,7 @@
 | `gt_A` | `[N]` | `seal_norm * (~collision_flag)` |
 | `gt_B` | `[N]` | `gt_A * gt_wrench_eval` |
 | `gt_normal` | `[N,3]` | **原始候选法向旋转至相机坐标系**，与质量评分姿态相同 |
-| `normal_valid` | `[N]` | 是否参与主法向监督 |
+| `normal_valid` | `[N]` | 存储的高质量筛选：成功匹配点上 `(~collision_flag) & (gt_seal_norm > 0.2)`；不等于几何轴有效性 |
 | `gt_normal_pca` | `[N,3]` | 可选 PCA 法向，不能覆盖主 GT |
 | `normal_pca_valid` | `[N]` | PCA 法向有效性 |
 | `normals_raw` | `[N,3]` | 深度图局部差分得到的相机观测法向 |
@@ -53,3 +55,6 @@
 - GT-A/GT-B、Seal、Wrench、`gt_normal` 是标签而非推理输入，**不应泄漏到输入特征**。
 - 点级质量损失只使用 `gt_valid=True` 的点，未匹配的点即使数值为 0 也不能当作负样本。
 - 对于圆形吸盘，若模型预测的是**接近方向**而不是**物体外法向**，应按统一坐标定义处理符号。
+
+本轮模型的统一字段与掩码见 [DATA_ADAPTER.md](implementation/DATA_ADAPTER.md)。训练独立推导 `axis_valid = quality_valid & normal_obs_valid & 原候选轴有限非零`，不直接沿用上表的高质量 `normal_valid`。当前producer的修正只影响新写出的文件，不会自动更新旧缓存。
+

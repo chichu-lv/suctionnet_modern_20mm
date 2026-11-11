@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="736" height="1260" viewBox="0 0 736 1260" role="img" aria-labelledby="title desc">
+<title id="title">当前吸盘模型架构</title><desc id="desc">全场景主干连接实例融合与法向去噪，均衡选择512个候选后做20毫米五区精炼；主q排序，S/W/C仅作可选辅助。</desc>
+<style>
+  text { font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif; fill:#172237; font-weight:400; }
+  .title { font-size:34px; font-weight:500; }
+  .heading { font-size:30px; font-weight:500; }
+  .main { font-size:28px; font-weight:500; }
+  .sub { font-size:26px; fill:#4c5b70; }
+  .note { font-size:26px; fill:#4c5b70; }
+  .node { fill:#eef1f5; stroke:#a7b2c2; stroke-width:1.5; }
+  .node.added { fill:#e4f2ed; stroke:#4d8571; }
+  .node.removed { fill:#fff0ed; stroke:#b7695e; stroke-dasharray:6 4; }
+  .arrow { fill:none; stroke:#718096; stroke-width:2; marker-end:url(#arrow); }
+  .optional { stroke-dasharray:6 5; }
+  .divider { stroke:#a7b2c2; stroke-width:1; }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#718096"/></marker></defs>
+<rect width="736" height="1260" fill="#ffffff"/>
+<text x="28" y="48" class="title" text-anchor="start">当前模型：一次场景前向</text>
+<text x="28" y="90" class="sub" text-anchor="start">R = 20 mm · 5DoF · 物理尺度保持不变</text>
+<path class="arrow " d="M368 220 C368 243.0 368 243.0 368 266"/>
+<path class="arrow " d="M368 360 C368 387.0 187 387.0 187 414"/>
+<path class="arrow " d="M368 360 C368 387.0 549 387.0 549 414"/>
+<path class="arrow " d="M187 510 C187 537.0 368 537.0 368 564"/>
+<path class="arrow " d="M549 510 C549 537.0 368 537.0 368 564"/>
+<path class="arrow " d="M368 660 C368 687.0 368 687.0 368 714"/>
+<path class="arrow " d="M368 810 C368 837.0 187 837.0 187 864"/>
+<path class="arrow optional" d="M368 810 C368 837.0 549 837.0 549 864"/>
+<path class="arrow " d="M187 960 C187 987.0 368 987.0 368 1014"/>
+<path class="arrow" d="M120 313 L14 313 L14 762 L26 762"/>
+<g><rect class="node " x="120" y="126" width="496" height="94" rx="8"/><text x="368.0" y="162" class="main" text-anchor="middle">点云 + 前置实例分割</text><text x="368.0" y="198" class="sub" text-anchor="middle">观测法向 + 相机系重力</text></g>
+<g><rect class="node " x="120" y="266" width="496" height="94" rx="8"/><text x="368.0" y="302" class="main" text-anchor="middle">spconv ResUNet14</text><text x="368.0" y="338" class="sub" text-anchor="middle">局部特征：512 → 256维</text></g>
+<g><rect class="node " x="28" y="414" width="318" height="96" rx="8"/><text x="187.0" y="450" class="main" text-anchor="middle">实例全局融合</text><text x="187.0" y="486" class="sub" text-anchor="middle">形状 / 可见中心</text></g>
+<g><rect class="node " x="390" y="414" width="318" height="96" rx="8"/><text x="549.0" y="450" class="main" text-anchor="middle">标签轴去噪</text><text x="549.0" y="486" class="sub" text-anchor="middle">恢复原始候选轴</text></g>
+<g><rect class="node " x="120" y="564" width="496" height="96" rx="8"/><text x="368.0" y="600" class="main" text-anchor="middle">q0 + 实例均衡采样</text><text x="368.0" y="636" class="sub" text-anchor="middle">总计512个候选</text></g>
+<g><rect class="node " x="28" y="714" width="680" height="96" rx="8"/><text x="368.0" y="750" class="main" text-anchor="middle">20 mm 五区局部精炼</text><text x="368.0" y="786" class="sub" text-anchor="middle">中心 / 唇边 / 杯体 / 安装座 / 接近段</text></g>
+<g><rect class="node added" x="28" y="864" width="318" height="96" rx="8"/><text x="187.0" y="900" class="main" text-anchor="middle">主质量 q</text><text x="187.0" y="936" class="sub" text-anchor="middle">GT-B 主监督</text></g>
+<g><rect class="node " x="390" y="864" width="318" height="96" rx="8"/><text x="549.0" y="900" class="main" text-anchor="middle">S / W / C 辅助</text><text x="549.0" y="936" class="sub" text-anchor="middle">由消融决定保留</text></g>
+<g><rect class="node added" x="120" y="1014" width="496" height="96" rx="8"/><text x="368.0" y="1050" class="main" text-anchor="middle">固定 NMS → (p,n,q)</text><text x="368.0" y="1086" class="sub" text-anchor="middle">最终按主 q 排序</text></g>
+<text x="28" y="1160" class="note" text-anchor="start">旧缓存经训练适配器接入；质量标签原值沿用。</text>
+<text x="28" y="1200" class="note" text-anchor="start">标签轴仅作监督；观测法向才是网络输入。</text>
+</svg>

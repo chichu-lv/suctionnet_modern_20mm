@@ -1,0 +1,106 @@
+# 实现规格示例；scripts/finetune.py 尚待实现。
+schema_version: suction20.finetune.v1
+stage: target_finetune
+mode: dense_proxy
+seed: 42
+init_checkpoint: /path/to/public_gtB_best.pt
+
+target_data:
+  manifest: /path/to/target/manifest_dense_proxy.jsonl
+  schema_version: suction20.target.v1
+  split_field: split
+  group_field: group_id
+  train_sampler: uniform_group_then_frame
+  source_label_definition: from_source_checkpoint
+  refit_seal_normalization: false
+  require_same_physical_definition: true
+  missing_label_policy: mask_false
+  keep_instance_gt_separate: true
+
+source_replay:
+  enabled: true
+  source_root: /path/to/SuctionNet
+  label_root: /path/to/suction20_output
+  frozen_label_config: /path/to/suction20_output/config_frozen.json
+  camera: realsense
+  source_format: legacy_dc4ad6b
+  compatibility: auto
+  legacy_producer: dc4ad6b00535c89ece1feef2751ba86006e5f97e
+  adapter_read_only: true
+  adapter_cache: null
+  scene_split: source_checkpoint_train_split
+  source_frames_per_optimizer_step: 2
+
+model:
+  architecture: from_source_checkpoint
+  quality_target: gt_B
+  task_success_head: false
+  physical_geometry_source: source_checkpoint
+  seal_normalization_source: source_checkpoint
+
+loss:
+  target_loss: available_source_semantic_losses
+  target_weight: 1.0
+  source_weight: 0.5
+  smooth_l1_beta: 0.05
+  weights: {q: 1.0, q0: 1.0, normal: 2.0, seal: 0.50, wrench: 0.25, collision_free: 0.10}
+  auxiliary_heads: inherit_enabled_flags_from_source_checkpoint
+  missing_component_mask: false
+  domain_reduction: separate_target_and_source_means
+  microbatch_frame_weights: {target: 0.5, source: 0.25}
+  additional_divide_by_accumulation_steps: false
+
+optimizer:
+  name: AdamW
+  create_fresh_on_init_checkpoint: true
+  weight_decay: 0.0001
+  no_weight_decay: [bias, normalization_parameters]
+  betas: [0.9, 0.999]
+  eps: 0.00000001
+  grad_clip_norm: 10.0
+
+training:
+  max_optimizer_steps: 1000
+  target_frames_per_optimizer_step: 2
+  effective_batch_size: 4
+  world_size: 1
+  microbatch_size: 1
+  accumulated_microbatches_per_optimizer_step: 4
+  amp: true
+  encoder_frozen: true
+  bn_mode: eval
+  bn_affine_trainable: false
+  phases:
+    - name: heads_only
+      start_optimizer_step: 0
+      end_optimizer_step_exclusive: 200
+      train_groups: [heads]
+      lr: {heads: 0.0003, decoder: 0.0}
+    - name: decoder_and_heads
+      start_optimizer_step: 200
+      end_optimizer_step_exclusive: 1000
+      train_groups: [decoder, heads]
+      lr: {heads: 0.0001, decoder: 0.00001}
+  preserve_heads_optimizer_state_at_phase_change: true
+
+augmentation:
+  scale: false
+  yaw_about_gravity_deg: [-180.0, 180.0]
+  translation_in_table_plane_m: [-0.02, 0.02]
+  depth_noise_std_m: 0.0
+  point_dropout_fraction: [0.0, 0.0]
+  transform_explicit_pose_and_gravity: true
+
+validation:
+  evaluate_source_initialization: true
+  every_optimizer_steps: 100
+  always_save_step_200: true
+  # 若现有目标评价器能重算实际姿态质量，改为 instance_Top1_Q20_at_0_4，tie-break=AP_R20。
+  selection_metric: masked_q_mae
+  selection_mode: min
+  prediction_scope: existing_labeled_poses
+
+ranking:
+  final_score: q
+  uncertainty_lambda: 0.0
+  postprocessing: inherit_source_config

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="736" height="1620" viewBox="0 0 736 1620" role="img" aria-labelledby="title desc">
+<title id="title">吸盘设计演进与训练路径</title><desc id="desc">六个阶段展示初始模型、后期扩展、旧缓存接入、当前精简模型、公开预训练与少量自有场景微调。</desc>
+<style>
+  text { font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif; fill:#172237; font-weight:400; }
+  .title { font-size:34px; font-weight:500; }
+  .heading { font-size:30px; font-weight:500; }
+  .main { font-size:28px; font-weight:500; }
+  .sub { font-size:26px; fill:#4c5b70; }
+  .note { font-size:26px; fill:#4c5b70; }
+  .node { fill:#eef1f5; stroke:#a7b2c2; stroke-width:1.5; }
+  .node.added { fill:#e4f2ed; stroke:#4d8571; }
+  .node.removed { fill:#fff0ed; stroke:#b7695e; stroke-dasharray:6 4; }
+  .arrow { fill:none; stroke:#718096; stroke-width:2; marker-end:url(#arrow); }
+  .optional { stroke-dasharray:6 5; }
+  .divider { stroke:#a7b2c2; stroke-width:1; }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#718096"/></marker></defs>
+<rect width="736" height="1620" fill="#ffffff"/>
+<text x="28" y="48" class="title" text-anchor="start">设计演进：结构与训练各归其位</text>
+<text x="28" y="90" class="sub" text-anchor="start">沿用主线 · 绿色为新增/明确 · 虚线为移除</text>
+<text x="28" y="158" class="heading" text-anchor="start">01 初始思路</text>
+<path class="arrow " d="M228 231 L264 231"/>
+<path class="arrow " d="M468 231 L504 231"/>
+<g><rect class="node " x="28" y="184" width="200" height="94" rx="8"/><text x="128.0" y="220" class="main" text-anchor="middle">场景主干</text><text x="128.0" y="256" class="sub" text-anchor="middle">一次前向</text></g>
+<g><rect class="node " x="268" y="184" width="200" height="94" rx="8"/><text x="368.0" y="220" class="main" text-anchor="middle">实例 + 圆盘</text><text x="368.0" y="256" class="sub" text-anchor="middle">两类几何</text></g>
+<g><rect class="node " x="508" y="184" width="200" height="94" rx="8"/><text x="608.0" y="220" class="main" text-anchor="middle">姿态 + 分数</text><text x="608.0" y="256" class="sub" text-anchor="middle">吸盘5DoF</text></g>
+<text x="28" y="320" class="note" text-anchor="start">全场景与吸盘局部几何构成主线。</text>
+<line class="divider" x1="28" y1="344" x2="708" y2="344"/>
+<text x="28" y="398" class="heading" text-anchor="start">02 后期扩展</text>
+<path class="arrow " d="M228 471 L264 471"/>
+<path class="arrow " d="M468 471 L504 471"/>
+<g><rect class="node " x="28" y="424" width="200" height="94" rx="8"/><text x="128.0" y="460" class="main" text-anchor="middle">原有主线</text><text x="128.0" y="496" class="sub" text-anchor="middle">继续保留</text></g>
+<g><rect class="node added" x="268" y="424" width="200" height="94" rx="8"/><text x="368.0" y="460" class="main" text-anchor="middle">前景预测头</text><text x="368.0" y="496" class="sub" text-anchor="middle">后期加入</text></g>
+<g><rect class="node added" x="508" y="424" width="200" height="94" rx="8"/><text x="608.0" y="460" class="main" text-anchor="middle">多头混分</text><text x="608.0" y="496" class="sub" text-anchor="middle">分数重复组合</text></g>
+<text x="28" y="560" class="note" text-anchor="start">保留负例修正；重复任务之后再精简。</text>
+<line class="divider" x1="28" y1="584" x2="708" y2="584"/>
+<text x="28" y="638" class="heading" text-anchor="start">03 接入已完成的旧缓存</text>
+<path class="arrow " d="M228 711 L264 711"/>
+<path class="arrow " d="M468 711 L504 711"/>
+<g><rect class="node " x="28" y="664" width="200" height="94" rx="8"/><text x="128.0" y="700" class="main" text-anchor="middle">已完成缓存</text><text x="128.0" y="736" class="sub" text-anchor="middle">S/W/C/A/B保留</text></g>
+<g><rect class="node added" x="268" y="664" width="200" height="94" rx="8"/><text x="368.0" y="700" class="main" text-anchor="middle">训练适配器</text><text x="368.0" y="736" class="sub" text-anchor="middle">候选轴 / 观测轴</text></g>
+<g><rect class="node added" x="508" y="664" width="200" height="94" rx="8"/><text x="608.0" y="700" class="main" text-anchor="middle">当前训练</text><text x="608.0" y="736" class="sub" text-anchor="middle">两类法向分开</text></g>
+<text x="28" y="800" class="note" text-anchor="start">不重制物理标签；派生缓存仅为可选提速。</text>
+<line class="divider" x1="28" y1="824" x2="708" y2="824"/>
+<text x="28" y="878" class="heading" text-anchor="start">04 当前精简模型</text>
+<path class="arrow " d="M228 951 L264 951"/>
+<path class="arrow " d="M468 951 L504 951"/>
+<g><rect class="node " x="28" y="904" width="200" height="94" rx="8"/><text x="128.0" y="940" class="main" text-anchor="middle">场景 + 实例</text><text x="128.0" y="976" class="sub" text-anchor="middle">共享spconv</text></g>
+<g><rect class="node added" x="268" y="904" width="200" height="94" rx="8"/><text x="368.0" y="940" class="main" text-anchor="middle">五区精炼</text><text x="368.0" y="976" class="sub" text-anchor="middle">沿预测轴查询</text></g>
+<g><rect class="node added" x="508" y="904" width="200" height="94" rx="8"/><text x="608.0" y="940" class="main" text-anchor="middle">单 q 排序</text><text x="608.0" y="976" class="sub" text-anchor="middle">辅助项可选</text></g>
+<g><rect class="node removed" x="28" y="1022" width="200" height="52" rx="8"/><text x="128.0" y="1058.0" class="main" text-anchor="middle">Objectness</text></g>
+<g><rect class="node removed" x="268" y="1022" width="200" height="52" rx="8"/><text x="368.0" y="1058.0" class="main" text-anchor="middle">物体ID嵌入</text></g>
+<g><rect class="node removed" x="508" y="1022" width="200" height="52" rx="8"/><text x="608.0" y="1058.0" class="main" text-anchor="middle">四共享头</text></g>
+<line class="divider" x1="28" y1="1096" x2="708" y2="1096"/>
+<text x="28" y="1158" class="heading" text-anchor="start">05 公开数据预训练</text>
+<path class="arrow " d="M228 1231 L264 1231"/>
+<path class="arrow " d="M468 1231 L504 1231"/>
+<g><rect class="node " x="28" y="1184" width="200" height="94" rx="8"/><text x="128.0" y="1220" class="main" text-anchor="middle">公开 R20</text><text x="128.0" y="1256" class="sub" text-anchor="middle">同口径标签</text></g>
+<g><rect class="node added" x="268" y="1184" width="200" height="94" rx="8"/><text x="368.0" y="1220" class="main" text-anchor="middle">独立预训练</text><text x="368.0" y="1256" class="sub" text-anchor="middle">六配置分别训</text></g>
+<g><rect class="node added" x="508" y="1184" width="200" height="94" rx="8"/><text x="608.0" y="1220" class="main" text-anchor="middle">源域权重</text><text x="608.0" y="1256" class="sub" text-anchor="middle">归一化冻结</text></g>
+<text x="28" y="1320" class="note" text-anchor="start">六配置用于消融，不是六个续训阶段。</text>
+<line class="divider" x1="28" y1="1344" x2="708" y2="1344"/>
+<text x="28" y="1398" class="heading" text-anchor="start">06 少量自有场景微调</text>
+<path class="arrow " d="M228 1471 L264 1471"/>
+<path class="arrow " d="M468 1471 L504 1471"/>
+<g><rect class="node " x="28" y="1424" width="200" height="94" rx="8"/><text x="128.0" y="1460" class="main" text-anchor="middle">源权重 + 目标</text><text x="128.0" y="1496" class="sub" text-anchor="middle">使用已有监督</text></g>
+<g><rect class="node added" x="268" y="1424" width="200" height="94" rx="8"/><text x="368.0" y="1460" class="main" text-anchor="middle">两段微调</text><text x="368.0" y="1496" class="sub" text-anchor="middle">200 + 800步</text></g>
+<g><rect class="node added" x="508" y="1424" width="200" height="94" rx="8"/><text x="608.0" y="1460" class="main" text-anchor="middle">目标任务</text><text x="608.0" y="1496" class="sub" text-anchor="middle">独立场景测试</text></g>
+<text x="28" y="1560" class="note" text-anchor="start">先头部，再头部+解码器；始终冻结编码器。</text>
+</svg>
