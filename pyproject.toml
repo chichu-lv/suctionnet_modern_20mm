@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "suctionnet-modern-20mm"
+version = "0.1.0"
+description = "20mm suction grasp data generation and modeling"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "Pillow>=10,<13", "trimesh>=4,<6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "matplotlib>=3.7", "open3d"]
+
+[tool.setuptools]
+packages = ["suction20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

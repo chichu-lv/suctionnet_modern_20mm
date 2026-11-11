@@ -1,0 +1,49 @@
+{
+  "camera": "realsense",
+  "radius_m": 0.02,
+  "voxel_m": 0.005,
+  "wrench_k": 15.6,
+  "default_baseline_mass_kg": 1,
+  "gravity_m_s2": 9.8,
+  "depth_min_m": 0.2,
+  "depth_max_m": 1.2,
+  "normal_gate_deg": 30,
+  "match_radius_m": 0.005,
+  "seal_norm_min": 0,
+  "seal_norm_max": 1,
+  "pca_radius_m": 0.02,
+  "pca_min_points": 12,
+  "pca_max_curvature": 0.15,
+  "custom_lip_tolerance_m": 0.004,
+  "custom_surface_percentile": 95,
+  "self_height_threshold_m": 0.004,
+  "table_width_m": 1,
+  "table_depth_m": 1,
+  "table_bottom_m": -0.02,
+  "table_grid_m": 0.005,
+  "obstacle_voxel_m": 0.003,
+  "envelope_segments_m": [
+    [
+      -0.002,
+      0.025,
+      0.022
+    ],
+    [
+      0.025,
+      0.07,
+      0.028
+    ],
+    [
+      0.07,
+      0.15,
+      0.028
+    ]
+  ],
+  "batch_candidates": 64,
+  "mass_by_object": {},
+  "center_of_mass_by_object": {},
+  "vacuum_delta_pa": null,
+  "friction_mu": null,
+  "measured_torque_capacity_nm": null,
+  "instance_mask_root": null
+}
