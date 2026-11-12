@@ -14,7 +14,7 @@
 
 `data.source_format: legacy_dc4ad6b` 指定用户现有文件的默认来源，`data.compatibility: auto` 在文件带有明确新 schema 时识别新格式，其余按这个旧来源适配。具体规则见 [旧数据适配说明](LEGACY_DATA_ADJUSTMENT.md)：旧文件若把 PCA 法向放在 `gt_normal`，按 `candidate_row` 和原场景变换恢复与质量标签一致的候选轴；缺少 `normals_raw` 时，从原始深度及 `source_indices` 重建观测法向。上述调整发生在适配器，不原地覆盖现有文件，不重拟合已冻结的 Seal 归一化。
 
-配置的 `data.source_root` 传给Dataset的 `dataset_root` 参数；`data.label_root` 指已有输出，`data.frozen_label_config` 指其冻结JSON，`data.adapter_cache` 可为空或指向可选派生缓存。这些配置名与示例文件保持一致。
+配置的 `data.source_root` 传给Dataset的 `dataset_root` 参数；`data.label_root` 指已有输出，`data.frozen_label_config` 指其冻结JSON。`data.adapter_cache` 为可选派生缓存保留字段，当前转换与读取支持尚未交付，保持 `null`。这些配置名与示例文件保持一致。
 
 主质量目标：
 
@@ -303,21 +303,21 @@ L_{var}=\tfrac12\operatorname{mean}\left[(q_{GT}-\operatorname{stopgrad}(q))^2/v
 
 它不计入六个核心架构配置，也不是开始目标域微调的前置工作。公开域拟合的尺度不会自动在目标域有效；默认目标域部署先将 `lambda=0`，只在既有目标验证数据上有证据时恢复。
 
-## 10. 未来命令与实现完成条件
+## 10. 运行命令与实验交付内容
 
-以下命令对应已实现入口，运行前配置实际数据路径与预算：
+以下命令对应已实现入口，运行前配置实际数据路径与预算；环境和完整命令见 [运行指南](../MODEL_USAGE.md)：
 
 ```bash
 python scripts/train_pretrain.py \
-  --config docs/implementation/examples/pretrain_e5.yaml \
+  --config configs/pretrain_e5.yaml \
   --run-dir runs/public/E5_seed42
 
 python scripts/train_pretrain.py \
-  --config docs/implementation/examples/pretrain_e5.yaml \
+  --config configs/pretrain_e5.yaml \
   --run-dir runs/public/E5_seed42 \
   --resume runs/public/E5_seed42/last.pt
 ```
 
-切换 E0–E4 应修改实验 flags/目标和 run-dir；训练框架必须解析为独立实验，不从前一组自动找权重。
+切换 E0–E4 使用对应 `configs/pretrain_e0.yaml` 至 `pretrain_e4.yaml` 和独立 run-dir；各组从头训练，不从前一组自动找权重。
 
 一次可交付的公开预训练结果应包含：冻结标签配置、split、解析后的模型/训练配置、`best.pt/last.pt`、每次验证的每实例Top-1 Q20@.4与AP-R20和实际 optimizer step、硬件与训练耗时记录。报告实测结果前不填写预期指标数字。后续目标域仅微调选出的模型，不把六组源域消融全量重跑到自有数据上。

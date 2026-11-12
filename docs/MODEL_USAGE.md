@@ -42,9 +42,25 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 这些配置分别上限 2 和 18 次成功 optimizer 更新；AMP 跳过不推进步数。E5 独立初始化，第二条 E5 命令恢复到总计 18 次，不额外训练 18 次。microbatch=1，梯度累计4；完整观测、2 mm 体素、512候选不因 smoke 而缩减。主干训练时 BN 正常更新。同步读取数据使样本及增强种子可准确恢复。
 
-`configs/pretrain_e0.yaml` 至 `pretrain_e5.yaml` 实现 57,600 次更新的正式配置，按90/10场景拆分，每训练场景每轮抽64视角；本次交付没有运行这些完整实验。是否运行完整训练需要单独确定预算。
-
 `last.pt` 保存 model、optimizer、AMP、步数、独立采样器、Python/NumPy/Torch/CUDA RNG、配置、冻结物理定义及代码身份；`best.pt` 按开发验证指标选取。`--init-checkpoint` 仅初始化兼容权重，`--resume` 恢复完整训练状态。恢复时可以迁移目录和设备，不能静默更改训练语义。
+
+## 正式公开数据预训练
+
+`configs/pretrain_e0.yaml` 至 `pretrain_e5.yaml` 已提供正式配置：90/10场景拆分，每训练场景每轮抽64视角，40轮 / 57,600次成功optimizer更新。截至2026-11-12，已完成实现与短训练链路验证，完整实验仍在 [README TODO](../README.md) 中。
+
+沿用上面的 `SOURCE` 和 `LABELS`，从独立运行目录启动，例如E1：
+
+```bash
+python scripts/train_pretrain.py --config configs/pretrain_e1.yaml \
+  --run-dir runs/public/e1 --source-root "$SOURCE" --label-root "$LABELS"
+
+# 仅在中断后续训时执行
+python scripts/train_pretrain.py --config configs/pretrain_e1.yaml \
+  --run-dir runs/public/e1 --resume runs/public/e1/last.pt \
+  --source-root "$SOURCE" --label-root "$LABELS"
+```
+
+其余组分别使用对应 `pretrain_e0/e2/e3/e4/e5.yaml` 和独立 `runs/public/e0/e2/e3/e4/e5` 目录，从各自随机初始化开始，不串联各组checkpoint，也不从smoke权重开始正式消融。共享数据划分、视角抽样与更新预算，按 [训练规格](implementation/TRAINING.md) 和 [实验方案](implementation/EXPERIMENTS.md) 比较。选出的正式 `gt_B` checkpoint 再用于后续少量自有场景微调。
 
 ## 推理与开发评价
 

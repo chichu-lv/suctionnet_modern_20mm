@@ -6,7 +6,7 @@
 
 本组文档基于用户已使用的 `codex-profile@dc4ad6b00535` 数据方法，并核对了本仓库 `b2680fb47fe6` 的实际代码。**用户已完成的旧缓存是本次训练的起点；当前producer的更新不会自动改变旧文件。** 旧、新版本S/W/C/A/B公式相同，可直接保留这些分数；两类法向与掩码在训练适配层处理。
 
-当前仓库已有数据生成代码；这次新增的是可实施的模型/训练/评价规格、配置示例和结构图。`datasets.py`、模型、预训练/微调脚本、任意姿态评价器及可选sidecar转换脚本仍待按文档实现。示例CLI明确是未来接口，不宣称现在就能启动训练。
+当前仓库已实现只读 Dataset、E0–E5 模型、预训练/两种微调入口、任意姿态 R20 评价器及无标签推理。CPU 合成测试与 H20 真实数据 20 次成功更新验证了接口和有界训练链路；完整预训练、同预算消融及真实目标域微调尚未执行。可执行命令见 [运行指南](../MODEL_USAGE.md)，检查范围见 [验证记录](../MODEL_VALIDATION.md)。可选 sidecar 与 residual uncertainty 工具仍未交付。
 
 参数冲突时按职责取值：已有标签的物理含义和归一化以**该批数据实际冻结配置**为准；模型结构以 MODEL 为准；源域预算以 TRAINING 为准；目标微调以 FINETUNING 为准；评价定义以 EXPERIMENTS 为准。原PDF和上一轮报告是历史设计记录，本目录是结合现有数据与预训练用途整理后的实施版本。
 
@@ -50,11 +50,11 @@
 
 **推荐路径：训练时适配。** 读原NPZ的S/W/C/A/B，按原候选索引恢复 `normal_label`，从原RGB-D得到 `normal_obs`，得到统一接口后开始训练。原数据目录不动。
 
-**可选路径：先做sidecar。** 若重复计算观测法向明显拖慢加载，将上述派生数组一次写入独立的adapter缓存；只增加派生内容，不复制/重算物理标签。训练优先读sidecar，缺失时按同一算法在线派生。字段、算法、路径和未来命令均在旧数据调整文档中。
+**可选路径：sidecar，尚未实现。** 若重复计算观测法向明显拖慢加载，可按旧数据调整文档开发独立的派生缓存与读取支持；只增加派生内容，不复制/重算物理标签。未来加载器可优先读缓存、缺失时在线派生。当前直接使用上述只读适配路径，`adapter_cache` 保持 `null`。
 
 不要因训练缺新字段而重跑 `run-all`，不要用新 `configs/suction20.json` 覆盖旧 `config_frozen.json`，不要把旧 `normal_valid=False` 解读成该点没有合法候选轴。旧配置的历史键应普通JSON读取，不送入新producer的严格未知键校验。
 
-## 实现顺序和文件职责
+## 已实现模块与文件职责
 
 | 顺序 | 已实现文件 | 行为 |
 |---:|---|---|
@@ -62,9 +62,9 @@
 | 2 | `models/backbones/spconv_resunet14.py`、`models/heads.py`、`models/candidate_sampler.py`、`models/suction20net.py` | E1输出可追踪的(p,n,q)，单场景主干、正确采样和掩码 |
 | 3 | `suction20/losses.py`、`suction20/eval_r20.py`、`scripts/train_pretrain.py`、`scripts/evaluate.py` | E1可训练，实际姿态可评价，checkpoint可选取/续训 |
 | 4 | `models/instance_fusion.py`、`models/contact_grouping.py` | I/R模块与E0–E5开关完整；完整同预算对比尚未执行 |
-| 5 | `suction20/target_dataset.py`、`scripts/finetune.py`、成功头 | 已有少量目标监督进入微调，源域回放，独立目标验证 |
+| 5 | `suction20/target_dataset.py`、`scripts/finetune.py`、成功头 | 两种目标监督接口、源域回放和独立目标验证；已完成合成初始化/恢复检查 |
 
-没有I/R时用零块保持共享融合/评分接口，不能改变输出头数量让对照不公平。第一阶段无需完成所有可选模块；先得到一个端到端E1，再扩展。
+没有I/R时用零块保持共享融合/评分接口，不能改变输出头数量让对照不公平。E1 与 I/R 模块均已实现，正式对照不依赖可选 sidecar 或 residual uncertainty 工具。
 
 配置示例：
 
