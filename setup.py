@@ -6,8 +6,13 @@ from pathlib import Path
 from setuptools import Extension, setup
 
 source = Path(__file__).parent / 'models/csrc/fps_cpu.c'
+grid_source = Path(__file__).parent / 'models/csrc/spatial_index_cpu.cpp'
 flags = ['-O3', '-fno-fast-math', '-ffp-contract=off']
 setup(ext_modules=[Extension('models._fps_cpu', sources=['models/csrc/fps_cpu.c'],
     extra_compile_args=flags, optional=True,
     define_macros=[('FPS_SOURCE_SHA256', json.dumps(hashlib.sha256(source.read_bytes()).hexdigest())),
-                   ('FPS_COMPILE_FLAGS', json.dumps(' '.join(flags)))])])
+                   ('FPS_COMPILE_FLAGS', json.dumps(' '.join(flags)))]),
+    Extension('models._spatial_index_cpu', sources=['models/csrc/spatial_index_cpu.cpp'],
+        extra_compile_args=flags, optional=True, language='c++',
+        define_macros=[('GRID_SOURCE_SHA256', json.dumps(hashlib.sha256(grid_source.read_bytes()).hexdigest())),
+                       ('GRID_COMPILE_FLAGS', json.dumps(' '.join(flags)))])])

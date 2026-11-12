@@ -164,6 +164,7 @@ def test_sparse_wrapper_materializes_row_major_coordinates(monkeypatch):
     nn.Module.__init__(wrapper)
     wrapper.network = FakeSparseKernel()
     wrapper.projection = nn.Identity()
+    wrapper.backbone_coordinate_fastpath = True
     inputs = model_inputs()
     coords = inputs['voxel_coords'].T.contiguous().T
     assert not coords.is_contiguous()

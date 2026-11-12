@@ -401,7 +401,7 @@ def verify_performance_transition(config, assignment):
         return
     view = assignment.get("view", {})
     performance = (view.get("committed_checkpoint") or {}).get("analysis", {}).get("identity", {}).get("performance", {})
-    if (assignment.get("performance_config_sha256") or not desired or
+    if (assignment.get("performance_config_sha256") != view.get("performance_migration_source_config_sha256") or not desired or
             performance.get("config_sha256") != desired["performance_config_sha256"] or
             not view.get("performance_migration_verified") or not view.get("performance_source_backup_verified")):
         raise Refused("performance transition requires verified explicit migration of paused source")
@@ -546,7 +546,18 @@ class Coordinator:
             raise Refused("old host must prove worker/trainer exit and local locks free")
         if not view.get("checkpoint_verified"):
             raise Refused("verify published checkpoint before releasing owner")
-        verify_checkpoint_contract(assignment, view.get("committed_checkpoint") or {})
+        verification_assignment = assignment
+        if evidence.get("command") == "resume":
+            if view.get("worker", {}).get("exit_code") != 75:
+                raise Refused("automatic retry disabled; only normal boundary pause may resume")
+            # Migration changes the checkpoint identity before the old owner is
+            # released. Recheck its proof using this inspection, and validate
+            # against the selected target without rewriting historical ownership.
+            verification_assignment = dict(assignment, view=view)
+            verify_performance_transition(self.config, verification_assignment)
+            verification_assignment.update(selected_performance(
+                self.config, assignment["experiment"], assignment["host"]))
+        verify_checkpoint_contract(verification_assignment, view.get("committed_checkpoint") or {})
         if any(self.state[k] and self.state[k]["token"] == assignment["token"]
                for k in ("validation", "backup")):
             raise Refused("reconcile outstanding validation/backup before release")
@@ -790,11 +801,13 @@ def inspect_worker(config, assignment):
             result[kind + "_" + suffix] = read_json(control / f"{kind}.{suffix}.json")
     result["performance_migration_verified"] = False
     result["performance_source_backup_verified"] = False
+    result["performance_migration_source_config_sha256"] = None
     analysis = (committed or {}).get("analysis", {})
     if analysis.get("performance_migration"):
         from suction20.pretrain_runtime import verify_performance_migration
-        verify_performance_migration(run, analysis["performance_migration"], analysis["identity"])
+        receipt = verify_performance_migration(run, analysis["performance_migration"], analysis["identity"])
         result["performance_migration_verified"] = True
+        result["performance_migration_source_config_sha256"] = (receipt["source_identity"].get("performance") or {}).get("config_sha256")
         source_manifest = read_json(run / Path(analysis["performance_migration"]["path"]).parent / "source-manifest.json")
         result["performance_source_backup_verified"] = final_backup_verified(
             config, assignment, source_manifest["current"], result.get("backup_done"))
@@ -877,19 +890,24 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
                     pins[relative], size = pin_file(path, pin_root)
                     files[relative] = {"size_bytes": size}
     verified_receipts = set()
-    for entry in entries:
-        analysis = entry.get("analysis", {})
+    def collect_migration_files(analysis):
         reference = analysis.get("performance_migration")
         if not reference or (reference["path"], reference["sha256"]) in verified_receipts:
-            continue
+            return
         verified_receipts.add((reference["path"], reference["sha256"]))
         from suction20.pretrain_runtime import verify_performance_migration
         receipt = verify_performance_migration(run, reference, analysis["identity"])
         parent = Path(reference["path"]).parent
+        # Follow the archived current entry: ordinary saves eventually replace
+        # the P1 predecessor, but its receipt and all three inputs stay required.
+        source_manifest = read_json(run / parent / "source-manifest.json")
+        collect_migration_files(source_manifest["current"].get("analysis", {}))
         for name, info in receipt["files"].items():
             relative = str(parent / name)
             pins[relative], _ = pin_file(run / relative, pin_root)
             files[relative] = info
+    for entry in entries:
+        collect_migration_files(entry.get("analysis", {}))
     control_sources = {}
     for name in ("assignment.json", "command.json", "worker.json", "status.json",
                  "resources.jsonl", "selected-config.json", "performance-config.json", "pause.request", "validation.request.json", "validation.done.json"):

@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 import torch
 
 from scripts import migrate_performance_checkpoint as converter, train_pretrain as entry
 from suction20 import pretrain_runtime as runtime, training, run_supervisor as supervisor
 from suction20.batching import collate_public
 from suction20.performance import attach_performance, load_performance_config, SOURCE_REVISION, SOURCE_WORKTREE_SHA256
+from suction20 import performance
 from test_pretrain_runtime import harness, state, canonical_rows, same_training
 from test_prefetch import ToySource
 from test_run_supervisor import config, coordinator
@@ -176,3 +178,140 @@ def test_scalar_and_batched_sidecars_preserve_profile_and_bind_distinct_hashes(t
     for resolved in (scalar, batched):
         assert resolved['runtime']['raw_config_sha256'] == 'frozen-profile-sha'
         assert resolved['runtime_profile'] == original['runtime_profile']
+
+
+def test_v2_schema_is_explicit_and_v1_identity_stays_unchanged(tmp_path, monkeypatch):
+    base = Path(__file__).parents[1] / 'configs/performance'
+    p1 = load_performance_config(base / 'cd009-p1.json')
+    p2 = load_performance_config(base / 'cd009-p2.json')
+    assert runtime.file_digest(base / 'cd009-p1.json') == performance.P1_SOURCE_CONFIG_SHA256
+    assert 'spatial_index' not in p1
+    assert p2['spatial_index'] == {'backend': 'uniform_grid_cpu', 'cell_size_m': .02}
+    assert p2['loader'] == p1['loader']
+    assert p2['query_chunk_size'] is None and p2['query_workers'] == 1
+    for value in (dict(p1, no_instance_voxel_heads=True), dict(p2, backbone_coordinate_fastpath=1),
+                  dict(p2, spatial_index={'backend': 'uniform_grid_cpu', 'cell_size_m': .002})):
+        with pytest.raises(ValueError):
+            performance.validate_performance_config(value)
+    from models import geometry_ops, spatial_index
+    monkeypatch.setattr(geometry_ops, 'fps_backend_identity', lambda name: {'backend': name})
+    monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity', lambda name: {'backend': name, 'binary_sha256': 'grid-build'})
+    old = performance.performance_identity(attach_performance({}, base / 'cd009-p1.json'))
+    assert old == {'schema_version': performance.SCHEMA_VERSION,
+                   'config_sha256': performance.P1_SOURCE_CONFIG_SHA256,
+                   'backend_builds': {'fps': {'backend': 'compiled'}}}
+    new = performance.performance_identity(attach_performance({}, base / 'cd009-p2.json'))
+    assert new['schema_version'] == performance.SCHEMA_VERSION_V2
+    assert new['backend_builds']['spatial_index'] == {'backend': 'uniform_grid_cpu', 'binary_sha256': 'grid-build'}
+
+
+def test_p1_to_p2_resume_retains_recursive_archive_after_predecessor_replacement(tmp_path, harness, monkeypatch):
+    cfg, _, _ = harness
+    install_toy(monkeypatch)
+    # Keep the exact approved P1 sidecar bytes/identity. Worker scheduling has its
+    # own spawn regression; this CPU test isolates checkpoint and archive state.
+    from suction20 import prefetch
+    make_loader = prefetch.make_ticket_loader
+    def serial_loader(*args, loader_config, **kwargs):
+        return make_loader(*args, loader_config=dict(loader_config, num_workers=0, pin_memory=False), **kwargs)
+    monkeypatch.setattr(prefetch, 'make_ticket_loader', serial_loader)
+    cfg['data']['smoke_frame_keys'] = [list(key) for key in ToySource.keys]
+    cfg['training'].update(max_optimizer_steps=7, validate_every_optimizer_steps=7)
+    label = tmp_path / 'labels'
+    runtime.atomic_json(label / 'config_frozen.json', ToySource.data_cfg)
+    runtime.atomic_json(label / 'manifest.json', {'passed': True})
+    cfg['data']['label_root'] = str(label)
+    run, control = tmp_path / 'run', tmp_path / 'run/control'
+
+    def select_code(revision, worktree):
+        for module in (entry, training):
+            monkeypatch.setattr(module, 'code_revision', lambda: revision)
+            monkeypatch.setattr(module, 'worktree_digest', lambda: worktree)
+
+    def paused_source():
+        status = runtime.read_json(control / 'status.json')
+        gone = dict(pid=99999999, start_ticks=1, boot_id='retired-test-process')
+        runtime.atomic_json(control / 'worker.json', dict(token=status['attempt_id'], exit_code=75,
+            worker_identity=gone, trainer_identity=gone))
+        return runtime.read_json(run / 'checkpoint-manifest.json')['current']
+
+    select_code(SOURCE_REVISION, SOURCE_WORKTREE_SHA256)
+    entry.train(copy.deepcopy(cfg), run, torch.device('cpu'), pause_at_step=1)
+    original = paused_source()
+    select_code(performance.P1_SOURCE_REVISION, performance.P1_SOURCE_WORKTREE_SHA256)
+    p1_path = Path(__file__).parents[1] / 'configs/performance/cd009-p1.json'
+    p1_result = converter.migrate(cfg, run, p1_path, control, original['sha256'])
+    p1_config = attach_performance(cfg, p1_path)
+    entry.train(p1_config, run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=3)
+    p1_current = paused_source()
+    before = state(run)
+    assert performance.approved_migration_source(before['runtime_state']['identity']) == 'p1'
+    for key in ('code_revision', 'worktree_sha256'):
+        invalid = dict(before['runtime_state']['identity'], **{key: 'unapproved'})
+        with pytest.raises(ValueError, match='not approved'):
+            performance.approved_migration_source(invalid)
+    invalid = copy.deepcopy(before['runtime_state']['identity'])
+    invalid['performance']['config_sha256'] = '0' * 64
+    with pytest.raises(ValueError, match='not approved'):
+        performance.approved_migration_source(invalid)
+
+    # Runtime semantics can be tested without requiring a native grid build.
+    p2_path = tmp_path / 'p2-reference.json'
+    p2 = load_performance_config(p1_path.parent / 'cd009-p2.json')
+    p2.update(fps_backend='numpy', spatial_index={'backend': 'kdtree', 'cell_size_m': .02})
+    p2['loader'].update(num_workers=0, pin_memory=False)
+    runtime.atomic_json(p2_path, p2)
+    select_code('approved-test-p2', 'test-p2-worktree')
+    p2_result = converter.migrate(cfg, run, p2_path, control, p1_current['sha256'])
+    migrated = state(run)
+    same_training(migrated, before)
+    for key in ('ledger', 'validations', 'budget', 'effective_samples_completed'):
+        assert migrated['runtime_state'][key] == before['runtime_state'][key]
+    receipt = runtime.verify_performance_migration(run, p2_result['receipt'], migrated['runtime_state']['identity'])
+    assert receipt['source_identity'] == before['runtime_state']['identity']
+    assert runtime.read_json(run / Path(p2_result['receipt']['path']).parent / 'source-manifest.json')['current']['analysis']['performance_migration'] == p1_result['receipt']
+
+    # The view binds the old assignment hash and the latest paused source backup.
+    monkeypatch.setattr(supervisor, 'assignment_paths', lambda *args: (run, control))
+    monkeypatch.setattr(supervisor, 'lock_paths', lambda *args: [])
+    checked_backups = []
+    def checked_backup(config, assignment, checkpoint, done):
+        checked_backups.append(checkpoint)
+        return True
+    monkeypatch.setattr(supervisor, 'final_backup_verified', checked_backup)
+    assignment = dict(experiment=cfg['experiment'], host='L20', token=p1_current['attempt_id'],
+                      performance_config_sha256=performance.P1_SOURCE_CONFIG_SHA256)
+    view = supervisor.inspect_worker({}, assignment)
+    assert view['performance_migration_source_config_sha256'] == performance.P1_SOURCE_CONFIG_SHA256
+    assert checked_backups[0] == p1_current
+    assignment['view'] = view
+    coordinator_config = {'performance_configs': {'L20': {cfg['experiment']: {
+        'config_path': str(p2_path), 'config_sha256': runtime.file_digest(p2_path)}}}}
+    supervisor.verify_performance_transition(coordinator_config, assignment)
+    with pytest.raises(supervisor.Refused, match='explicit migration'):
+        supervisor.verify_performance_transition(coordinator_config, dict(assignment, performance_config_sha256='other'))
+
+    with pytest.raises(ValueError, match='matching complete runtime'):
+        entry.train(p1_config, run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=5)
+    entry.train(attach_performance(cfg, p2_path), run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=5)
+    manifest = runtime.read_json(run / 'checkpoint-manifest.json')
+    assert all(manifest[k]['analysis']['performance_migration'] == p2_result['receipt'] for k in ('current', 'predecessor'))
+    assert [r['global_step'] for r in canonical_rows(run)] == [1, 2, 3, 4, 5]
+    backup = tmp_path / 'backup'
+    backup.mkdir()
+    usage = supervisor.shutil.disk_usage
+    monkeypatch.setattr(supervisor.shutil, 'disk_usage', lambda path: usage(path)._replace(free=300 * supervisor.GIB))
+    destination = Path(supervisor.backup_snapshot({'root': str(tmp_path), 'backup_root': str(backup)},
+        dict(assignment, token='backup-test'), {'request_id': 'p2-final', 'final': True}))
+    for result in (p1_result, p2_result):
+        copied = runtime.read_json(destination / result['receipt']['path'])
+        assert runtime.file_digest(destination / result['receipt']['path']) == result['receipt']['sha256']
+        for name, info in copied['files'].items():
+            assert runtime.file_digest(destination / Path(result['receipt']['path']).parent / name) == info['sha256']
+
+    # The latest receipt is insufficient if its original migration is missing.
+    prior_receipt = run / p1_result['receipt']['path']
+    prior_bytes = prior_receipt.read_bytes()
+    prior_receipt.write_bytes(prior_bytes + b' ')
+    with pytest.raises(ValueError, match='receipt checksum'):
+        runtime.verify_performance_migration(run, p2_result['receipt'], migrated['runtime_state']['identity'])

@@ -6,84 +6,24 @@ physical query, even when that point shares a network voxel with another object.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import time
 
 import numpy as np
-from scipy.spatial import cKDTree
 import torch
 from torch import nn
 
 from .candidate_sampler import fps_indices
 from .heads import chunk_apply, mlp
+from .spatial_index import SpatialIndex
 
 ZONE_NAMES = ('core', 'lip', 'cup', 'mount', 'approach')
 ZONE_LIMITS = {'core': 32, 'lip': 64, 'cup': 32, 'mount': 32, 'approach': 32}
 
 
-@dataclass
-class SpatialIndex:
-    xyz: np.ndarray
-    instance: np.ndarray
-    normals: np.ndarray
-    normal_valid: np.ndarray
-    frame_rows: list
-    trees: list
-
-    @classmethod
-    def from_cpu_geometry(cls, geometry):
-        # Context is created from the augmented packed batch, never source labels.
-        started = time.perf_counter()
-        xyz, rows = geometry.xyz64, geometry.frame_rows
-        prepared = time.perf_counter()
-        result = cls(xyz, geometry.instance_id_input, geometry.normal_obs,
-                     geometry.normal_obs_valid, rows,
-                     [cKDTree(xyz[r]) if len(r) else None for r in rows])
-        result.setup_timings = {'geometry_cpu_setup_s': prepared - started,
-                                'tree_build_s': time.perf_counter() - prepared}
-        return result
-
-    @classmethod
-    def from_inputs(cls, inputs):
-        started = time.perf_counter()
-        xyz = inputs['xyz_cam_m'].detach().float().cpu().numpy().astype(np.float64)
-        batch = inputs['batch_index'].detach().cpu().numpy()
-        rows = [np.flatnonzero(batch == b) for b in range(len(inputs['g_cam']))]
-        instance = inputs['instance_id_input'].detach().cpu().numpy()
-        normals = inputs['normal_obs'].detach().float().cpu().numpy()
-        valid = inputs['normal_obs_valid'].detach().cpu().numpy()
-        prepared = time.perf_counter()
-        result = cls(xyz, instance, normals, valid, rows,
-                     [cKDTree(xyz[r]) if len(r) else None for r in rows])
-        result.setup_timings = {'geometry_cpu_setup_s': prepared - started,
-                                'tree_build_s': time.perf_counter() - prepared}
-        return result
-
-    def ball(self, frame, center, radius):
-        tree = self.trees[frame]
-        if tree is None:
-            return np.empty(0, np.int64)
-        # Expand only the covering query by rounding epsilon. Exact zone filters
-        # below still decide membership using the specified metric boundaries.
-        local = tree.query_ball_point(center, radius + 1e-8)
-        return np.sort(self.frame_rows[frame][local])
-
-
-    def balls(self, frame, centers, radii, *, workers=1):
-        """At most one bounded chunk; sorted local rows map to sorted raw rows."""
-        tree = self.trees[frame]
-        if tree is None:
-            return [np.empty(0, np.int64) for _ in range(len(centers))]
-        local = tree.query_ball_point(centers, radii + 1e-8, eps=0.0,
-                                      workers=workers, return_sorted=True)
-        # frame_rows comes from flatnonzero in increasing raw index order.
-        return [self.frame_rows[frame][rows] for rows in local]
-
-
 class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
-                 query_chunk_size=None, query_workers=1, detailed_cpu_timing=False):
+                 query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -104,6 +44,7 @@ class ContactGrouping(nn.Module):
             raise ValueError('pose_chunk_size must be positive')
         self.checkpointed = checkpointed
         self.fps_fn = fps_fn
+        self.spatial_index_config = dict(spatial_index or {})
         self.query_chunk_size = query_chunk_size
         self.query_workers = query_workers
         self.detailed_cpu_timing = detailed_cpu_timing
@@ -137,7 +78,7 @@ class ContactGrouping(nn.Module):
         def ball(frame, center, radius):
             timer = time.perf_counter() if detailed else 0.
             rows = index.ball(frame, center, radius)
-            stats['ball_api_calls'] += int(index.trees[frame] is not None)
+            stats['ball_api_calls'] += int(index.frame_has_points(frame))
             stats['ball_returned_points'] += len(rows)
             if detailed:
                 stats['ball_query_s'] += time.perf_counter() - timer
@@ -287,11 +228,11 @@ class ContactGrouping(nn.Module):
                 radii[:, zone] = math.hypot(radius, (z_max-z_min)/2)
             if batched:
                 balls = index.balls(frame, centers.reshape(-1, 3), radii.reshape(-1), workers=self.query_workers)
-                stats['ball_api_calls'] += int(index.trees[frame] is not None)
+                stats['ball_api_calls'] += int(index.frame_has_points(frame))
             else:
                 balls = [index.ball(frame, center, radius)
                          for center, radius in zip(centers[0], radii[0])]
-                stats['ball_api_calls'] += 4 * int(index.trees[frame] is not None)
+                stats['ball_api_calls'] += 4 * int(index.frame_has_points(frame))
             stats['ball_returned_points'] += sum(map(len, balls))
             if detailed:
                 stats['ball_query_s'] += time.perf_counter() - timer
@@ -369,11 +310,16 @@ class ContactGrouping(nn.Module):
 
     def forward(self, encoded, points, normals, instances, batch, valid, *, random_roll=False):
         started = time.perf_counter()
-        setup_timings = {'geometry_cpu_setup_s': 0., 'tree_build_s': 0.}
+        existing_index = encoded.get('spatial_index')
+        backend = (existing_index.backend if existing_index is not None
+                   else self.spatial_index_config.get('backend', 'kdtree'))
+        build_field = 'index_build_s' if backend == 'uniform_grid_cpu' else 'tree_build_s'
+        setup_timings = {'geometry_cpu_setup_s': 0., build_field: 0.,
+                         'spatial_index_backend': backend}
         if 'spatial_index' not in encoded:
             geometry = encoded.get('cpu_geometry')
-            encoded['spatial_index'] = (SpatialIndex.from_cpu_geometry(geometry) if geometry is not None
-                                        else SpatialIndex.from_inputs(encoded))
+            encoded['spatial_index'] = (SpatialIndex.from_cpu_geometry(geometry, **self.spatial_index_config) if geometry is not None
+                                        else SpatialIndex.from_inputs(encoded, **self.spatial_index_config))
             setup_timings = encoded['spatial_index'].setup_timings
         built = time.perf_counter()
         query = self.query(encoded['spatial_index'], points, normals.detach(), instances, batch,

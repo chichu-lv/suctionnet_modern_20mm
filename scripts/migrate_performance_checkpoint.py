@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit, one-way conversion of the approved paused pre-performance run.
+"""Explicit, one-way conversion of an approved paused original or P1 run.
 
 Pause every trainer using this checkout, wait for worker exit/final backup, install
 and verify the target build, then run on its owning host with the frozen profile:
@@ -21,7 +21,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from suction20.performance import (SOURCE_REVISION, SOURCE_WORKTREE_SHA256,
+from suction20.performance import (SCHEMA_VERSION_V2, approved_migration_source,
                                   attach_performance, build_runtime_identity)
 from suction20.pretrain_budget import resolve_config, resolve_budget, validate_resume_progress
 from suction20.pretrain_runtime import (CheckpointStore, RunLock, atomic_json, file_digest,
@@ -54,13 +54,19 @@ def migrate(config, run_dir, performance_path, control_dir, expected_source_sha2
             raise ValueError('Migration requires the same public pretraining experiment')
         previous = state['runtime_state']
         source_identity = previous['identity']
-        if (source_identity.get('code_revision') != SOURCE_REVISION or
-                source_identity.get('worktree_sha256') != SOURCE_WORKTREE_SHA256 or
-                source_identity.get('performance') or previous.get('performance_migration')):
-            raise ValueError('Only the explicitly approved original source can migrate')
+        source_kind = approved_migration_source(source_identity)
+        prior_migration = previous.get('performance_migration')
+        if source_kind == 'p1':
+            if not prior_migration or current.get('analysis', {}).get('performance_migration') != prior_migration:
+                raise ValueError('P1 source requires matching checkpoint/manifest migration receipt')
+            verify_performance_migration(run, prior_migration, source_identity)
+        elif prior_migration or current.get('analysis', {}).get('performance_migration'):
+            raise ValueError('Original performance source must not already have a migration')
         if previous.get('pending_validation') is not None or state['global_step'] != current['global_step'] or status.get('global_step') != state['global_step']:
             raise ValueError('Source checkpoint/status transaction mismatch')
         config = resolve_config(attach_performance(config, performance_path))
+        if source_kind == 'p1' and config['runtime']['performance']['schema_version'] != SCHEMA_VERSION_V2:
+            raise ValueError('Approved P1 source requires a v2 performance target')
         source_data = json.loads((Path(config['data']['label_root']) / 'config_frozen.json').read_bytes())
         target_identity = build_runtime_identity(config, source_data)
         validate_resume_config(state['training_config'], config)

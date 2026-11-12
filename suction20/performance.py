@@ -12,14 +12,44 @@ import json
 from pathlib import Path
 
 SCHEMA_VERSION = 'suction20.performance.v1'
+SCHEMA_VERSION_V2 = 'suction20.performance.v2'
 SOURCE_REVISION = '98862f4d6a133c99afa082a0755dbb888b41b38d'
 SOURCE_WORKTREE_SHA256 = 'd634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8'
+P1_SOURCE_REVISION = '996421c664a5a0b84c308aa4ca47c31eaff4035b'
+P1_SOURCE_WORKTREE_SHA256 = '23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20'
+P1_SOURCE_CONFIG_SHA256 = '08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188'
+
+
+def approved_migration_source(identity):
+    """Classify only the two explicitly approved source builds, never resume."""
+    performance = identity.get('performance')
+    if (identity.get('code_revision') == SOURCE_REVISION and
+            identity.get('worktree_sha256') == SOURCE_WORKTREE_SHA256 and not performance):
+        return 'original'
+    if (identity.get('code_revision') == P1_SOURCE_REVISION and
+            identity.get('worktree_sha256') == P1_SOURCE_WORKTREE_SHA256 and
+            isinstance(performance, dict) and performance.get('schema_version') == SCHEMA_VERSION and
+            performance.get('config_sha256') == P1_SOURCE_CONFIG_SHA256):
+        return 'p1'
+    raise ValueError('Performance migration source is not approved')
 
 
 def validate_performance_config(value):
     keys = {'schema_version', 'fps_backend', 'query_chunk_size', 'query_workers', 'loader', 'detailed_cpu_timing'}
-    if not isinstance(value, dict) or set(value) != keys or value['schema_version'] != SCHEMA_VERSION:
+    if not isinstance(value, dict) or value.get('schema_version') not in (SCHEMA_VERSION, SCHEMA_VERSION_V2):
         raise ValueError('Unsupported performance configuration fields/schema')
+    if value['schema_version'] == SCHEMA_VERSION_V2:
+        keys |= {'spatial_index', 'no_instance_voxel_heads', 'backbone_coordinate_fastpath'}
+    if set(value) != keys:
+        raise ValueError('Unsupported performance configuration fields/schema')
+    if value['schema_version'] == SCHEMA_VERSION_V2:
+        spatial = value['spatial_index']
+        if (not isinstance(spatial, dict) or set(spatial) != {'backend', 'cell_size_m'} or
+                spatial['backend'] not in ('kdtree', 'uniform_grid_cpu') or
+                type(spatial['cell_size_m']) not in (float, int) or spatial['cell_size_m'] != .02):
+            raise ValueError('Performance spatial index requires kdtree or uniform_grid_cpu with 20mm cells')
+        if any(type(value[key]) is not bool for key in ('no_instance_voxel_heads', 'backbone_coordinate_fastpath')):
+            raise ValueError('Performance voxel heads/coordinate fastpath must be boolean')
     if value['fps_backend'] not in ('compiled', 'numpy'):
         raise ValueError('Performance FPS backend must explicitly be compiled or numpy')
     chunk = value['query_chunk_size']
@@ -63,8 +93,12 @@ def performance_identity(config):
     if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
         raise ValueError('Performance sidecar requires its original byte SHA256')
     from models.geometry_ops import fps_backend_identity
-    return {'schema_version': SCHEMA_VERSION, 'config_sha256': digest,
-            'backend_builds': {'fps': fps_backend_identity(performance['fps_backend'])}}
+    builds = {'fps': fps_backend_identity(performance['fps_backend'])}
+    if performance.get('spatial_index', {}).get('backend') == 'uniform_grid_cpu':
+        from models.spatial_index import spatial_index_backend_identity
+        builds['spatial_index'] = spatial_index_backend_identity('uniform_grid_cpu')
+    return {'schema_version': performance['schema_version'], 'config_sha256': digest,
+            'backend_builds': builds}
 
 
 def build_runtime_identity(config, source_data, *, code_revision_value=None, worktree_sha256=None):

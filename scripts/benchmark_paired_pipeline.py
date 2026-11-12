@@ -204,15 +204,27 @@ def run(args, report):
     import torch
     roots = [Checkout(args.baseline_repo), Checkout(args.candidate_repo)]
     unchanged_sources = {}
-    for relative in ('models/backbones/spconv_resunet14.py', 'models/heads.py'):
+    for relative in ('models/heads.py',):
         hashes = [digest(root.root / relative) for root in roots]
         if hashes[0] != hashes[1]:
             raise ValueError(f'Shared-backbone dependency changed: {relative}')
         unchanged_sources[relative] = hashes[0]
     report['shared_backbone_source_sha256'] = unchanged_sources
+    report['backbone_wrapper_source_sha256'] = {
+        label: digest(root.root / 'models/backbones/spconv_resunet14.py')
+        for label, root in zip(('baseline', 'optimized'), roots)}
     bundles = []
     state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-    report.update(checkpoint_step=state['global_step'], sampler_before=state['sampler_state'],
+    fixed_frames = None
+    sampler_state = state['sampler_state']
+    if args.frame_plan_report:
+        fixed_frames = json.loads(Path(args.frame_plan_report).read_text())
+        if len(fixed_frames.get('frames', [])) != 4:
+            raise ValueError('Frame plan must contain exactly four previously recorded frames')
+        sampler_state = fixed_frames['sampler_before']
+        report['frame_plan_report_sha256'] = digest(args.frame_plan_report)
+    report.update(checkpoint_step=state['global_step'], checkpoint_sampler_before=state['sampler_state'],
+                  sampler_before=sampler_state,
                   initial_rng=fingerprint(state['rng_state']))
     device = torch.device(args.device)
     if device.type != 'cuda' or not torch.cuda.is_available():
@@ -234,9 +246,11 @@ def run(args, report):
             cap = config['runtime']['gpu_memory_limit_gib'] * 1024**3
             torch.cuda.set_per_process_memory_fraction(min(1., cap / torch.cuda.get_device_properties(device).total_memory), device)
             performance = None
-            if phase == 'optimized':
+            performance_path = (args.performance_config if phase == 'optimized'
+                                else args.baseline_performance_config)
+            if performance_path:
                 performance_module = checkout.module('suction20.performance')
-                config = performance_module.attach_performance(config, args.performance_config)
+                config = performance_module.attach_performance(config, performance_path)
                 performance = config['runtime']['performance']
             source = runner.make_source_dataset(config, augment=True)
             model = runner.make_model(config, source.data_cfg, device)
@@ -245,7 +259,7 @@ def run(args, report):
             schedule = training.FrameSchedule(datasets.split_scene_ids('train'), seed=config.get('sampling_seed', 20261110),
                 views_per_scene=config['data'].get('views_per_train_scene_per_epoch', 64),
                 frame_keys=config['data'].get('smoke_frame_keys'))
-            schedule.load_state_dict(state['sampler_state'])
+            schedule.load_state_dict(sampler_state)
             queries = []
             install_query_capture(model, queries)
             identity = dict(repo=str(checkout.root), code_revision=training.code_revision(), worktree_sha256=training.worktree_digest())
@@ -253,13 +267,22 @@ def run(args, report):
                 identity['performance'] = performance_module.performance_identity(config)
             bundles.append(dict(phase=phase, checkout=checkout, training=training, datasets=datasets,
                 source=source, model=model, config=config, budget=budget, schedule=schedule,
+                has_cpu_context=performance is not None,
                 keys={key: i for i, key in enumerate(source.keys)}, queries=queries, identity=identity,
                 loss_fn=checkout.module('suction20.losses').source_losses,
                 sampling_epoch=budget_module.sampling_epoch))
-    # One common unchanged sparse backbone. The candidate backbone is never run.
+    # One common pinned sparse network. Wrapper alignment is checked separately
+    # on this network's same raw output, before projection; no second forward.
     baseline, optimized = bundles
     if fingerprint(baseline['source'].data_cfg) != fingerprint(optimized['source'].data_cfg):
         raise ValueError('Frozen source label configuration differs')
+    with roots[0].active():
+        baseline_wrapper = roots[0].module('models.backbones.spconv_resunet14')
+    with roots[1].active():
+        candidate_wrapper = roots[1].module('models.backbones.spconv_resunet14')
+    if baseline_wrapper._BLOBS != candidate_wrapper._BLOBS:
+        raise ValueError('Pinned upstream sparse-network sources differ')
+    report['pinned_backbone_blobs'] = dict(baseline_wrapper._BLOBS)
     common_backbone = baseline['model'].backbone
     old_state, new_state = common_backbone.state_dict(), optimized['model'].backbone.state_dict()
     if old_state.keys() != new_state.keys() or any(not torch.equal(old_state[k], new_state[k]) for k in old_state):
@@ -289,6 +312,10 @@ def run(args, report):
                 data = fingerprint({key: packed[key] for key in ('inputs', 'targets', 'meta')})
                 prepared.append(dict(packed=packed, frame_key=list(key), augmentation_seed=aug_seed, data=data))
                 del sample
+        if fixed_frames is not None:
+            for key in ('frame_key', 'augmentation_seed'):
+                comparisons.check(prepared[0][key], fixed_frames['frames'][frame_index][key],
+                    f'frame.{frame_index}.fixed_plan.{key}', exact=True)
         for key in ('frame_key', 'augmentation_seed', 'data'):
             comparisons.check(prepared[0][key], prepared[1][key], f'frame.{frame_index}.{key}', exact=True)
         if any(path.startswith(f'frame.{frame_index}.') for path in comparisons.failures):
@@ -298,7 +325,31 @@ def run(args, report):
             inputs = baseline['training'].move_to_device(prepared[0]['packed']['inputs'], device)
             common_backbone.train()
             with torch.autocast(device_type='cuda', enabled=amp):
-                features = common_backbone(inputs)
+                alignment_checks = []
+                handle = None
+                if optimized['config']['runtime'].get('performance', {}).get('backbone_coordinate_fastpath', False):
+                    def capture_alignment(network, arguments, output):
+                        coords = arguments[0].indices
+                        rows = baseline_wrapper.coordinate_rows(coords, output.indices)
+                        aligned = candidate_wrapper.align_backbone_features(
+                            coords, output.indices, output.features, fastpath=True)
+                        comparisons.check(output.indices[rows], coords,
+                            f'frame.{frame_index}.backbone_coordinate_rows', exact=True)
+                        comparisons.check(output.features[rows], aligned,
+                            f'frame.{frame_index}.backbone_aligned_features', exact=True)
+                        same = candidate_wrapper.same_coordinate_storage(coords, output.indices)
+                        alignment_checks.append(dict(same_storage=bool(same),
+                            rows=int(len(coords)), exact_identity_rows=bool(torch.equal(
+                                rows, torch.arange(len(rows), device=rows.device)))))
+                    handle = common_backbone.network.register_forward_hook(capture_alignment)
+                try:
+                    features = common_backbone(inputs)
+                finally:
+                    if handle is not None:
+                        handle.remove()
+                if handle is not None and len(alignment_checks) != 1:
+                    raise ValueError('Expected one raw sparse-output alignment check')
+                frame['backbone_alignment_checks'] = alignment_checks
             post_backbone_rng = baseline['training'].capture_rng()
         frame['shared_backbone_features'] = fingerprint(features)
         named_backbone = [(name, p) for name, p in common_backbone.named_parameters() if p.requires_grad]
@@ -310,7 +361,7 @@ def run(args, report):
                 branch_inputs = inputs if item is baseline else item['training'].move_to_device(packed['inputs'], device)
                 targets = item['training'].move_to_device(packed['targets'], device)
                 kwargs = {}
-                if item is optimized:
+                if item['has_cpu_context']:
                     contexts = item['checkout'].module('suction20.cpu_geometry')
                     kwargs = dict(cpu_geometry=contexts.CpuGeometry.from_inputs(packed['inputs']),
                         sampler_targets_cpu=contexts.SamplerTargetsCPU.from_targets(packed['targets']))
@@ -374,8 +425,12 @@ def main(argv=None):
     parser.add_argument('--baseline-repo', required=True)
     parser.add_argument('--candidate-repo', default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument('--checkpoint', required=True)
+    parser.add_argument('--frame-plan-report',
+                        help='Reuse four frame IDs/seeds from an earlier paired report; diagnostic schedule only')
     parser.add_argument('--config', required=True)
     parser.add_argument('--performance-config', required=True)
+    parser.add_argument('--baseline-performance-config',
+                        help='Explicit baseline sidecar; pass P1 when comparing P1 to P2')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')
     parser.add_argument('--backbone-root')
@@ -389,7 +444,9 @@ def main(argv=None):
     report = dict(schema_version='suction20.paired-pipeline-comparison.v1', passed=False,
         scope='paired suffix/data/geometry plus VJP through one shared real backbone graph per frame',
         checkpoint_sha256=digest(args.checkpoint), config_sha256=digest(args.config),
-        performance_config_sha256=digest(args.performance_config), optimizer_updates=0,
+        performance_config_sha256=digest(args.performance_config),
+        baseline_performance_config_sha256=(digest(args.baseline_performance_config)
+            if args.baseline_performance_config else None), optimizer_updates=0,
         limitations=['Does not supersede the failed independent-process end-to-end comparison.',
             'Shared-backbone boundary removes independent sparse CUDA forward variation from this diagnostic.',
             'Two sequential backward VJPs may retain CUDA numerical variation; existing tolerances still apply.',

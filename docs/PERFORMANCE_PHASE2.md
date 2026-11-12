@@ -1,10 +1,10 @@
 # CD-009 P2：基于 P1 实测的第二轮训练提速方案
 
-**状态：方案与 CPU 原型已完成，产品实现和 H20/L20 部署待完成。** 本文审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**。正式训练继续使用部署版本 `996421c`。本文中的合成 CPU 时间不代表正式训练速度，也没有改动正在运行的模型或配置。
+**实施状态：三项产品路径与迁移接线已实现，316 项 CPU 测试通过、1 项既有 opt-in 跳过；真实 AMP 验收发现 voxel heads 梯度差异，因此部署配置关闭该项，grid 与坐标快路径已通过相同四帧的原容差验收，正在正常迁移。** 本文审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**。迁移来源为正式 P1 部署版本 `996421c`。本文中的合成 CPU 时间不代表正式训练速度；实际部署与正常窗口在第12节记录。
 
 **下一轮做三项具体改动：原生 CPU 空间网格查询、无实例分支的体素级 fusion/q0、骨干输出坐标的同存储快路径。** 继续使用 microbatch 1 × 梯度累积 4、8 个逻辑核、2 个数据 worker。P1 已解决的预取、编译 FPS 和数据搬运不再重复开发。
 
-本文是 [P1 方案与完成记录](PERFORMANCE_OPTIMIZATION.md) 的后续。两者的当前状态不同：P1 已实施；本文列出的 P2 产品接口、配置和迁移修改是待实施规格。数据、模型和预训练的正式定义继续以 [CD-009 说明](CD009_PRETRAINING.md) 为准。
+本文是 [P1 方案与完成记录](PERFORMANCE_OPTIMIZATION.md) 的后续。两者的当前状态不同：P1 已实施；本文保留 P2 设计规格，并在第12节记录实施结果与未通过项。数据、模型和预训练的正式定义继续以 [CD-009 说明](CD009_PRETRAINING.md) 为准。
 
 ## 1. 现在真正需要解决什么
 
@@ -461,8 +461,8 @@ GPU 版本仍须支持所有 raw points、完整半径集合、原区域边界�
 - [x] 单一 CPU 合成输入原型：原生网格的邻域/分组一致且局部更快；记录线程备选结果。
 - [x] 无实例 voxel heads 的代数/梯度原型，以及固定骨干坐标路径源码核对。
 - [x] 完成产品接口、文件改动、P1→P2 接续方式和精简验收规格。
-- [ ] 实现 CPU grid、无实例 voxel heads 和坐标快路径。
-- [ ] 更新性能 sidecar、配对工具与已有迁移/备份入口。
+- [x] 实现 CPU grid、无实例 voxel heads 和坐标快路径；voxel 路径未通过真实 AMP 梯度验收，部署关闭。
+- [x] 更新性能 sidecar、配对工具与已有迁移/备份入口。
 - [ ] 同一组四帧配对、一次正常恢复及原预算内 20–30 update 观察。
 - [ ] 用真实 wall time 更新结果，再决定是否需要筛选/FPS 衔接融合或一个 E0 trace。
 
@@ -480,3 +480,15 @@ GPU 版本仍须支持所有 raw points、完整半径集合、原区域边界�
 - 接续与备份入口：[migrate_performance_checkpoint.py](../scripts/migrate_performance_checkpoint.py)、[pretrain_runtime.py](../suction20/pretrain_runtime.py)、[run_supervisor.py](../suction20/run_supervisor.py)。
 - [现有共享真实骨干配对工具](../scripts/benchmark_paired_pipeline.py)；[batch/CPU 短测脚本](../scripts/benchmark_batch_cpu.py)。
 - SciPy 1.11.4 的球查询参数、排序与返回值定义：[官方文档](https://docs.scipy.org/doc/scipy-1.11.4/reference/generated/scipy.spatial.cKDTree.query_ball_point.html)。
+
+## 12. 实施与真实验收记录（2026-11-12）
+
+产品实现的第一候选为本地 `0b1b01f`。CPU 全套316 passed/1 skipped，独立代码复核通过；原生扩展在 H20/L20 的独立 checkout 构建。P1 baseline显式配置CPU context，E3主配对复用上轮相同四帧和增强种子、同一次真实backbone及两个VJP；骨干坐标在原始sparse output、projection之前核对。
+
+第一轮全开关真实AMP配对未通过：四帧的几何分组、随机序列、坐标映射完全一致；输出与loss均通过原容差，四帧loss值相同，但fusion/q0、backbone边界与VJP等梯度累计374项比较失败。边界梯度最大绝对差0.000479–0.000731；所有非fusion/q0的suffix参数梯度差为零。梯度沿用原checkpoint AMP scale65536和工具原atol2e-4/rtol2e-3，未改容差或重定义比较。
+
+voxel共享将逐点Jacobian作用后的汇总改为先汇总cotangent再作用共享Jacobian，且参数归约由P行分块改为V行。实数代数相同不保证AMP舍入一致。CPU原型不构成CUDA验收。没有证据支持以改用FP32累计或原始逐点backward重放作为最小等价修复。
+
+因此 `configs/performance/cd009-p2.json` 明确设置 `no_instance_voxel_heads:false`，保留opt-in代码与CPU检查；本轮不部署该未通过路径。此选择是验收结果对第4节设计的修订，不声称全部三项已获真实验收。grid与坐标快路径使用同四帧进行针对性复核，四帧全部通过，失败项为零；失败原始证据保留。正式预算、batch、CPU、workers与profile不变。正常迁移与训练窗口结果完成后更新本节。
+
+迁移接线实测发现：显式 P1→P2 凭据通过后，旧 owner release 仍用旧 sidecar 检查目标 checkpoint。已修正为仅在正常 resume、fresh exit75/receipt/source-backup 全部通过时，用临时目标配置校验，保留历史 assignment 原身份。新增5项回归，相关73项测试通过。E5 尚未运行 P2 更新即被拒绝；保留失败迁移并恢复经过最终备份核验的原 P1 提交指针，再使用修正构建重新迁移，无训练更新回退。

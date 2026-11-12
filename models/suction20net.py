@@ -23,6 +23,7 @@ class Suction20Net(nn.Module):
     def __init__(self, model_config, frozen_config, backbone=None, *, performance=None):
         super().__init__()
         performance = dict(performance or {})
+        self.no_instance_voxel_heads = bool(performance.get('no_instance_voxel_heads', False))
         fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'))
         self.model_config = dict(model_config)
         self.frozen_config = dict(frozen_config)
@@ -46,7 +47,8 @@ class Suction20Net(nn.Module):
             if key in model_config and model_config[key] != expected:
                 raise ValueError(f'{self.experiment} requires {key}={expected!r}')
         self.backbone = backbone if backbone is not None else SpconvResUNet14(
-            model_config.get('backbone_root', 'external/graspness_modern'))
+            model_config.get('backbone_root', 'external/graspness_modern'),
+            backbone_coordinate_fastpath=performance.get('backbone_coordinate_fastpath', False))
         self.fusion = mlp((393, 256, 256))
         self.axis_head = AxisHead()
         self.q0_head = mlp((256, 128, 1), output=True)
@@ -71,6 +73,7 @@ class Suction20Net(nn.Module):
                                   checkpointed=self.checkpoint_dense, fps_fn=fps_fn,
                                   query_chunk_size=performance.get('query_chunk_size'),
                                   query_workers=performance.get('query_workers', 1),
+                                  spatial_index=performance.get('spatial_index'),
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
         if self.use_aux_heads:
@@ -96,7 +99,10 @@ class Suction20Net(nn.Module):
             # through the dense heads, producing graph-connected empty outputs.
             voxel_features = batch_input['voxel_features'].new_empty((0, 256))
         local = voxel_features[batch_input['inverse_map']]
-        gravity = batch_input['g_cam'][batch_input['batch_index']]
+        voxel_heads = self.no_instance_voxel_heads and not self.use_instance_fusion
+        frame = (batch_input['voxel_coords'][:, 0].long() if voxel_heads
+                 else batch_input['batch_index'])
+        gravity = batch_input['g_cam'][frame]
         stats = {}
         if self.instance_module is not None:
             stats = self.instance_module(local, batch_input['xyz_cam_m'], batch_input['batch_index'],
@@ -110,15 +116,31 @@ class Suction20Net(nn.Module):
             def fuse(feature, g):
                 zero = feature.new_zeros((len(feature), 134))
                 return self.fusion(torch.cat((feature, zero, g.to(feature)), -1))
-            fused = self._chunks(fuse, local, gravity)
-        return {**batch_input, **stats, 'F_local': local, 'F_fused': fused,
+            fused = self._chunks(fuse, voxel_features if voxel_heads else local, gravity)
+        fused_key = 'F_fused_voxel' if voxel_heads else 'F_fused'
+        return {**batch_input, **stats, 'F_local': local, fused_key: fused,
                 'random_group_roll': self.training, 'cpu_geometry': cpu_geometry}
 
     def predict_dense(self, encoded):
-        q0 = self._chunks(lambda x: self.q0_head(x).sigmoid(), encoded['F_fused']).squeeze(-1)
+        voxel_heads = 'F_fused_voxel' in encoded
+        fused = encoded['F_fused_voxel' if voxel_heads else 'F_fused']
+        q0 = self._chunks(lambda x: self.q0_head(x).sigmoid(), fused).squeeze(-1)
+        if voxel_heads:
+            # Targets and all subsequent loss reductions remain in raw-point space.
+            q0 = q0[encoded['inverse_map']]
         axis = self._chunks(self.axis_head, encoded['F_local'], encoded['normal_obs'],
                             encoded['normal_obs_valid'])
         return q0, axis
+
+    @staticmethod
+    def gather_fused_features(encoded, safe_anchors):
+        """Gather associated raw-point features without expanding voxel fusion."""
+        voxel_heads = 'F_fused_voxel' in encoded
+        fused = encoded['F_fused_voxel' if voxel_heads else 'F_fused']
+        if not len(fused):
+            return fused.new_zeros((len(safe_anchors), 256))
+        rows = encoded['inverse_map'][safe_anchors] if voxel_heads else safe_anchors
+        return fused[rows]
 
     def sample(self, encoded, q0_all, sampler_mode='inference', targets=None, *, sampler_targets_cpu=None):
         return self.sampler(encoded, q0_all, mode=sampler_mode, targets=targets, epoch=self.epoch,
@@ -167,8 +189,7 @@ class Suction20Net(nn.Module):
         anchors = self._anchors(encoded, point_cam_m, instance_id, batch, feature_point_index)
         valid = (anchors >= 0) & (instance_id > 0) & valid_normal & torch.isfinite(point_cam_m).all(-1)
         safe = anchors.clamp_min(0)
-        fused = (encoded['F_fused'][safe] if len(encoded['F_fused']) else
-                 encoded['F_fused'].new_zeros((len(point_cam_m), 256)))
+        fused = self.gather_fused_features(encoded, safe)
         gravity = encoded['g_cam'][batch].to(fused)
         if self.contact_grouping is not None:
             zones = self.contact_grouping(encoded, point_cam_m, n, instance_id, batch, valid,

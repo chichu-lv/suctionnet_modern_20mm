@@ -1,4 +1,5 @@
 """No torch, GPU, SSH, or real training required."""
+import copy
 import json
 from pathlib import Path
 import signal
@@ -634,6 +635,65 @@ def v3_checkpoint(assignment):
             'analysis': {'global_step': budget['target_updates'], 'attempt_id': assignment['token'], 'budget': budget,
                 'identity': {'runtime_profile': assignment['runtime_profile'], 'budget_contract': s.CONTRACT_VERSION},
                 'counters': {'effective_samples_completed': budget['target_samples']}, 'completed_validation_nodes': nodes}}
+
+
+def migrated_release(coordinator):
+    config = coordinator.config
+    selected_v3(config, effective=4)
+    sidecars = Path(__file__).parents[1] / 'configs/performance'
+    p1, p2 = sidecars / 'cd009-p1.json', sidecars / 'cd009-p2.json'
+    config['performance_configs'] = {'H20': {'E5': {
+        'config_path': str(p1), 'config_sha256': s.digest(p1)}}}
+    assignment = coordinator.assign('E5', 'H20', 0)
+    checkpoint = v3_checkpoint(assignment)
+    checkpoint.update(global_step=1030, effective_samples_completed=4120,
+                      attempt_id='migration-p2', completed_validation_nodes=[])
+    checkpoint['analysis'].update(global_step=1030, attempt_id='migration-p2',
+        counters={'effective_samples_completed': 4120}, completed_validation_nodes=[])
+    checkpoint['analysis']['identity']['performance'] = {'config_sha256': s.digest(p2)}
+    config['performance_configs']['H20']['E5'] = {
+        'config_path': str(p2), 'config_sha256': s.digest(p2)}
+    view = {'state': 'exited', 'locks_free': True, 'checkpoint_verified': True,
+            'worker': {'exit_code': 75}, 'committed_checkpoint': checkpoint,
+            'performance_migration_verified': True, 'performance_source_backup_verified': True,
+            'performance_migration_source_config_sha256': s.digest(p1)}
+    assignment['view'] = copy.deepcopy(view)
+    coordinator.transport.view = view
+    return assignment, view
+
+
+def test_resume_release_verifies_migrated_target_without_rewriting_old_assignment(coordinator):
+    assignment, view = migrated_release(coordinator)
+    original = copy.deepcopy(assignment)
+    # Neither ordinary release nor diagnosed recovery acquires this exception.
+    for command in ('release', 'recover'):
+        with pytest.raises(s.Refused, match='performance sidecar identity mismatch'):
+            coordinator.release('E5', {'command': command})
+    released = coordinator.release('E5', {'command': 'resume'})
+    assert 'E5' not in coordinator.state['assignments']
+    assert released is coordinator.state['history'][-1]
+    for key in ('performance_config_path', 'performance_config_sha256', 'performance_settings',
+                'runtime_profile', 'budget', 'token'):
+        assert released[key] == original[key]
+    assert released['view'] == view
+    assert released['view']['committed_checkpoint']['analysis']['identity']['performance']['config_sha256'] != released['performance_config_sha256']
+
+
+@pytest.mark.parametrize('bad_proof', [
+    {'performance_migration_verified': False},
+    {'performance_source_backup_verified': False},
+    {'performance_migration_source_config_sha256': 'wrong-source'},
+    {'worker': {'exit_code': 1}},
+])
+def test_resume_release_rechecks_fresh_migration_proof(coordinator, bad_proof):
+    assignment, view = migrated_release(coordinator)
+    original = copy.deepcopy(assignment)
+    # A previously reconciled valid view must not hide fresh contradictory proof.
+    coordinator.transport.view = dict(view, **bad_proof)
+    with pytest.raises(s.Refused, match='explicit migration|boundary pause'):
+        coordinator.release('E5', {'command': 'resume'})
+    assert coordinator.state['assignments']['E5'] == original
+    assert coordinator.state['history'] == []
 
 
 def test_completion_requires_exact_samples_and_full_nodes(config, coordinator):
