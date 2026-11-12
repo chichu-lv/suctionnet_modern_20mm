@@ -10,15 +10,15 @@ H20/E5、L20/E0 与 E3 已切换到性能版本；代码部署和 GitHub 发布�
 
 | 身份 | 已核验值 |
 | --- | --- |
-| 冻结部署 commit | `996421c664a5a0b84c308aa4ca47c31eaff4035b` |
-| 部署源码 SHA256 | `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` |
-| GitHub 同树源码发布 | [`f6cb0102ebe4566bff023b251525171f15265fa8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/f6cb0102ebe4566bff023b251525171f15265fa8) |
-| 发布 CI | [43186974094：通过](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43186974094) |
-| P1 性能 sidecar SHA256 | `08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188` |
+| 冻结部署 commit | `e73d62ed23aed6f23b9b01a8bfc09ec56d8fc859` |
+| 部署源码 SHA256 | `0c6501ac1b8e374fc37bbba4df3abc30dd4fbf4f726fa23b9c7092c537b3aed8` |
+| GitHub 同树源码发布 | [`4e9c9f53e638b9cefd34a12da6d85d9f2cb39b64`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/4e9c9f53e638b9cefd34a12da6d85d9f2cb39b64) |
+| 发布 CI | [43210786323：通过](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43210786323) |
+| P2 性能 sidecar SHA256 | `8a104de89df99ea327a759e5471bef357965ea20e7b57461081560ca87216928` |
 
 部署 commit 与该 GitHub commit 的 Git tree 已核对一致，但发布有独立 SHA，不承诺部署提交的 Git 祖先链。**本次后续文档发布不部署到训练 checkout，也不改变正在运行的身份。** 普通恢复仍要求相同代码与性能身份；旧 `98862f4` 仅通过显式迁移切换。current checkpoint、receipt 和新 attempt 保存实际 commit/源码摘要/sidecar/本机扩展身份，不能直接用后续文档 HEAD 替代。
 
-**2026-11-12 后续提速工作：** `1e28a2f` 发布了 P1 后的 batch/CPU 对照，继续选择 B1A4、CPU8、loader2。[P2 方案](PERFORMANCE_PHASE2.md) 进一步给出原生 CPU 全点网格、E0/E1/E3 voxel fusion/q0、公共坐标快路径与 P1→P2 迁移的实施规格，附 [CPU 原型证据](performance/P2_CPU_PROTOTYPES.json)。这些 P2 产品改动尚未实现或部署；本页的冻结部署身份保持不变。现有迁移工具仅支持原始代码→P1，P1→P2 需按新方案扩展已有入口后使用。
+**2026-11-12 P2 已部署：** 原生 CPU 全点网格与坐标快路径已通过真实四帧配对并用于 E5/E0/E3。voxel fusion/q0 复用未通过原 AMP 梯度容差，部署配置明确关闭。P1→P2 已扩展严格迁移及递归备份；三组分别在1030/2462/1058步保留完整学习状态接续。保持 B1A4、CPU8、loader2；[P2 实施及真实结果](PERFORMANCE_PHASE2.md#12-实施与真实验收记录2026-11-12) 与 [公开结果](performance/P2_REAL_RESULTS.json) 记录范围、性能和失败。
 
 [六份正式配置及可移植哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 保留部署配置的原始字节。清单的 `config_path` 相对仓库根目录，`config_sha256` 是文件原始字节 SHA256；每组还记录测量文件名、SHA256、trial ID 和测量代码版本。原始测量日志、训练日志、权重、数据及私有控制配置不放入 Git。配置中的数据路径是占位符；运行时由 supervisor 参数覆盖，无需改写已绑定哈希的配置。
 
@@ -80,11 +80,13 @@ checkpoint 在完整更新边界每 100 成功步或 900 秒保存，并覆盖�
 
 [性能方案](PERFORMANCE_OPTIMIZATION.md) 保留 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97` 基线、CPU 原型和设计依据；当前分支已实现 CPython FP64 FPS、core/lip 复用、有界四球查询、selective NPZ、一维体素去重、CPU 几何上下文、有序后台预取，以及既有 checkpoint 的受限迁移。模型参数形状、原损失、完整观测和 v3 预算保持；六份硬件 profile 原始字节未改。
 
-性能参数独立放在 [cd009-p1.json](../configs/performance/cd009-p1.json)。本机编译、`--performance-config`、supervisor 的 `performance_configs[host][experiment]`、迁移命令及备份要求见 [运行指南](MODEL_USAGE.md#性能实现构建与既有运行迁移)。普通 resume 同时绑定 sidecar SHA256 和 FPS 源码/编译器/flags/ABI/二进制身份，不能静默回退到另一后端。
+当前性能参数独立放在 [cd009-p2.json](../configs/performance/cd009-p2.json)，P1 sidecar 保留历史意义。本机编译、`--performance-config`、supervisor 的 `performance_configs[host][experiment]`、迁移命令及备份要求见 [运行指南](MODEL_USAGE.md#性能实现构建与既有运行迁移)。普通 resume 同时绑定 sidecar SHA256 和 FPS/空间网格源码、编译器、flags、ABI、二进制身份，不能静默回退到另一后端。
 
-迁移只接受上述 `98862f4` / `d634627b…` 源身份及已正常暂停的 current checkpoint；保留模型、Adam、AMP、RNG、已消费采样游标、成功步、best、验证和日志前缀。`migrations/performance-UUID/` 留存源状态硬链接、原 manifest、sidecar 和 receipt，备份一并验证和复制。迁移后前 50 次成功更新临时开启内部几何计时，之后回到 sidecar 默认关闭值；这 50 次属于原正式预算，不触发额外验证，也不改 sidecar 字节。
+迁移只接受原始 `98862f4` / `d634627b…` 或批准的 P1 `996421c` / `23bde51e…` 加原 P1 sidecar 身份，并要求已正常暂停的 current checkpoint；保留模型、Adam、AMP、RNG、已消费采样游标、成功步、best、验证和日志前缀。`migrations/performance-UUID/` 留存源状态硬链接、原 manifest、sidecar 和 receipt，备份递归验证和复制 P2→P1 两层档案；共享备份含对象符号链接，恢复必须解引用（例如 `cp -L`）。迁移后前 50 次成功更新临时开启内部几何计时，之后回到 sidecar 默认关闭值；这 50 次属于原正式预算，不触发额外验证，也不改 sidecar 字节。
 
-本轮本地全套测试 **296 passed / 1 skipped**，上述 GitHub CI 通过。真实四帧检查从 H20/E5 第 380 步 checkpoint 出发，保持原 AMP `atol=2e-4, rtol=2e-3`，没有 optimizer 更新：
+**以下为历史P1验收与窗口记录。** 当前P2为完整CPU套件316通过/1既有跳过，迁移release修复相关73通过，源码CI通过；当前P2实际结果见 [P2报告](PERFORMANCE_PHASE2.md)。
+
+历史P1本地全套测试 **296 passed / 1 skipped**，其原源码发布CI通过。真实四帧检查从 H20/E5 第 380 步 checkpoint 出发，保持原 AMP `atol=2e-4, rtol=2e-3`，没有 optimizer 更新：
 
 - 原独立进程新旧对照失败；旧代码自身重复运行也失败，稀疏骨干输出已有小幅差异，并通过预测轴影响硬边界区域选择。失败记录保留，没有放宽容差或改成“通过”。
 - 配对检查每帧仅计算一次相同的真实骨干输出，再执行旧/新下游路径；输入、完整查询索引/描述符与 RNG 精确核对，loss/输出/下游参数梯度/特征边界梯度按原容差比较，并把两份边界梯度分别通过同一真实骨干图回传。**四帧、零失败**；它验证本轮改动和梯度通路，不证明独立 CUDA 运行逐位确定。

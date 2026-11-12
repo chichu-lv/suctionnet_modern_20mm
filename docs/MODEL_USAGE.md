@@ -54,29 +54,32 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
-当前实现已通过四帧真实数据的共享骨干配对检查（含完整梯度回传），H20/E5 已完成第 380 步迁移并正常续训；独立进程数值差异保持失败记录，E5/E0 各 30 步与 E3 在同主机 GPU3 接续后的 20 步正常窗口均已记录。原设计与 CPU 原型见 [性能方案](PERFORMANCE_OPTIMIZATION.md)，不能把原型倍率当成训练吞吐。
+当前 P2 的全点 CPU 网格及坐标快路径已通过原容差四帧真实配对并部署到 E5/E0/E3；voxel heads 因真实 AMP 梯度未通过而关闭。三组在1030/2462/1058步保持学习状态迁移。历史 P1 和失败证据保留；[P2 实施报告](PERFORMANCE_PHASE2.md) 区分数值验收、普通训练耗时与资源观测。
 
 ### 本机扩展与独立性能配置
 
-在每个目标 Python 环境内构建小型 CPython 扩展；需要本机 C 编译器、Python headers 和 setuptools。无需 NumPy C headers、OpenMP 或 CUDA 编译器：
+在每个目标 Python 环境内构建小型 CPython 扩展；需要本机 C/C++ 编译器、Python headers 和 setuptools。无需 NumPy C headers、OpenMP 或 CUDA 编译器：
 
 ```bash
 python setup.py build_ext --inplace
 python -c 'import json; from models.geometry_ops import fps_backend_identity; print(json.dumps(fps_backend_identity("compiled"), indent=2))'
+python -c 'import json; from models.spatial_index import spatial_index_backend_identity; print(json.dumps(spatial_index_backend_identity(), indent=2))'
 ```
 
 实际 H20 部署使用 `/usr/bin/python3 setup.py build_ext --inplace`：训练 venv 没有 setuptools，系统 Python 已有；二者均为 Python 3.10.12，ABI 匹配。L20 构建采用相同方式，不因此自动启动迁移。使用这种方式前核对两解释器的版本和 `sysconfig.get_config_var("SOABI")`，构建后必须用**训练 venv 的 Python**执行上面的 `fps_backend_identity("compiled")` 导入检查。不要把 ABI 不匹配的系统扩展当作可用，也不需要为本次构建修改旧训练依赖。
 
-H20 最终部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e191aa231e582ede06d060971bf7`。临时 staging 与正式 checkout 的构建路径会影响带调试信息的二进制摘要，因此现场身份以正式构建的实际 hash 为准；C source、编译 flags、ABI 也同时记录，迁移后普通恢复必须匹配。
+历史 P1 H20 部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e191aa231e582ede06d060971bf7`。临时 staging 与正式 checkout 的构建路径会影响带调试信息的二进制摘要，因此现场身份以正式构建的实际 hash 为准；C source、编译 flags、ABI 也同时记录，迁移后普通恢复必须匹配。
 
 `setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码摘要；实际扩展的 binary/source SHA256、compiler、flags、ABI 和 Python cache tag 单独进入运行身份。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
 
-[configs/performance/cd009-p1.json](../configs/performance/cd009-p1.json) 是额外 JSON sidecar，保持原六份正式 profile 字节和哈希。`--performance-config PATH` 在预训练入口加载它，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。当前 v1 schema 严格接受：
+[configs/performance/cd009-p2.json](../configs/performance/cd009-p2.json) 是当前额外 JSON sidecar，保持原六份正式 profile 字节和哈希。`--performance-config PATH` 在预训练入口加载它，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。v2 保留下面的严格 v1 字段契约，并增加空间索引和两个布尔开关：
 
-- `schema_version:"suction20.performance.v1"`，`fps_backend:"compiled"` 或显式参考 `"numpy"`。
+- 当前 `schema_version:"suction20.performance.v2"`；旧 `suction20.performance.v1` 仍严格兼容。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
 - `query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前真实帧测量选择 `null / 1`，因此提供的 P1 文件采用该配置；这不等于已验证整步训练加速。
 - `loader` 含 `num_workers:2`、`prefetch_factor:2`、`persistent_workers:true`、`pin_memory:true`、`multiprocessing_context:"spawn"`。`num_workers:0` 仅供显式 CPU/reference 路径；不引入另一套训练进度。
 - `detailed_cpu_timing:false` 为常规值。未知键、错误类型和范围被拒绝。
+
+P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`backbone_coordinate_fastpath:true`、`no_instance_voxel_heads:false`。空间网格和FPS的源码/编译器/flags/ABI/二进制摘要分别绑定到当前身份；原始全点几何和排序不变。不要启用未通过真实梯度验收的voxel路径。
 
 主进程在 pinning 后建立 `CpuGeometry` 与独立 `SamplerTargetsCPU`，上传 GPU 消费字段；观测上下文不含标签、不进入 state_dict。worker 只准备 CPU 数据；独立 DataLoader generator 不消耗模型 RNG。已发出 ticket 与已完成 backward 的消费游标分开，checkpoint 只持久化消费游标；AMP 跳步保留实际帧消费，但不推进成功更新预算。
 
@@ -87,7 +90,7 @@ H20 最终部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e
   "performance_configs": {
     "H20": {
       "E5": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p1.json",
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p2.json",
         "config_sha256": "REPLACE_WITH_RAW_FILE_SHA256"
       }
     }
@@ -97,9 +100,9 @@ H20 最终部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e
 
 按实际迁移批次为 L20/E0–E4 登记相应项；缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；既有 run 先执行下述迁移。
 
-### 从原冻结代码迁移并正常恢复
+### 从原冻结代码或批准的P1迁移并正常恢复
 
-转换器只接受已核实的源 revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。这不是通用的改配置恢复工具；batch、loss、预算、数据、依赖和数学设置不能借此改变。
+转换器只接受已核实的源 revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。也接受批准的 P1 revision `996421c664a5a0b84c308aa4ca47c31eaff4035b`、源码摘要 `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` 与原 P1 sidecar `08d2247c…`，且该来源只能转入v2。P1来源已有的迁移链必须验证通过。这不是通用的改配置恢复工具；batch、loss、预算、数据、依赖和数学设置不能借此改变。
 
 1. 用 supervisor `pause EXPERIMENT --reason ...` 在完整更新边界暂停同一 checkout/venv 的全部任务。旧 worker/trainer 必须已正向确认退出，状态为 `paused`、exit75，完成原 final backup，且没有 pending validation；若已有 pending，先用旧版本完成原定验证。
 2. 冻结并验证目标代码与本机扩展，在拥有该 run 的主机执行转换。`--control-dir` 指向刚退出的旧 attempt，源 hash 取已核验 manifest 的 current。数据与主干覆盖参数必须与原 supervisor 一致。
@@ -107,7 +110,7 @@ H20 最终部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e
 ```bash
 python scripts/migrate_performance_checkpoint.py \
   --config configs/runtime_profiles/cd009-v3/H20-E5.json \
-  --performance-config configs/performance/cd009-p1.json \
+  --performance-config configs/performance/cd009-p2.json \
   --run-dir /path/to/runs/E5_seed42 \
   --control-dir /path/to/control/attempts/PAUSED_TOKEN \
   --expected-source-checkpoint-sha256 SOURCE_CURRENT_SHA256 \
@@ -116,15 +119,17 @@ python scripts/migrate_performance_checkpoint.py \
   --backbone-root /path/to/graspness_modern
 ```
 
-`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和新增 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
+`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
 
 归档路径为 `RUN/migrations/performance-UUID/`：`source.pt` 是源 blob 的硬链接，另外保存 `source-manifest.json`、`performance-config.json` 和 `receipt.json`。receipt 记录源/目标 identity、源成功步/attempt、实际允许差异和三个归档文件的大小/hash。新 current 的 `runtime_state` 与 manifest `analysis` 都引用 receipt 相对路径及 SHA256；后续保存继续透传。根目录 `runtime.json`/`resolved_config.json` 保留 run 最初版本，当前身份看 current、receipt 与新 attempt。
 
 3. 更新私有 supervisor 的 sidecar 映射后，仍执行普通 `resume E5`（其他实验同理）。supervisor 仅在检查到有效迁移 receipt、目标 sidecar hash 相同且原源 checkpoint 的 final backup 仍有效时允许原 assignment 切换；新 attempt 沿用原设备、profile 和学习状态。普通 resume 不提供忽略身份检查的开关。
 
-现有备份会验证并复制 receipt 引用的三份归档文件及 receipt，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。实际切换按 [性能方案第 11 节](PERFORMANCE_OPTIMIZATION.md#11-精简验收只检查三个正常路径) 的三项正常检查验收。
+现有备份会递归验证并复制 P2→P1 链中每份 receipt 引用的三份归档文件及 receipt，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。共享备份内的符号链接指向备份根内的对象；实际恢复须解引用（例如 `cp -L`），再在恢复目录执行严格迁移校验。实际切换按 [性能方案第 11 节](PERFORMANCE_OPTIMIZATION.md#11-精简验收只检查三个正常路径) 的三项正常检查验收。
 
 ### 真实诊断结果的正确使用
+
+以下380/833/441及相应窗口为历史P1记录。当前P2的四帧、1030/2462/1058迁移和30步窗口见 [P2报告](PERFORMANCE_PHASE2.md)；原AMP容差未放宽，voxel失败保留。
 
 `scripts/benchmark_training_pipeline.py` 的独立旧/新进程结果保持失败，旧代码自身重复运行也出现骨干数值变化。随后 `scripts/benchmark_paired_pipeline.py` 从同一第 380 步 checkpoint、相同四帧与增强种子出发，共享每帧一次真实骨干输出，再比较两条实际下游路径及其完整骨干 VJP；四帧零失败，容差保持 `atol=2e-4, rtol=2e-3`。完整离散几何、描述符和 RNG 精确核对；该配对结果不覆盖原失败，也不证明独立 CUDA 运行逐位相同。
 
