@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "contract_version": "suction20.pretrain.samples.v3",
+  "purpose": "Supplement to frozen six-profile manifest: H20 GPU1 E2 measured on deployed P2 source. Historical L20/E2 is retained as an alternative, not the active assignment.",
+  "deployment_code_revision": "e73d62ed23aed6f23b9b01a8bfc09ec56d8fc859",
+  "deployment_worktree_sha256": "0c6501ac1b8e374fc37bbba4df3abc30dd4fbf4f726fa23b9c7092c537b3aed8",
+  "performance_config_path": "configs/performance/cd009-p2.json",
+  "performance_config_sha256": "8a104de89df99ea327a759e5471bef357965ea20e7b57461081560ca87216928",
+  "profiles": [
+    {
+      "host": "H20",
+      "experiment": "E2",
+      "config_path": "configs/runtime_profiles/cd009-v3/H20-E2.json",
+      "config_sha256": "b11448b7d73ba8c820c5ad45bd9960fc5ffc81d9d31096b4a50979cde9e9699a",
+      "profile_id": "cd009-v3-H20-E2-b1a4-dense65536-no-recompute-p2",
+      "measurement_summary": "docs/performance/H20_E2_GPU1_RESULTS.json"
+    }
+  ]
+}
