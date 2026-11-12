@@ -1,0 +1,30 @@
+{
+  "scope": "one synthetic CPU float64 algebra/gradient comparison; no CUDA speed or AMP claim",
+  "torch": "2.5.1+cpu",
+  "cuda_available": false,
+  "raw_points": 2117,
+  "voxels": 113,
+  "frames": 2,
+  "max_abs_q0": 1.6653345369377348e-16,
+  "max_abs_seed_fused": 2.6645352591003757e-15,
+  "max_abs_axis_pregeometry_ab": 4.440892098500626e-16,
+  "abs_loss": 1.1102230246251565e-16,
+  "max_abs_voxel_feature_grad": 8.673617379884035e-19,
+  "max_abs_parameter_grad": 7.632783294297951e-17,
+  "state_dict_keys_unchanged": true,
+  "state_dict_shapes_unchanged": true,
+  "checked_components": [
+    "no-instance voxel fusion and q0",
+    "selected seed fused features",
+    "optional axis first-affine split with pointwise observed normals, before axis geometry"
+  ],
+  "objective": "synthetic weighted q0 squared error plus squared seed features and pregeometry axis ab; not production source_losses",
+  "not_checked": [
+    "sparse backbone",
+    "production source_losses and instance-frame-batch reduction",
+    "directed-axis geometric normalization",
+    "CUDA/AMP execution",
+    "runtime speed"
+  ],
+  "state_dict_comparison_scope": "the prototype Dense modules only"
+}

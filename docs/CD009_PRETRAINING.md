@@ -18,6 +18,8 @@ H20/E5、L20/E0 与 E3 已切换到性能版本；代码部署和 GitHub 发布�
 
 部署 commit 与该 GitHub commit 的 Git tree 已核对一致，但发布有独立 SHA，不承诺部署提交的 Git 祖先链。**本次后续文档发布不部署到训练 checkout，也不改变正在运行的身份。** 普通恢复仍要求相同代码与性能身份；旧 `98862f4` 仅通过显式迁移切换。current checkpoint、receipt 和新 attempt 保存实际 commit/源码摘要/sidecar/本机扩展身份，不能直接用后续文档 HEAD 替代。
 
+**2026-11-12 后续提速工作：** `1e28a2f` 发布了 P1 后的 batch/CPU 对照，继续选择 B1A4、CPU8、loader2。[P2 方案](PERFORMANCE_PHASE2.md) 进一步给出原生 CPU 全点网格、E0/E1/E3 voxel fusion/q0、公共坐标快路径与 P1→P2 迁移的实施规格，附 [CPU 原型证据](performance/P2_CPU_PROTOTYPES.json)。这些 P2 产品改动尚未实现或部署；本页的冻结部署身份保持不变。现有迁移工具仅支持原始代码→P1，P1→P2 需按新方案扩展已有入口后使用。
+
 [六份正式配置及可移植哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 保留部署配置的原始字节。清单的 `config_path` 相对仓库根目录，`config_sha256` 是文件原始字节 SHA256；每组还记录测量文件名、SHA256、trial ID 和测量代码版本。原始测量日志、训练日志、权重、数据及私有控制配置不放入 Git。配置中的数据路径是占位符；运行时由 supervisor 参数覆盖，无需改写已绑定哈希的配置。
 
 ## 硬件选择：按实际吞吐

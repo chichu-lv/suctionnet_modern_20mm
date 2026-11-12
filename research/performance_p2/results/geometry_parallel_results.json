@@ -1,0 +1,143 @@
+{
+  "scope": "synthetic CPU only; no CUDA, no training, no real-frame benchmark",
+  "source_head": "1e28a2faa9991478d706e4d188081aa1a482ff9b",
+  "points": 840000,
+  "candidates": 512,
+  "chunk_size": 64,
+  "blas_threads": 1,
+  "torch_threads": 1,
+  "cpu_visible": 9,
+  "spatial_index_seconds": 0.29469494799997165,
+  "runs": [
+    {
+      "rep": 0,
+      "candidate_workers": 1,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.493089359999999,
+      "pose_d2h_host_s": 6.252399998629699e-05,
+      "valid_candidates": 512,
+      "ball_calls": 2048,
+      "ball_api_calls": 2048,
+      "ball_returned_points": 6565455,
+      "fps_calls": 1458,
+      "fps_input_points": 2954462,
+      "ball_query_s": 0.7886937119994286,
+      "region_filter_s": 0.35194434300092325,
+      "fps_s": 0.30096848899830775,
+      "descriptor_pack_s": 0.04610252799858472
+    },
+    {
+      "rep": 0,
+      "candidate_workers": 2,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.3160386270000117,
+      "pose_d2h_host_s": 0.006048129999896901,
+      "valid_candidates": 512.0,
+      "ball_calls": 2048.0,
+      "ball_api_calls": 2048.0,
+      "ball_returned_points": 6565455.0,
+      "fps_calls": 1458.0,
+      "fps_input_points": 2954462.0,
+      "ball_query_s": 1.2034896500002787,
+      "region_filter_s": 0.7618611339987638,
+      "fps_s": 0.5408202199997731,
+      "descriptor_pack_s": 0.07783718400099815
+    },
+    {
+      "rep": 0,
+      "candidate_workers": 4,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.27735777099997,
+      "pose_d2h_host_s": 0.019888867000020127,
+      "valid_candidates": 512.0,
+      "ball_calls": 2048.0,
+      "ball_api_calls": 2048.0,
+      "ball_returned_points": 6565455.0,
+      "fps_calls": 1458.0,
+      "fps_input_points": 2954462.0,
+      "ball_query_s": 1.6423122749992558,
+      "region_filter_s": 2.32548307400009,
+      "fps_s": 0.8764828509996505,
+      "descriptor_pack_s": 0.1556221430002438
+    },
+    {
+      "rep": 1,
+      "candidate_workers": 1,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.549256454999977,
+      "pose_d2h_host_s": 0.00011326999998573228,
+      "valid_candidates": 512,
+      "ball_calls": 2048,
+      "ball_api_calls": 2048,
+      "ball_returned_points": 6565455,
+      "fps_calls": 1458,
+      "fps_input_points": 2954462,
+      "ball_query_s": 0.7966764269993973,
+      "region_filter_s": 0.3870597720001001,
+      "fps_s": 0.3081462830002124,
+      "descriptor_pack_s": 0.050298749001285614
+    },
+    {
+      "rep": 1,
+      "candidate_workers": 2,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.237448287999996,
+      "pose_d2h_host_s": 0.0017062340000393306,
+      "valid_candidates": 512.0,
+      "ball_calls": 2048.0,
+      "ball_api_calls": 2048.0,
+      "ball_returned_points": 6565455.0,
+      "fps_calls": 1458.0,
+      "fps_input_points": 2954462.0,
+      "ball_query_s": 1.1216672259998859,
+      "region_filter_s": 0.7350953819993151,
+      "fps_s": 0.517162813999164,
+      "descriptor_pack_s": 0.07055748899864511
+    },
+    {
+      "rep": 1,
+      "candidate_workers": 4,
+      "exact_result": true,
+      "rng_unchanged": true,
+      "wall_seconds": 1.274064008000039,
+      "pose_d2h_host_s": 0.012238437000007707,
+      "valid_candidates": 512.0,
+      "ball_calls": 2048.0,
+      "ball_api_calls": 2048.0,
+      "ball_returned_points": 6565455.0,
+      "fps_calls": 1458.0,
+      "fps_input_points": 2954462.0,
+      "ball_query_s": 1.6385906899998304,
+      "region_filter_s": 2.3586682289999885,
+      "fps_s": 0.8387095870018584,
+      "descriptor_pack_s": 0.15130848300202615
+    }
+  ],
+  "zone_counts": {
+    "core": {
+      "mean": 3238.943359375,
+      "max": 4045
+    },
+    "lip": {
+      "mean": 1452.970703125,
+      "max": 2015
+    },
+    "cup": {
+      "mean": 263.302734375,
+      "max": 1089
+    },
+    "mount": {
+      "mean": 496.150390625,
+      "max": 7562
+    },
+    "approach": {
+      "mean": 319.25,
+      "max": 9575
+    }
+  }
+}

@@ -19,10 +19,13 @@
 
 - [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
 - [x] 基于 CD-009 当前代码的 [详细性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md)：精确 CPU 几何、读取与体素、后台预取、既有 checkpoint 续接及实现清单；已实现精确 C FPS、CPU 几何复用、按需读取与体素整理、有序预取和显式 checkpoint 迁移，本轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 已在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
+- [x] P1 后 [11 组 batch/CPU 对照](docs/performance/P1_BATCH_CPU_RESULTS.json)：保留 B1A4、8 个逻辑核、2 个数据 worker；正常训练暴露的数据等待仅约 1–2 ms/update。公开记录对应 2026-11-12 的历史窗口，不代表实时进度。
+- [x] [P2 完整提速方案与取舍图](docs/PERFORMANCE_PHASE2.md)：原生全点网格索引、E0/E1/E3 的 voxel fusion/q0、骨干坐标快路径及 P1→P2 续接规格；[本地 CPU 原型](docs/performance/P2_CPU_PROTOTYPES.json)与[研究复现代码](research/performance_p2/README.md)已记录。网格建索引加完整 query 在单一合成场景中为 1.781→0.967 秒，**尚未完成 P2 产品接入或 H20/L20 测量**。
 
 ## TODO（待完成）
 
 - [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
+- [ ] 按 [P2 方案](docs/PERFORMANCE_PHASE2.md) 实现三项性能改动和现有续训工具适配，完成同四帧配对、正常恢复及原预算内短窗口，记录真实训练提速；不重复 batch/CPU/worker 大矩阵。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -39,7 +42,7 @@
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
-| 缩短现有预训练耗时 | [详细优化方案、接口与精简验收](docs/PERFORMANCE_OPTIMIZATION.md) · [CPU 原型证据](docs/performance/CPU_PROTOTYPE_RESULTS.json) |
+| 缩短现有预训练耗时 | [P2 当前方案、图示与实现规格](docs/PERFORMANCE_PHASE2.md) · [P2 CPU 原型证据](docs/performance/P2_CPU_PROTOTYPES.json) · [P1 已完成记录](docs/PERFORMANCE_OPTIMIZATION.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 
