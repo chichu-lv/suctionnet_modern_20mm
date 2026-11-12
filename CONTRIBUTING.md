@@ -7,9 +7,14 @@
 提交前运行：
 
 ```bash
-pip install -e .
-pip install pytest
+python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[model]'
+python -m pip install pytest
 python -m pytest -q
 ```
+
+上述是CPU测试环境，覆盖数据与模型测试；真实release测试需显式提供对应数据路径。生产CUDA/spconv环境按 [模型运行指南](docs/MODEL_USAGE.md) 安装，无需为了CPU测试另装GPU主干。仅修改说明文档时检查相关命令、链接和状态与现有实现一致即可。
+
+同步维护 [README的Done/TODO](README.md) 和 [项目路线](docs/ROADMAP.md)，分别记录已实现功能、已执行验证与尚待完成的实验；新增验证结果写入 [MODEL_VALIDATION](docs/MODEL_VALIDATION.md)，注明数据、设备和训练步数范围。
 
 Issue 用于记录标签数据、模型、评测器、实机实验的待办事项。不要将官方数据集、训练生成文件或不必要的校验散件放入版本库。

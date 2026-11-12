@@ -11,9 +11,11 @@ dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "Pillow>=10,<13", "trimesh>=
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "matplotlib>=3.7", "open3d"]
+model = ["torch>=2.5,<2.6", "PyYAML>=6,<7"]
+gpu = ["spconv-cu120==2.3.6"]
 
-[tool.setuptools]
-packages = ["suction20"]
+[tool.setuptools.packages.find]
+include = ["suction20*", "models*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

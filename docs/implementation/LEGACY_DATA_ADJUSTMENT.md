@@ -1,6 +1,6 @@
 # 已完成旧数据的训练适配方案
 
-> 状态：拟实施规格。用户已说明数据按修改前的方法完整制作。本方案以 `codex-profile@dc4ad6b00535c89ece1feef2751ba86006e5f97e` 的数据实现为默认来源，并与 `suctionnet_modern_20mm@b2680fb47fe6f6a99fcb310e3428c77de1f55406` 逐项对照。这里核实的是源码定义，尚未读取用户数据盘中的实际输出。
+> 状态：默认只读适配已实现，可选 sidecar 转换与读取支持尚未交付。用户已按修改前的方法完整制作数据；本文件的源码差异对照以 `codex-profile@dc4ad6b00535c89ece1feef2751ba86006e5f97e` 和 `suctionnet_modern_20mm@b2680fb47fe6f6a99fcb310e3428c77de1f55406` 为基准。当前加载器及真实数据有界训练已完成检查，范围见 [验证记录](../MODEL_VALIDATION.md)；实际命令见 [运行指南](../MODEL_USAGE.md)。
 
 **结论：复用已经完成的数据。Seal、Wrench、Collision、GT-A、GT-B 均原样保留；需要补的是训练接口中的原始候选轴和观测法向。** 默认由 DataLoader 在读取时派生，之后如果确有重复计算开销，再做独立的派生缓存。无需把整套数据改写成新生成器格式才能预训练。
 
@@ -134,7 +134,7 @@ T_cam_obj = inverse(T_world_cam) @ T_world_obj
 
 ### 4.2 可直接实现的派生函数
 
-以下代码给出算法接口，所属 `LegacyViewAdapter` 尚待实现；所引用的 `scene_frame0`、`load_seal`、`read_frame` 已存在于当前源码。
+以下代码是算法伪代码；实际只读入口为 `PublicSuction20Dataset`，所引用的 `scene_frame0`、`load_seal`、`read_frame` 已存在于当前源码。
 
 ```python
 def recover_original_axis(old, records, seal_cache, T_world_cam):
@@ -260,14 +260,14 @@ class LegacyViewAdapter:
         }
 ```
 
-示例中的 `read_old_view_npz`、`get_scene_geometry`、`get_object_arrays` 是待实现 helper；示例返回的是未增强的统一 Sample，后续增强必须更新观测法向及掩码。物体/场景数组按需缓存到 DataLoader worker，避免每帧重复打开同一批文件。预测分割实验只替换 `inputs.instance_id_input`，不覆盖 `targets.instance_id_gt`。读取输出进入 [统一 Sample 接口](DATA_ADAPTER.md#8-单帧-sample-与-batch-合约) 后，模型无需知道该样本来自旧文件还是新文件。
+示例中的 `read_old_view_npz`、`get_scene_geometry`、`get_object_arrays` 是说明用 helper 名称，实际入口见 `suction20/datasets.py`；示例返回的是未增强的统一 Sample，后续增强必须更新观测法向及掩码。物体/场景数组按需缓存到 DataLoader worker，避免每帧重复打开同一批文件。预测分割实验只替换 `inputs.instance_id_input`，不覆盖 `targets.instance_id_gt`。读取输出进入 [统一 Sample 接口](DATA_ADAPTER.md#8-单帧-sample-与-batch-合约) 后，模型无需知道该样本来自旧文件还是新文件。
 
 与模型统一的调用为 `model(inputs, sampler_mode="train", targets=targets)`；其中 `encode_scene` 始终只读 `inputs`，只有内部训练采样器可以读取 `targets`。推理使用 `model(inputs, sampler_mode="inference")`。各项损失按“实例内有效点均值 → 帧内有监督实例均值 → batch 内有监督帧均值”归约，不能将全 batch 的实例直接混成一层平均。
 
 训练配置中的来源约定为：
 
 ```yaml
-# 拟实施的训练配置；不是现有full_cli的参数文件
+# 已实现训练入口的配置片段；不是full_cli的数据生产参数文件
 data:
   source_format: legacy_dc4ad6b
   compatibility: auto
@@ -282,13 +282,13 @@ model:
 
 半径、碰撞包络与 Seal 归一化不在模型配置里重新指定一套值。质量头直接读取旧 `gt_B`，不把恢复法向理解成需要给每个点重新生成另一套质量目标。
 
-`compatibility:auto` 遇到明确的 `schema_version=r20-v2.1` 时读取新格式语义；对用户这批没有新 schema 的已有文件，`source_format:legacy_dc4ad6b` 指定其默认来源。它不要求旧文件新增 schema，也不把 sidecar 的 `adapter_schema` 误认为原文件已升级。直接派生和 sidecar 读取的输出字段相同。
+`compatibility:auto` 遇到明确的 `schema_version=r20-v2.1` 时读取新格式语义；对用户这批没有新 schema 的已有文件，`source_format:legacy_dc4ad6b` 指定其默认来源。它不要求旧文件新增 schema，也不把 sidecar 的 `adapter_schema` 误认为原文件已升级。未来 sidecar 读取应与当前直接派生提供相同输出字段。
 
 ## 7. 可选方案：一次性派生缓存
 
 ### 7.1 什么时候使用
 
-先用训练时适配跑通模型。若 CPU 法向计算/原深度读取成为反复训练的主要开销，可以将第 4-5 节的派生结果保存一次。缓存只减少重复读取与计算，不改变监督含义，也不是开始预训练的前置工作。
+当前默认使用已实现的训练时适配。若 CPU 法向计算/原深度读取成为反复训练的主要开销，可以按本节方案开发第 4-5 节派生结果的缓存。缓存只减少重复读取与计算，不改变监督含义，也不是开始预训练的前置工作。
 
 建议保存独立 sidecar，而不是覆盖旧 NPZ 或复制所有 S/W/C 数组：
 
@@ -337,17 +337,17 @@ python scripts/build_adapter_cache.py
   --frames all
 ```
 
-约定 `--scenes`/`--frames` 复用现有 `range_spec` 的区间语义，`0:100` 为 0-99。脚本只构建本节 sidecar；不调用 `seal_run`、`compute_scene`、`generate_view` 或 `fit_normalization`，不对原数据传入 `--overwrite`。完成该脚本后，训练配置仅需将 `adapter_cache` 指向输出目录。
+约定 `--scenes`/`--frames` 复用现有 `range_spec` 的区间语义，`0:100` 为 0-99。脚本只构建本节 sidecar；不调用 `seal_run`、`compute_scene`、`generate_view` 或 `fit_normalization`，不对原数据传入 `--overwrite`。后续同时实现转换脚本和 sidecar 读取支持后，训练配置才可将 `adapter_cache` 指向输出目录；当前保持 `null`。
 
-## 8. 需要做的最小核对与实施顺序
+## 8. 接口检查与后续实验
 
-数据接口实现时核对三件事即可：
+前两项已有实现与检查覆盖，记录见 [验证记录](../MODEL_VALIDATION.md)；第三项仅在后续选择实现 sidecar 时适用：
 
 1. 取一个普通帧，检查恢复轴使用的是 `candidate_row` 与正确实例姿态；轴为单位向量、方向约定一致。检查观测法向按 `source_indices` 与原点对应。
 2. 确认进入训练的 `gt_A`、`gt_B`、S/W/C 与旧 NPZ 数值相同；保留有效零分，忽略未知点。旧 `normal_valid=False` 不妨碍几何有效的原始候选轴进入新 `axis_valid`。
 3. 若实现 sidecar，比较同帧直接派生与缓存读取结果，再使用同一训练入口跑一个 batch。模型输入不能包含旧 `gt_normal`、新恢复的 `normal_label` 或质量 GT；标签只进入损失和明确的监督采样。
 
-实际推进顺序是：实现旧数据 adapter → 跑通公开数据预训练基线 → 需要时加派生缓存 → 完成模型实验 → 用少量自有场景微调。没有因为新版新增字段而重跑整套物理标签的步骤。
+旧数据 adapter 和有界训练链路已完成；后续为正式公开预训练与模型对照、选定公开权重、少量自有场景微调。派生缓存仅在确有加载开销时按需考虑，没有因为新版新增字段而重跑整套物理标签的步骤。
 
 ## 9. 可追溯源码
 

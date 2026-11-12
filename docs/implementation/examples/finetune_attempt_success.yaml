@@ -1,4 +1,4 @@
-# 实现规格示例；scripts/finetune.py 尚待实现。
+# 已实现配置；运行前填写实际路径。完整训练/目标微调需单独确定执行预算。
 schema_version: suction20.finetune.v1
 stage: target_finetune
 mode: attempt_success
