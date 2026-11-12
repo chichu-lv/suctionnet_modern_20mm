@@ -61,3 +61,49 @@ def test_empty_frame_keeps_batch_offsets_and_gravity():
     x = collate_public([a, b])['inputs']
     assert x['point_offsets'].tolist() == [0, 3, 3]
     assert x['g_cam'].shape == (2, 3) and x['voxel_origins'].shape == (2, 3)
+
+
+@pytest.mark.parametrize('batch_size', [1, 2])
+def test_integer_keys_match_axis_unique_packed_values(monkeypatch, batch_size):
+    from suction20 import batching
+    rng = np.random.default_rng(18)
+    samples = []
+    for _ in range(batch_size):
+        item = sample()
+        for section in ('inputs', 'targets'):
+            for key, value in item[section].items():
+                if key != 'g_cam':
+                    item[section][key] = np.resize(value, (300,) + value.shape[1:])
+        item['inputs']['xyz_cam_m'] = (rng.integers(-8, 9, size=(300, 3)) * .001).astype(np.float32)
+        samples.append(item)
+    actual = collate_public(samples)
+
+    def axis_unique(grid):
+        origin = grid.min(axis=0)
+        unique, inverse = np.unique(grid - origin, axis=0, return_inverse=True)
+        return origin, unique, inverse
+
+    monkeypatch.setattr(batching, 'unique_voxels_xyz', axis_unique)
+    expected = collate_public(samples)
+    for section in ('inputs', 'targets'):
+        for key, value in actual[section].items():
+            assert value.dtype == expected[section][key].dtype
+            assert torch.equal(value, expected[section][key]), key
+    if batch_size == 1:
+        assert np.shares_memory(actual['inputs']['xyz_cam_m'].numpy(), samples[0]['inputs']['xyz_cam_m'])
+        assert np.shares_memory(actual['targets']['gt_B'].numpy(), samples[0]['targets']['gt_B'])
+
+
+def test_cpu_contexts_share_final_storage_and_separate_supervision():
+    from suction20.cpu_geometry import CpuGeometry, SamplerTargetsCPU
+    batch = collate_public([sample(), sample()])
+    geometry = CpuGeometry.from_inputs(batch['inputs'])
+    labels = SamplerTargetsCPU.from_targets(batch['targets'])
+    for key in ('xyz_cam_m', 'normal_obs', 'normal_obs_valid', 'instance_id_input', 'batch_index', 'point_offsets'):
+        assert np.shares_memory(getattr(geometry, key), batch['inputs'][key].numpy())
+    assert not hasattr(geometry, 'quality_valid') and not hasattr(geometry, 'gt_A')
+    assert np.shares_memory(labels.quality_valid, batch['targets']['quality_valid'].numpy())
+    assert labels.gt_A is None
+    assert geometry.xyz64 is geometry.xyz64
+    np.testing.assert_array_equal(geometry.xyz64, batch['inputs']['xyz_cam_m'].numpy().astype(np.float64))
+    assert [rows.tolist() for rows in geometry.frame_rows] == [[0, 1, 2], [3, 4, 5]]

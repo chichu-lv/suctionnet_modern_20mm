@@ -180,12 +180,20 @@ def optimizer_update(optimizer, scaler, parameters, max_norm=10.) -> tuple[bool,
     return updated, float(norm)
 
 
-def move_to_device(value, device):
+def move_to_device(value, device, *, non_blocking=False):
     if isinstance(value, torch.Tensor):
-        return value.to(device)
+        return value.to(device, non_blocking=non_blocking)
     if isinstance(value, dict):
-        return {k: move_to_device(v, device) for k, v in value.items()}
+        return {k: move_to_device(v, device, non_blocking=non_blocking) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(move_to_device(v, device, non_blocking=non_blocking) for v in value)
     return value
+
+
+def select_training_gpu_inputs(inputs):
+    keys = {"voxel_features", "voxel_coords", "inverse_map", "xyz_cam_m", "normal_obs",
+            "normal_obs_valid", "instance_id_input", "batch_index", "g_cam"}
+    return {key: value for key, value in inputs.items() if key in keys}
 
 
 def code_revision() -> str:
@@ -219,9 +227,15 @@ def save_checkpoint(path, model, optimizer, scaler, schedule, *, global_step, co
              "split_definition": config["data"].get("split_definition", {
                  "train": [s for s in range(100) if s % 10 != 9],
                  "val": list(range(9, 100, 10))}),
-             "best_metric": best_metric, "training_config": config, "code_revision": code_revision(),
-             "code_worktree_sha256": worktree_digest()}
+             "best_metric": best_metric, "training_config": config,
+             "code_revision": extra["code_revision"] if "code_revision" in extra else code_revision(),
+             "code_worktree_sha256": extra["code_worktree_sha256"] if "code_worktree_sha256" in extra else worktree_digest()}
     state.update(extra)
+    write_checkpoint_state(path, state)
+
+
+def write_checkpoint_state(path, state):
+    """Publish an already assembled state without touching its tensor/RNG values."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     from .pretrain_runtime import fsync_directory

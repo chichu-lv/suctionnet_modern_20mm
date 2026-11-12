@@ -1,0 +1,14 @@
+{
+  "schema_version": "suction20.performance.v1",
+  "fps_backend": "compiled",
+  "query_chunk_size": null,
+  "query_workers": 1,
+  "loader": {
+    "num_workers": 2,
+    "prefetch_factor": 2,
+    "persistent_workers": true,
+    "pin_memory": true,
+    "multiprocessing_context": "spawn"
+  },
+  "detailed_cpu_timing": false
+}

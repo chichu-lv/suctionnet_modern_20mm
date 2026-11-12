@@ -1,10 +1,10 @@
 # CD-009 预训练性能优化方案
 
-**状态：设计完成，代码优化待实施。** 本文基于 `cd009/full-pretraining` 的 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97`，整理于 2026-11-12。验证仅安排同批结果对照、一次正常续训和正常日志短窗计时，不做额外故障演练。CPU 原型结果只用于确定开发优先级；本次提交没有部署优化代码，也没有修改正在运行的训练。
+**状态：代码已实现，真实运行验收待完成。** 设计基于 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97`，整理于 2026-11-12；本版补充实际接口与运行说明。本轮本地全套测试 **292 passed / 1 skipped**，代码复核已进行，但同批真实 CUDA 对照、一次正常迁移续训及正常日志短窗提速尚未验收。CPU 原型只用于确定开发优先级，不代表实际训练加速。
 
 **目标：在现有数据、模型、有效样本预算和实验定义不变的条件下，缩短 E0–E5 单卡独立预训练的墙钟时间。** 第一轮采用精确 CPU 几何优化、较轻的数据整理和有序后台预取。先完成这一轮并观察剩余瓶颈，再决定是否开发 GPU 几何算子。
 
-本文中的新文件、接口、配置键和命令均是**拟实现规格**，除明确注明“现有”外，不能直接当成当前分支已经支持的功能。正式运行方法仍以 [CD-009 预训练说明](CD009_PRETRAINING.md) 和 [运行指南](MODEL_USAGE.md) 为准。
+本文保留原设计推导和示意伪代码；实际已实现接口以第 10 节和 [运行指南](MODEL_USAGE.md#性能实现构建与既有运行迁移) 为准。没有真实证据前，不把代码实现、CPU 原型与生产验收混为一项。正式训练状态见 [CD-009 预训练说明](CD009_PRETRAINING.md)。
 
 ## 阅读导航
 
@@ -49,7 +49,7 @@ P1-A 与 P1-B 可以并行开发；有序预取依赖 P1-B 的批数据契约，
 | 身份 | 当前记录 | 用途 |
 | --- | --- | --- |
 | 本文审阅的 GitHub 快照 | `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97` | 定位本方案的源代码基线 |
-| 正在运行的部署代码 | `98862f4d6a133c99afa082a0755dbb888b41b38d` | 当前正式 checkpoint 的代码身份 |
+| 优化前部署代码 / 唯一允许的迁移源 | `98862f4d6a133c99afa082a0755dbb888b41b38d` | 迁移入口严格核对的源代码身份 |
 | 运行源码 SHA256 | `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8` | 部署源码内容记录 |
 
 GitHub 发布是源码快照，不承诺包含部署提交的原 Git 祖先链。即使只改文档，仓库 HEAD 和 `worktree_digest()` 也会变化；**不要直接在正在训练的 checkout 上拉取本方案或未来优化代码后，以为旧 checkpoint 可以按原身份恢复。** 文档可直接阅读，优化部署按第 9 节执行。
@@ -107,7 +107,7 @@ E0 约 11.1 秒/更新，其中数据准备约 6.9 秒，占约 62%。因此只�
 
 “编译 FPS + 4 workers 批量查询 + core/lip 复用”的两次 query 用时为 1.147、1.578 秒，中位数 1.363 秒，与只编译 FPS 的 1.377 秒接近且波动较大。**因此先把编译 FPS 作为确定的开发重点；批量查询以真实帧组合后的收益决定是否启用，不能宣称额外稳定倍数。**
 
-原型以 ctypes 调用 C，批查询变体一次准备全帧；下文建议的 CPython 绑定与 64 候选分块尚未实现或计时。
+原型以 ctypes 调用 C，批查询变体一次准备全帧；当时尚无 CPython 绑定与 64 候选分块。当前二者已实现并通过 CPU 正常路径对照；原型数字仍不代表该实现的真实帧计时。
 
 体素测试为 840,000 点、147,847 体素，5 次重复；包含 key 编码和解码。8 通道聚合本身约 0.024 秒，没有证据支持先改它。上述各项数据来自不同局部计算，不能相乘得到端到端加速。
 
@@ -158,9 +158,9 @@ worker 在当前批前向、分组和反向期间准备后续批。图中的 CPU
 
 ### 4.2 对现有日志补字段
 
-保持 `last_grouping_timings`、`frame_stats`、update/event JSONL 的既有结构；以下是向字典追加的拟实现字段。所有 CPU 用 `perf_counter()` 累计，记录单位为秒；microbatch 和 update 层显式累加，不混用。
+保持 `last_grouping_timings`、`frame_stats`、update/event JSONL 的既有结构；以下字段已接入模型、生产者和训练日志。所有 CPU 用 `perf_counter()` 累计，记录单位为秒；microbatch 和 update 层显式累加，不混用。
 
-| 字段组 | 建议字段 | 计时位置与用途 |
+| 字段组 | 实现字段 | 计时位置与用途 |
 | --- | --- | --- |
 | 数据生产 | `read_npz_s`, `read_depth_meta_s`, `axis_recovery_s`, `augment_geometry_s` | worker 内 `get_sample()`；区分解压、标定/深度和重算几何 |
 | 体素 | `voxel_unique_s`, `voxel_reduce_s`, `collate_total_s` | `collate_public()`；单独验证一维 key 收益 |
@@ -172,7 +172,7 @@ worker 在当前批前向、分组和反向期间准备后续批。图中的 CPU
 
 注意三个口径：
 
-1. worker 的 `prepare_total_s` 是一批准备所用的生产者时间；并发时不能将其再加到主线程 `elapsed_seconds`。`loader_wait_s` 才是训练暴露出来的等待。
+1. worker 的 `prepare_total_s` 是各帧准备时间之和，`producer_total_s` 再包含该 microbatch 的 collate；并发时不能将其再加到主线程 `elapsed_seconds`。`loader_wait_s` 才是训练暴露出来的等待。
 2. GPU enqueue 的 host 用时不是 GPU kernel 延迟。原有 `seed_valid.cpu()`、loss 标量读取等会发生同步；不要为了让分段数相加漂亮，在每个阶段插入 `torch.cuda.synchronize()`。
 3. 正式每更新 `elapsed_seconds` 不含日志、checkpoint、完整验证。报告既给训练循环吞吐，也给含这些事件的墙钟吞吐；原 `checkpoint_published`、`validation_completed` 事件已有耗时，可直接使用。
 
@@ -193,7 +193,7 @@ worker 在当前批前向、分组和反向期间准备后续批。图中的 CPU
 | `models/contact_grouping.py`；`models/candidate_sampler.py` | 从 GPU 输入重新取出整帧 CPU 几何 | 复用 CpuGeometry，保留模型输出所必需的传输 |
 | `models/contact_grouping.py` | 已有分组计时 | 保留原有字段；性能窗口内增加树查询/FPS 分项 |
 
-建议新增一个本地扩展源文件 models/csrc/fps_cpu.c，以及 models/geometry_ops.py 作为后端选择、参考实现和扩展包装的集中入口。candidate_sampler.py 原公共函数保留兼容入口，避免让分组与候选采样使用不同 FPS 定义。新增文件属于仓库代码；临时基准中的动态 ctypes 加载方式不直接作为生产接口。
+已新增本地扩展源文件 `models/csrc/fps_cpu.c`，以及 `models/geometry_ops.py` 作为后端选择、参考实现和扩展包装的集中入口。candidate_sampler.py 原公共函数保留兼容入口，避免让分组与候选采样使用不同 FPS 定义。新增文件属于仓库代码；临时基准中的动态 ctypes 加载方式不直接作为生产接口。
 
 ### 5.2 生产方案：单线程 CPython C 扩展
 
@@ -322,7 +322,7 @@ setup(ext_modules=[
 
 optional=True 允许不训练模型的纯数据环境继续安装项目。实际性能训练通过侧车配置要求 compiled 后端，确保没有误把未构建扩展的 NumPy 速度当作新实现速度。
 
-拟新增 --performance-config 读取并合并到 runtime.performance，正式训练 profile 的原文件字节保持不变。完整配置见第 10.1 节。后端选择规则如下：
+已提供 `--performance-config` 读取并合并到 `runtime.performance`，正式训练 profile 的原文件字节保持不变。完整配置见第 10.1 节。后端选择规则如下：
 
 | 设置 | 行为 |
 |---|---|
@@ -474,7 +474,7 @@ gt_normal
 
 `config_version`、`seal_generation_hash` 两个旧标量目前虽被整包读取，但并未进入当前 `get_sample()` 的返回 meta；该版本的来源记录来自冻结配置 SHA、label path、sample UID 和来源格式。本阶段可以不解压这两个未使用标量，不另改来源记录合同。新格式的 `gt_normal_pca/normal_pca_valid` 也没有当前训练消费者，可以跳过。
 
-#### 6.1.3 拟新增 helper
+#### 6.1.3 按需读取 helper
 
 建议在 `suction20/datasets.py` 内增加 `read_view_payload()`，由现有 `get_sample()` 调用。来源识别、完整输出组装和增强仍在原路径进行。
 
@@ -518,7 +518,7 @@ def read_view_payload(path, source_format, compatibility, corrupt_depth):
 
 当前 `batching.py:33–45` 的量化为 `floor(xyz / voxel_size)`，按每帧最小网格坐标平移，再对三列整数调用 `np.unique(axis=0)`。正常场景可使用 mixed-radix int64 key，令 x 为最高位、z 为最低位。按 key 升序即是原来的 x/y/z 字典序，不需要重排逐点数据。
 
-拟新增 `unique_voxels_xyz(grid)`，返回 `origin, unique_xyz, inverse`。空输入沿用已有空帧行为；正常输入核心如下：
+已实现 `unique_voxels_xyz(grid)`，返回 `origin, unique_xyz, inverse`。空输入沿用已有空帧行为；正常输入核心如下：
 
 ```python
 origin = grid.min(axis=0)
@@ -589,7 +589,7 @@ unique_xyz = np.column_stack((x, y, z))
 
 CPU 上下文在增强、点选择、packed 组批完成之后建立；不能引用原 NPZ 的未增强坐标，也不能使用提前缓存的旧法向。
 
-### 7.2 拟新增 `CpuGeometry` 与 `SamplerTargetsCPU`
+### 7.2 已实现 `CpuGeometry` 与 `SamplerTargetsCPU`
 
 `CpuGeometry` 只放观测与分组身份；可由 CPU Tensor 的 NumPy view 构造，不逐字段 `.clone()`：
 
@@ -606,7 +606,7 @@ CPU 上下文在增强、点选择、packed 组批完成之后建立；不能引
 
 训练 sampler 另外接收 `SamplerTargetsCPU`：公开源域模式需要 `quality_valid[P]` 和 `gt_A[P]`；目标 dense 模式只需 `quality_valid`。这些引用来自 CPU targets，不能塞进 `CpuGeometry`，也不能进入 `encode_scene()`。`gt_B`、原候选轴和物理辅助标签不是构建场景空间索引的输入。
 
-可采用以下拟新增接口；原参数和返回 tensor 合同保持：
+以下接口已实现，类型定义位于 `suction20/cpu_geometry.py`；原参数和返回 tensor 合同保持：
 
 ```python
 cpu_geometry = CpuGeometry.from_inputs(packed['inputs'])
@@ -891,7 +891,7 @@ AMP 跳步后仍提交已消费的四帧，并保存需要保存的 scaler/RNG/B
 
 保留 `configs/runtime_profiles/cd009-v3/*.json` 原字节及其 `raw_config_sha256`。新 CLI 不改写硬件 profile，不把 `runtime_profile.profile_id` 改成新字符串；`training.budget_contract` 和全部样本预算不动。
 
-建议新增一个公共 helper，在 trainer 和转换器中使用同一套逻辑构造身份：
+已在 `suction20/performance.py` 提供 `build_runtime_identity`，trainer 和转换器共用身份构造逻辑。以下保留设计示意，实际合并由 `attach_performance` 完成：
 
 ```python
 config = resolve_config(load_config(base_profile_path))
@@ -929,7 +929,7 @@ identity["performance"] = {
 
 ### 9.3 转换入口与正常操作流程
 
-建议新增 `scripts/migrate_performance_checkpoint.py`，在旧进程已经暂停并释放 run lock 后运行。它使用目标训练环境，`torch.load(..., map_location="cpu")` 读取状态，不执行训练，也不重新实例化 optimizer 来“重建”其状态。
+已实现 `scripts/migrate_performance_checkpoint.py`，在旧进程已经暂停并释放 run lock 后运行。它使用目标训练环境，`torch.load(..., map_location="cpu")` 读取状态，不执行训练，也不重新实例化 optimizer 来“重建”其状态。
 
 正常流程如下：
 
@@ -940,11 +940,12 @@ identity["performance"] = {
 5. 保存源 checkpoint 的硬链接、源 manifest 原始字节和转换 receipt，再使用现有 `CheckpointStore.publish` 发布新的 current generation。
 6. 现有 supervisor 使用已更新的固定代码路径与相同硬件 profile，透传性能文件，以普通 `--resume RUN/last.pt` 继续。optimizer step、采样游标及所有训练账本从原值接续。
 
-以下是**待实现命令接口**，不是当前可运行命令；实际生产启动仍走既有 supervisor：
+以下是已实现命令；先核对退出、备份、目标构建和源 checkpoint 摘要，正式训练恢复仍走既有 supervisor：
 
 ```bash
 python scripts/migrate_performance_checkpoint.py \
   --run-dir /path/to/run/E5 \
+  --control-dir /path/to/control/attempts/PAUSED_TOKEN \
   --config configs/runtime_profiles/cd009-v3/H20-E5.json \
   --performance-config configs/performance/cd009-p1.json \
   --source-root /path/to/SuctionNet \
@@ -999,25 +1000,30 @@ run/migrations/<migration_id>/
 
 receipt 先写入，记录源 checkpoint hash、源 manifest hash、目标 identity 和源成功步；**不把尚未产生的目标 checkpoint hash放进 receipt**，避免 receipt 与 checkpoint 相互包含 hash。新 checkpoint 内保存 receipt 的相对路径及 SHA256，目标 checkpoint 的 SHA256由现有 manifest 绑定即可。
 
-建议 receipt 的核心结构：
+实际 receipt schema 如下；`files` 的大小/hash 均来自归档文件，`allowed_changes` 只列实际发生变化的允许字段：
 
 ```json
 {
   "schema_version": "suction20.performance-migration.v1",
-  "migration_id": "GENERATED_ID",
-  "source_checkpoint_sha256": "SOURCE_HASH",
-  "source_archive": "migrations/GENERATED_ID/source.pt",
-  "source_manifest_sha256": "SOURCE_MANIFEST_HASH",
+  "migration_id": "performance-UUID",
   "source_identity": {},
   "target_identity": {},
-  "global_step": 0,
-  "allowed_identity_changes": ["code_revision", "worktree_sha256", "performance"]
+  "global_step": 123,
+  "source_attempt_id": "SOURCE_ATTEMPT",
+  "allowed_changes": ["code_revision", "performance", "worktree_sha256"],
+  "files": {
+    "source.pt": {"size_bytes": 123, "sha256": "SOURCE_HASH"},
+    "source-manifest.json": {"size_bytes": 123, "sha256": "MANIFEST_HASH"},
+    "performance-config.json": {"size_bytes": 123, "sha256": "SIDECAR_HASH"}
+  }
 }
 ```
 
-这里的 global_step 是运行时填入的源值，不是重置为 0；示例中的 hash 与 identity 是 schema 占位符；不另外计算全部 optimizer/RNG tensor 的校验矩阵。
+数字及 hash 是示例占位值。新 checkpoint 的 `runtime_state.performance_migration` 和 manifest 的 `analysis.performance_migration` 均保存 `{path: "migrations/performance-UUID/receipt.json", sha256: "RECEIPT_HASH"}`；后续保存持续透传，并核对归档三文件。源成功步不重置。
 
 ### 9.6 转换伪代码与发布规则
+
+以下保留设计伪代码，用于解释发布顺序；实际入口是上一节 CLI。当前 `RunLock` 用 `try/finally: close()`，实际写入 helper 名为 `write_checkpoint_state`，不把本段当作可直接复制执行的脚本。
 
 ```python
 with RunLock(run_dir):
@@ -1066,7 +1072,7 @@ with RunLock(run_dir):
     )
 ```
 
-`write_checkpoint_state_atomically` 提取并复用现有 `training.py` 的 torch.save、fsync、临时文件及原子替换逻辑；无需实例化一个新 checkpoint 服务。这里的 lambda 只供当前进程同步调用，不传给 DataLoader worker。
+实现中的 `write_checkpoint_state` 提取并复用现有 `training.py` 的 torch.save、fsync、临时文件及原子替换逻辑；无需实例化一个新 checkpoint 服务。这里的 lambda 只供当前进程同步调用，不传给 DataLoader worker。
 
 发布使用 `retain=False`，避免覆盖同一步已经保留的原 prefix/validation node；`promote_best=False` 保留原 best。entry 与 analysis 的发布 attempt ID 同时改为 migration ID，因为 telemetry 和 supervisor 已要求两者一致；这不增加训练账本的 optimizer attempts。
 
@@ -1076,10 +1082,10 @@ with RunLock(run_dir):
 
 历史日志无需重写。`training_telemetry.py:416` 会检查每个已提交 update 的 runtime_profile 与当前 analysis 一致；本设计保留原硬件 profile，因此这项检查仍成立。源 ledger 的字节前缀及其 hash 完全不变，转换后新 attempt 接续原 lineage。新旧代码阶段通过各 attempt 的 identity 和迁移 receipt 区分，不把历史行改写成新性能结果。
 
-只需补两处现有流程的接线：
+以下接线已实现：
 
 1. `run_supervisor.trainer_command` 透传 `--performance-config`，assignment 记录并核对其原始字节 hash。沿用现有方式保存所选性能文件快照；正式 profile 的路径/hash 校验原样保留。普通 resume 同时核对 performance 身份。
-2. 现有备份已覆盖 checkpoint 与顶层 JSON、attempts、validations。加入 receipt 引用的迁移目录文件及性能配置快照，复用原有 pinning、checksum 和备份去重；不新建备份流程。源 `source.pt` 的硬链接内容也必须被纳入，不能只备份 receipt 后丢掉它指向的源状态。
+2. 现有备份覆盖 checkpoint 与顶层 JSON、attempts、validations，并已加入 receipt 引用的迁移目录文件及性能配置快照，复用原有 pinning、checksum 和备份去重；不新建备份流程。源 `source.pt` 的硬链接内容也必须被纳入，不能只备份 receipt 后丢掉它指向的源状态。
 
 验收统一按第 11 节的三个正常路径执行，本章不另加测试矩阵。
 
@@ -1087,13 +1093,13 @@ with RunLock(run_dir):
 
 ### 10.1 性能配置独立于已冻结 profile
 
-拟新增 `--performance-config configs/performance/cd009-p1.json`，只合并到 `config['runtime']['performance']`。下列是建议的第一轮配置规格，**文件及参数目前尚不存在**：
+已实现 `--performance-config configs/performance/cd009-p1.json`，合并到 `config['runtime']['performance']`，原始文件 SHA256 单独存为 `runtime.performance_config_sha256`。仓库提供的 [第一轮 sidecar](../configs/performance/cd009-p1.json) 如下；当前真实帧测量选择逐候选共享几何查询：
 
 ```json
 {
   "schema_version": "suction20.performance.v1",
   "fps_backend": "compiled",
-  "query_chunk_size": 64,
+  "query_chunk_size": null,
   "query_workers": 1,
   "loader": {
     "num_workers": 2,
@@ -1106,19 +1112,19 @@ with RunLock(run_dir):
 }
 ```
 
-`query_workers=1` 作为初始值，用固定真实帧对比 4 后再固定。定稿时采用实测更快的查询实现；逐候选入口保留为基准参考，不另增运行开关。若保留逐候选实现，记录 `query_chunk_size/query_workers` 未启用，避免误报。正式 `fps_backend=compiled` 应检查扩展已安装；开发/CPU 诊断可显式选 `numpy` 参考实现。第一轮不增加 Numba 和 CUDA 后端并行维护。
+`query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块路径，只有该路径使用 `query_workers`（1 或 4）。当前真实帧测量中逐候选共享查询约 1.73–1.85 秒，64/1 约 2.03 秒，64/4 约 3.15 秒，因此 P1 采用 `null / 1`；这只是查询阶段测量，不是整步训练提升证据。正式 `fps_backend=compiled` 应检查扩展已安装；开发/CPU 诊断可显式选 `numpy` 参考实现。第一轮不增加 Numba 和 CUDA 后端并行维护。
 
 一维 key、按需读取、core/lip 坐标复用和 CPU context 是验证等价后的实现替换，不必给业务运行入口暴露一长串开关；基准脚本通过对照实现或旧 checkout 做比较即可。
 
 保持 `configs/runtime_profiles/cd009-v3/*.json` 及其 manifest 原始字节，保留原 microbatch、accumulation、硬件配置和 profile ID。新身份另外记录性能配置内容哈希和编译后端构建信息。原 `raw_config_sha256` 继续指正式 profile，不能用它代指性能配置。普通 `--resume` 必须同时匹配新的性能身份；初次从旧身份切换使用第 9 节的受限迁移。
 
-`suction20/runner.py` 将性能设置分别传给数据/模型构造；`Suction20Net`、`CandidateSampler`、`ContactGrouping` 可增加可选的非参数配置，**不改变模型 state_dict 参数名或形状**。推理、验证、微调可复用同一精确 CPU 算子，但第一轮仅接入预训练的后台 loader，不同时重写所有训练入口。
+`suction20/runner.py:make_model` 将 `runtime.performance` 传入模型；`scripts/train_pretrain.py` 将 loader 配置传入有序预取器；`Suction20Net`、`CandidateSampler`、`ContactGrouping` 可增加可选的非参数配置，**不改变模型 state_dict 参数名或形状**。推理、验证、微调可复用同一精确 CPU 算子，但第一轮仅接入预训练的后台 loader，不同时重写所有训练入口。
 
 supervisor 需要将性能文件路径及内容哈希加入 assignment/启动参数，并在日志记录实际解析值；保持原 affinity、设备、数据路径覆盖和 owner 流程。只对已配置性能版本的任务传递新参数。禁止修改固定 profile 的字节后沿用旧的 `config_sha256`。
 
 ### 10.2 文件级修改清单
 
-表中的文件名是建议边界；可在不改变接口契约的前提下按仓库惯例调整。新增文件均为待实现项。
+下列实现文件已加入当前分支；“验收依据”描述应检查的契约，真实训练收益仍待第 11 节完成。CPU context 单独定义于 `suction20/cpu_geometry.py`，配置与共享身份 helper 位于 `suction20/performance.py`，C 扩展构建入口为 `setup.py`。
 
 | 文件 | 具体工作 | 主要验收依据 |
 | --- | --- | --- |
@@ -1137,15 +1143,52 @@ supervisor 需要将性能文件路径及内容哈希加入 assignment/启动参
 | `scripts/benchmark_training_pipeline.py`（新） | 固定帧、固定增强/姿态、同起点前后比较；导出小型 JSON 报告 | 数据等价和加速结果在同一报告里 |
 | 相应现有测试 + 少量新增测试 | 几何、体素、预取序列和迁移回归 | 覆盖发生改变的契约，复用原测试 fixture |
 
-CPU context 可以定义在 `suction20/batching.py` 或单独小模块。不要为了这些结构新增通用任务编排、缓存服务或分布式基础设施。
+CPU context 已放在独立小模块，未增加通用任务编排、缓存服务或分布式基础设施。
 
-### 10.3 建议拆成三个可审阅改动
+### 10.3 实施的三个审阅范围
 
 1. **几何与局部计时。** 先加入参考对照，再完成编译 FPS、core/lip 复用和批量查询比较。可独立测量，不要求先上线后台 loader。
 2. **数据准备与有序预取。** 先完成 selective NPZ、一维体素、CPU context，再接入 ticket/loader；保持全部训练状态契约。在正常 E5/E0 日志中确认数据等待改善即可，不额外启动验收训练。
 3. **续训迁移与部署说明。** 汇总前两项验收，显式转换既有 checkpoint，先切换 E5，观察正常预算内的短窗口，再沿用到其他组；E0 的数据收益从其正常日志观察。
 
 每个改动附修改文件、对照结果、性能配置、已知限制即可。版本迁移只在代码定稿后做一次，不要求每完成一个局部小优化就中断正式训练。
+
+### 10.4 当前实现入口与复现方法
+
+实际构建、sidecar schema、supervisor 映射和迁移命令集中在 [运行指南](MODEL_USAGE.md#性能实现构建与既有运行迁移)。以下是代码接口定位：
+
+| 接口 | 当前行为 |
+| --- | --- |
+| `geometry_ops.make_fps_backend(name)` | 返回每实例独立 callable；`numpy`/`compiled` 显式选择，`fps_indices(..., first=None, presorted=False)` 保持排序与 tie；C buffer 使用 native FP64 `[M,3]` |
+| `fps_backend_identity(name)` | `backend/abi_version/python_cache_tag/compile_flags/compiler/source_sha256/binary_sha256`；构建选项 `-O3 -fno-fast-math -ffp-contract=off` |
+| `ContactGrouping.query` / `query_reference` | 优化四球分块/core-lip 复用与原调度参考；基准可设置 `query_chunk_size=None` 比较逐候选共享实现，再与 64 候选、1/4 workers 比较；正式 v1 sidecar 接受 `null`（逐候选共享查询，当前 P1 选择）或 1–64（分块） |
+| `CpuGeometry.from_inputs` / `SamplerTargetsCPU.from_targets` | 主进程 CPU view；`xyz64`/`frame_rows` 懒构造，空间树由 encoded 缓存，仅观测进入 encoder |
+| `make_ticket_loader` / `consume_tickets` | spawn CPU workers、有序 ticket、独立 generator；backward 后推进已消费游标，退出关闭持久 workers |
+| `select_training_gpu_inputs` / `move_to_device(..., non_blocking=True)` | 仅在新预训练路径精简输入上传；所有 loss targets 继续上传，通用 Sample/预测导出字段不删 |
+| `performance.attach_performance` / `build_runtime_identity` | 严格 sidecar + 原字节 hash；统一迁移与训练的完整身份构造 |
+
+内部详细计时在显式迁移源步 S 后的前 50 次成功更新自动启用；`global_step < S+50` 是更新前边界，AMP skips 不提前结束窗口，恢复不重开窗口。默认 sidecar `detailed_cpu_timing:false` 字节保持，之后自动回到关闭；显式 `true` 才持续开启。event、status、update 都记录窗口，生产者/等待/几何时间保持各自口径。没有额外更新或验证。
+
+四帧零更新比较脚本在隔离进程使用同一个可信 checkpoint 副本和冻结 profile：
+
+```bash
+python scripts/benchmark_training_pipeline.py \
+  --baseline-repo /path/to/old-source-checkout \
+  --candidate-repo /path/to/frozen-candidate-checkout \
+  --checkpoint /path/to/immutable-checkpoint.pt \
+  --config configs/runtime_profiles/cd009-v3/H20-E5.json \
+  --performance-config configs/performance/cd009-p1.json \
+  --source-root /path/to/full-20261110/input_raw \
+  --label-root /path/to/full-20261110/output \
+  --backbone-root /path/to/graspness_modern \
+  --device cuda:0 --out-dir /path/to/new-comparison-directory
+```
+
+旧 checkout 须是已核验的实际旧源快照；不假定部署 SHA 已存在于 GitHub 祖先链。脚本固定下四帧、增强种子和起始 RNG，比较数据/几何指纹、loss、输出、梯度、BN buffers、最终 RNG 和 sampler；不调用 optimizer.step、不回写正式 run。首帧几何在同姿态/roll RNG 下预热后重复两次；临时重复后恢复原 query 的 RNG。输出 `comparison.json` 及临时 tensor 证据，不发布大型数据或权重。
+
+该脚本的分段 CUDA synchronize 和额外 query 会膨胀 forward 时间；记录的梯度是同一 scaler 下的 AMP-scaled 梯度。它仍使用通用 H2D 搬运，因此不测正式有序预取/精简上传带来的整体重叠收益；这些以正常训练窗口确认。真实四帧结果、正常恢复与速度报告目前仍待完成。
+
+首次真实独立进程对照中，输入、targets、meta 指纹一致，但法向与后续区域输出不一致；旧代码自身重复运行也出现同类差异（首帧法向最大绝对差约 0.00156）。这些失败证据保留，不通过放宽容差处理。新增 `scripts/benchmark_paired_pipeline.py` 使用相同路径参数，在同四帧中共享一次实际骨干前向输出，分别执行旧、新下游路径，核对完整几何、loss、输出、特征边界梯度和参数梯度，并将两份边界梯度传回同一个保留的骨干计算图。脚本要求骨干及其 heads 依赖源文件一致，不执行 optimizer update；这项检查隔离本轮修改，不宣称独立 CUDA 稀疏卷积运行具有逐位确定性。通过后再进行正常迁移与训练日志短窗测量。
 
 ## 11. 精简验收：只检查三个正常路径
 
@@ -1216,12 +1259,12 @@ AMP skip 的处理仍按第 8 节正确实现，但不安排新增的跳步注�
 
 - [ ] 已在真实小样本上拆分 query/FPS/data/voxel/loader wait，口径明确。
 - [ ] 编译 FPS、core/lip 复用通过等价检查；批量查询按真实组合结果决定开启。
-- [ ] selective NPZ、一维 key、CPU context 保持现有数据契约。
+- [x] selective NPZ、一维 key、CPU context 已实现，CPU 正常路径回归通过；真实帧检查待完成。
 - [ ] 有序预取不影响模型 RNG、已消费游标、AMP skip 和 v3 采样阶段。
-- [ ] 性能配置与编译身份已记录；旧 profile 的原始字节保持。
+- [x] 性能配置、编译身份和 receipt/备份接线已实现；旧 profile 原始字节保持。
 - [ ] checkpoint 迁移保留全部学习状态、旧证据、best 和验证节点。
 - [ ] 同批结果对照、一次正常续训、正常日志中的短窗计时这三项完成，没有新增验收训练。
-- [ ] README 的“优化方案已完成”与“优化实现/真实验收已完成”分别更新。
+- [x] README 已区分设计、代码实现和待完成的真实验收。
 
 完成以上内容后继续原定预训练及后续少量自有场景微调。完整 E0–E5 收敛、开发验证、官方测试、目标域效果仍由原实验方案验收；性能方案不增加一套新的完整训练实验。
 

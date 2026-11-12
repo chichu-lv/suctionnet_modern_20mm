@@ -58,7 +58,8 @@ def make_model(config, frozen_config, device):
     model_config = dict(config["model"])
     if config.get("experiment"):
         model_config["experiment"] = config["experiment"]
-    return Suction20Net(model_config, frozen_config).to(device)
+    return Suction20Net(model_config, frozen_config,
+                        performance=config.get('runtime', {}).get('performance')).to(device)
 
 
 def override_paths(config, args):

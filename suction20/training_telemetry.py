@@ -631,3 +631,42 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         if temporary.exists():
             shutil.rmtree(temporary)
     return summary
+
+
+def sample_loader_workers(samplers, identities, trainer_pid):
+    """Only count live, identity-matched direct loader children; no GPU queries."""
+    from .run_supervisor import identity_alive
+    result = dict(processes=[], rss_bytes=0, rss_complete=True, cpu_core_equivalents=0., cpu_complete=True,
+                  missing_reasons=[])
+    seen = set()
+    for identity in identities:
+        if not isinstance(identity, dict) or not identity_alive(identity):
+            result['missing_reasons'].append('loader worker exited or identity changed')
+            result['cpu_complete'] = False
+            result['rss_complete'] = False
+            continue
+        pid = identity['pid']
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+            if int(fields[1]) != trainer_pid:
+                raise ValueError('loader PID is not a child of this trainer')
+            sampler = samplers.setdefault(pid, ResourceSampler())
+            observation = sampler.sample(pid=pid)
+            process = observation['process']
+            result['processes'].append(dict(identity=identity, process=process,
+                missing_reasons={key: value for key, value in observation['missing_reasons'].items() if key.startswith('process.')}))
+            result['rss_complete'] &= process.get('rss_bytes') is not None
+            result['rss_bytes'] += process.get('rss_bytes') or 0
+            cpu = process.get('cpu_core_equivalents')
+            result['cpu_complete'] &= cpu is not None
+            result['cpu_core_equivalents'] += cpu or 0.
+        except (OSError, ValueError) as error:
+            result['missing_reasons'].append(str(error))
+            result['cpu_complete'] = False
+            result['rss_complete'] = False
+    for pid in set(samplers) - seen:
+        del samplers[pid]
+    return result

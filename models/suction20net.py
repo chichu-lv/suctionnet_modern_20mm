@@ -6,6 +6,7 @@ from torch import nn
 
 from .backbones.spconv_resunet14 import SpconvResUNet14
 from .candidate_sampler import CandidateSampler
+from .geometry_ops import make_fps_backend
 from .heads import AxisHead, chunk_apply, mlp
 from .contact_grouping import ContactGrouping, ZONE_LIMITS, ZONE_NAMES
 from .instance_fusion import InstanceFusion, instance_blocks
@@ -19,8 +20,10 @@ EXPERIMENTS = {
 
 
 class Suction20Net(nn.Module):
-    def __init__(self, model_config, frozen_config, backbone=None):
+    def __init__(self, model_config, frozen_config, backbone=None, *, performance=None):
         super().__init__()
+        performance = dict(performance or {})
+        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'))
         self.model_config = dict(model_config)
         self.frozen_config = dict(frozen_config)
         self.experiment = model_config.get('experiment', 'E1')
@@ -54,7 +57,8 @@ class Suction20Net(nn.Module):
         self.task_success_head = mlp((260, 128, 1), output=True) if use_success else None
         if self.task_success_head is not None:
             nn.init.zeros_(self.task_success_head[-1].bias)
-        self.sampler = CandidateSampler(model_config.get('seed_count', model_config.get('num_seeds', 512)))
+        self.sampler = CandidateSampler(model_config.get('seed_count', model_config.get('num_seeds', 512)),
+                                        fps_fn=fps_fn)
         self.chunk_size = int(model_config.get('dense_chunk_size', 16384))
         self.checkpoint_dense = bool(model_config.get('checkpoint_dense', True))
         if self.chunk_size <= 0 or self.sampler.num_seeds <= 0:
@@ -64,7 +68,10 @@ class Suction20Net(nn.Module):
         self.instance_module = InstanceFusion() if self.use_instance_fusion else None
         self.contact_grouping = (ContactGrouping(frozen_config,
                                   chunk_size=model_config.get('pose_chunk_size', 32),
-                                  checkpointed=self.checkpoint_dense)
+                                  checkpointed=self.checkpoint_dense, fps_fn=fps_fn,
+                                  query_chunk_size=performance.get('query_chunk_size'),
+                                  query_workers=performance.get('query_workers', 1),
+                                  detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
         if self.use_aux_heads:
             self.seal_head = mlp((136, 128, 1), output=True)
@@ -80,7 +87,7 @@ class Suction20Net(nn.Module):
         return chunk_apply(fn, *args, chunk_size=self.chunk_size,
                            checkpointed=self.checkpoint_dense and self.training)
 
-    def encode_scene(self, batch_input):
+    def encode_scene(self, batch_input, *, cpu_geometry=None):
         """Only observation inputs enter this method; labels have no encoder path."""
         if len(batch_input['voxel_features']):
             voxel_features = self.backbone(batch_input)
@@ -105,7 +112,7 @@ class Suction20Net(nn.Module):
                 return self.fusion(torch.cat((feature, zero, g.to(feature)), -1))
             fused = self._chunks(fuse, local, gravity)
         return {**batch_input, **stats, 'F_local': local, 'F_fused': fused,
-                'random_group_roll': self.training}
+                'random_group_roll': self.training, 'cpu_geometry': cpu_geometry}
 
     def predict_dense(self, encoded):
         q0 = self._chunks(lambda x: self.q0_head(x).sigmoid(), encoded['F_fused']).squeeze(-1)
@@ -113,8 +120,9 @@ class Suction20Net(nn.Module):
                             encoded['normal_obs_valid'])
         return q0, axis
 
-    def sample(self, encoded, q0_all, sampler_mode='inference', targets=None):
-        return self.sampler(encoded, q0_all, mode=sampler_mode, targets=targets, epoch=self.epoch)
+    def sample(self, encoded, q0_all, sampler_mode='inference', targets=None, *, sampler_targets_cpu=None):
+        return self.sampler(encoded, q0_all, mode=sampler_mode, targets=targets, epoch=self.epoch,
+                            sampler_targets_cpu=sampler_targets_cpu)
 
     @staticmethod
     @torch.no_grad()
@@ -196,15 +204,17 @@ class Suction20Net(nn.Module):
                 (h, n.to(h), (n * gravity.float()).sum(-1, keepdim=True).to(h)), -1)).squeeze(-1) * valid
         return result
 
-    def forward(self, batch_input, *, sampler_mode='inference', targets=None):
-        encoded = self.encode_scene(batch_input)
+    def forward(self, batch_input, *, sampler_mode='inference', targets=None, cpu_geometry=None,
+                sampler_targets_cpu=None):
+        encoded = self.encode_scene(batch_input, cpu_geometry=cpu_geometry)
         encoded['random_group_roll'] = self.training and sampler_mode != 'inference'
         q0, axis = self.predict_dense(encoded)
-        seeds, valid = self.sample(encoded, q0, sampler_mode, targets)
+        seeds, valid = self.sample(encoded, q0, sampler_mode, targets, sampler_targets_cpu=sampler_targets_cpu)
         rows = seeds[valid]
         pose = self.score_at_pose(encoded, encoded['xyz_cam_m'][rows], axis[rows],
                                   encoded['instance_id_input'][rows], proposal_q0=q0[rows],
                                   feature_point_index=rows, pose_batch_index=encoded['batch_index'][rows])
+        self.last_grouping_timings.update(self.sampler.last_timings)
         result = {'q0_all': q0, 'normal_out_all': axis,
                   'seed_point_index': seeds, 'seed_valid': valid}
         for name in ['q', 'pose_features', 'pose_feature_valid', 'task_success_logit',

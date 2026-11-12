@@ -4,9 +4,9 @@
 
 ## 固定版本与可复现配置
 
-正在运行的代码固定为 `98862f4d6a133c99afa082a0755dbb888b41b38d`，运行源码 SHA256 为 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。该版本包含 JSON 数字读取修复：`.json` 使用 JSON parser，避免 `1e-08` 被 YAML 当作字符串。YAML 配置继续按 YAML 规则读取。
+性能优化前已部署的代码固定为 `98862f4d6a133c99afa082a0755dbb888b41b38d`，运行源码 SHA256 为 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。该版本包含 JSON 数字读取修复：`.json` 使用 JSON parser，避免 `1e-08` 被 YAML 当作字符串。YAML 配置继续按 YAML 规则读取。
 
-GitHub 以源码快照发布，runtime Python 文件与部署版本一致，并增加文档和配置打包；发布 commit 有独立 SHA，不承诺原部署 commit 的 Git 祖先链或该 SHA 可从 GitHub checkout。因此**文档分支 HEAD 不等于正在运行的代码版本**。这次发布不更新远端训练 checkout、不重启训练、不改变运行配置。恢复使用原代码与相同语义身份；不能把较新的分支 HEAD 直接当作兼容恢复版本。
+此前 GitHub 以源码快照发布，发布 commit 有独立 SHA，不承诺原部署 commit 的 Git 祖先链或该 SHA 可从 GitHub checkout。本次候选分支已加入性能优化代码，**分支 HEAD 不代表已部署或已验收的运行版本**。普通恢复仍要求相同代码与性能身份；从上述旧版本切换必须使用下述显式迁移，不能直接用新 HEAD 恢复旧 checkpoint。部署冻结的 commit、源码摘要、性能配置及本机扩展身份最终记录在迁移 receipt 和新 attempt 中。
 
 [六份正式配置及可移植哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 保留部署配置的原始字节。清单的 `config_path` 相对仓库根目录，`config_sha256` 是文件原始字节 SHA256；每组还记录测量文件名、SHA256、trial ID 和测量代码版本。原始测量日志、训练日志、权重、数据及私有控制配置不放入 Git。配置中的数据路径是占位符；运行时由 supervisor 参数覆盖，无需改写已绑定哈希的配置。
 
@@ -64,10 +64,12 @@ checkpoint 在完整更新边界每 100 成功步或 900 秒保存，并覆盖�
 
 完成须每组 230400 有效帧、10×320 帧验证、可恢复 best/last、连续规范日志与完整备份，六组都达标才关闭 README TODO1。当前没有发布完整验证结果、收敛/架构胜负、official-test、目标域微调或实机吸取结论。
 
-## 性能优化方案（待实施）
+## 性能优化实现与待验收项
 
-针对接触分组和串行数据准备的耗时，见 [CD-009 完整性能优化方案](PERFORMANCE_OPTIMIZATION.md)。方案基于发布快照 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97`，优先实施精确 CPU FPS、按需读取、一维体素去重、CPU 几何复用和有序后台预取。包含数据流/进度图、文件与接口清单、性能配置规格及现有 checkpoint 的正常版本切换方法。
+[性能方案](PERFORMANCE_OPTIMIZATION.md) 保留 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97` 基线、CPU 原型和设计依据；当前分支已实现 CPython FP64 FPS、core/lip 复用、有界四球查询、selective NPZ、一维体素去重、CPU 几何上下文、有序后台预取，以及既有 checkpoint 的受限迁移。模型参数形状、原损失、完整观测和 v3 预算保持；六份硬件 profile 原始字节未改。
 
-验收只安排同一小批数据的新旧对照、一次正常保存续训，以及原预算内正常训练日志的短窗计时。CPU 合成原型的局部加速与真实训练收益分别记录，不增加额外完整训练或验证节点。
+性能参数独立放在 [cd009-p1.json](../configs/performance/cd009-p1.json)。本机编译、`--performance-config`、supervisor 的 `performance_configs[host][experiment]`、迁移命令及备份要求见 [运行指南](MODEL_USAGE.md#性能实现构建与既有运行迁移)。普通 resume 同时绑定 sidecar SHA256 和 FPS 源码/编译器/flags/ABI/二进制身份，不能静默回退到另一后端。
 
-当前提交只增加方案和证据文档；正式 profile 原始字节、数据及运行任务保持原状。未来部署新代码时仍需按方案显式接续原学习状态，不能用文档分支 HEAD 替代正在运行的代码身份。
+迁移只接受上述 `98862f4` / `d634627b…` 源身份及已正常暂停的 current checkpoint；保留模型、Adam、AMP、RNG、已消费采样游标、成功步、best、验证和日志前缀。`migrations/performance-UUID/` 留存源状态硬链接、原 manifest、sidecar 和 receipt，备份一并验证和复制。迁移后前 50 次成功更新临时开启内部几何计时，之后回到 sidecar 默认关闭值；这 50 次属于原正式预算，不触发额外验证，也不改 sidecar 字节。
+
+本轮本地全套测试 **292 passed / 1 skipped**，代码复核已进行；**真实四帧 CUDA/AMP 对照、一次正常迁移续训、正常训练短窗提速仍待验收**。不把 CPU 原型加速当作整步收益，不据此宣称收敛或质量改善。验收结果另存证据；冻结部署 checkout 后不为补写报告而改变其源码身份。

@@ -40,7 +40,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
   --source-root "$SOURCE" --label-root "$LABELS"
 ```
 
-这些配置分别上限 2 和 18 次成功 optimizer 更新；AMP 跳过不推进步数。E5 独立初始化，第二条 E5 命令恢复到总计 18 次，不额外训练 18 次。microbatch=1，梯度累计4；完整观测、2 mm 体素、512候选不因 smoke 而缩减。主干训练时 BN 正常更新。同步读取数据使样本及增强种子可准确恢复。
+这些配置分别上限 2 和 18 次成功 optimizer 更新；AMP 跳过不推进步数。E5 独立初始化，第二条 E5 命令恢复到总计 18 次，不额外训练 18 次。microbatch=1，梯度累计4；完整观测、2 mm 体素、512候选不因 smoke 而缩减。主干训练时 BN 正常更新。未配置性能 sidecar 时沿用同步读取；配置后以有序 ticket 的已消费游标恢复样本及增强种子。
 
 `last.pt` 保存 model、optimizer、AMP、步数、独立采样器、Python/NumPy/Torch/CUDA RNG、配置、冻结物理定义及代码身份；`best.pt` 按开发验证指标选取。`--init-checkpoint` 仅初始化兼容权重，`--resume` 恢复完整训练状态。恢复时可以迁移目录和设备，不能静默更改训练语义。
 
@@ -51,6 +51,80 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；当前 E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练正在分阶段执行，尚未完成六组与各 10 次开发验证。
 
 正式多机运行从下方 [supervisor 入口](#cd-009-persistent-multi-host-pretraining) 和 [公共模板](implementation/examples/cd009-supervisor.json) 开始，登记精确 config SHA256，填写本地数据/主干路径、机器身份和授权 GPU。私有控制配置不提交到仓库。冻结运行代码后通过 host evidence、首个 100 步暂停/恢复和稳定性门槛逐级启动；不要跳过 supervisor 的单一 owner 和验证/备份协调。
+
+## 性能实现构建与既有运行迁移
+
+当前分支已实现精确 CPU 几何和预取流水线；真实 CUDA 同批对照、一次迁移续训和正常日志提速验收仍待完成。原设计与 CPU 原型见 [性能方案](PERFORMANCE_OPTIMIZATION.md)，不能把原型倍率当成训练吞吐。
+
+### 本机扩展与独立性能配置
+
+在每个目标 Python 环境内构建小型 CPython 扩展；需要本机 C 编译器、Python headers 和 setuptools。无需 NumPy C headers、OpenMP 或 CUDA 编译器：
+
+```bash
+python setup.py build_ext --inplace
+python -c 'import json; from models.geometry_ops import fps_backend_identity; print(json.dumps(fps_backend_identity("compiled"), indent=2))'
+```
+
+`setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码摘要；实际扩展的 binary/source SHA256、compiler、flags、ABI 和 Python cache tag 单独进入运行身份。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
+
+[configs/performance/cd009-p1.json](../configs/performance/cd009-p1.json) 是额外 JSON sidecar，保持原六份正式 profile 字节和哈希。`--performance-config PATH` 在预训练入口加载它，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。当前 v1 schema 严格接受：
+
+- `schema_version:"suction20.performance.v1"`，`fps_backend:"compiled"` 或显式参考 `"numpy"`。
+- `query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前真实帧测量选择 `null / 1`，因此提供的 P1 文件采用该配置；这不等于已验证整步训练加速。
+- `loader` 含 `num_workers:2`、`prefetch_factor:2`、`persistent_workers:true`、`pin_memory:true`、`multiprocessing_context:"spawn"`。`num_workers:0` 仅供显式 CPU/reference 路径；不引入另一套训练进度。
+- `detailed_cpu_timing:false` 为常规值。未知键、错误类型和范围被拒绝。
+
+主进程在 pinning 后建立 `CpuGeometry` 与独立 `SamplerTargetsCPU`，上传 GPU 消费字段；观测上下文不含标签、不进入 state_dict。worker 只准备 CPU 数据；独立 DataLoader generator 不消耗模型 RNG。已发出 ticket 与已完成 backward 的消费游标分开，checkpoint 只持久化消费游标；AMP 跳步保留实际帧消费，但不推进成功更新预算。
+
+在私有 supervisor 配置增加所需 host/experiment 项，路径必须是对应主机的绝对路径，hash 是 sidecar 的原始字节 SHA256：
+
+```json
+{
+  "performance_configs": {
+    "H20": {
+      "E5": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p1.json",
+        "config_sha256": "REPLACE_WITH_RAW_FILE_SHA256"
+      }
+    }
+  }
+}
+```
+
+按实际迁移批次为 L20/E0–E4 登记相应项；缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；既有 run 先执行下述迁移。
+
+### 从原冻结代码迁移并正常恢复
+
+转换器只接受已核实的源 revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。这不是通用的改配置恢复工具；batch、loss、预算、数据、依赖和数学设置不能借此改变。
+
+1. 用 supervisor `pause EXPERIMENT --reason ...` 在完整更新边界暂停同一 checkout/venv 的全部任务。旧 worker/trainer 必须已正向确认退出，状态为 `paused`、exit75，完成原 final backup，且没有 pending validation；若已有 pending，先用旧版本完成原定验证。
+2. 冻结并验证目标代码与本机扩展，在拥有该 run 的主机执行转换。`--control-dir` 指向刚退出的旧 attempt，源 hash 取已核验 manifest 的 current。数据与主干覆盖参数必须与原 supervisor 一致。
+
+```bash
+python scripts/migrate_performance_checkpoint.py \
+  --config configs/runtime_profiles/cd009-v3/H20-E5.json \
+  --performance-config configs/performance/cd009-p1.json \
+  --run-dir /path/to/runs/E5_seed42 \
+  --control-dir /path/to/control/attempts/PAUSED_TOKEN \
+  --expected-source-checkpoint-sha256 SOURCE_CURRENT_SHA256 \
+  --source-root /path/to/full-20261110/input_raw \
+  --label-root /path/to/full-20261110/output \
+  --backbone-root /path/to/graspness_modern
+```
+
+`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和新增 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
+
+归档路径为 `RUN/migrations/performance-UUID/`：`source.pt` 是源 blob 的硬链接，另外保存 `source-manifest.json`、`performance-config.json` 和 `receipt.json`。receipt 记录源/目标 identity、源成功步/attempt、实际允许差异和三个归档文件的大小/hash。新 current 的 `runtime_state` 与 manifest `analysis` 都引用 receipt 相对路径及 SHA256；后续保存继续透传。根目录 `runtime.json`/`resolved_config.json` 保留 run 最初版本，当前身份看 current、receipt 与新 attempt。
+
+3. 更新私有 supervisor 的 sidecar 映射后，仍执行普通 `resume E5`（其他实验同理）。supervisor 仅在检查到有效迁移 receipt、目标 sidecar hash 相同且原源 checkpoint 的 final backup 仍有效时允许原 assignment 切换；新 attempt 沿用原设备、profile 和学习状态。普通 resume 不提供忽略身份检查的开关。
+
+现有备份会验证并复制 receipt 引用的三份归档文件及 receipt，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。实际切换按 [性能方案第 11 节](PERFORMANCE_OPTIMIZATION.md#11-精简验收只检查三个正常路径) 的三项正常检查验收。
+
+### 50 次成功更新的计时窗口
+
+每次显式迁移以 receipt 中源成功步 S 为固定起点。训练 attempt 在更新前 `global_step < S+50` 时临时开启详细几何计时，覆盖成功更新 S+1…S+50；AMP skip 不耗用成功步配额，再次正常恢复也不会重置窗口。sidecar 默认 `false` 不改字节，到边界后自动关闭；若显式配置 `true` 则持续开启。
+
+`performance_diagnostic_window` event、status/update 的 `performance_diagnostics` 记录策略、active 和边界。常规聚合计时、查询规模计数和完整样本账本持续保留。`production_timing` 是 worker 生产时间，`loader_wait_s` 是主进程实际等待，两者不能相加当成墙钟；`resources.jsonl` 同时观察主进程和 worker 资源。50 次更新属于原预算，无额外验证或验收训练。真实吞吐以正常日志中 20–50 次成功更新及含保存的窗口墙钟报告。
 
 ## 推理与开发评价
 

@@ -226,7 +226,8 @@ class DataPressure:
         if not row or marker == self.seen or status.get("phase") != "training":
             return bool(self.since and now - self.since >= 600)
         self.seen = marker
-        data, elapsed = row["data_seconds"], row["elapsed_seconds"]
+        data = row.get("loader_wait_s", row["data_seconds"]) if status.get("performance_identity") else row["data_seconds"]
+        elapsed = row["elapsed_seconds"]
         if len(self.baseline) < 20:
             self.baseline.append(data)
             return False
@@ -373,6 +374,39 @@ def selected_profile(config, experiment, host):
             "runtime": {"cpu_threads": threads, "gpu_memory_limit_gib": memory}}
 
 
+def selected_performance(config, experiment, host):
+    selection = config.get("performance_configs", {}).get(host, {}).get(experiment)
+    if selection is None:
+        return {}
+    from suction20.performance import load_performance_config
+    path = Path(selection["config_path"])
+    if not path.is_absolute() or digest(path) != selection.get("config_sha256"):
+        raise Refused("performance sidecar hash/path mismatch")
+    return {"performance_config_path": str(path), "performance_config_sha256": selection["config_sha256"],
+            "performance_settings": load_performance_config(path)}
+
+
+def verify_assignment_performance(config, assignment):
+    selected = selected_performance(config, assignment["experiment"], assignment["host"])
+    keys = ("performance_config_path", "performance_config_sha256", "performance_settings")
+    if any(assignment.get(key) != selected.get(key) for key in keys):
+        raise Refused("assignment performance sidecar changed; explicit migrated resume required")
+    return selected
+
+
+def verify_performance_transition(config, assignment):
+    desired = selected_performance(config, assignment["experiment"], assignment["host"])
+    if all(assignment.get(key) == desired.get(key) for key in
+           ("performance_config_path", "performance_config_sha256", "performance_settings")):
+        return
+    view = assignment.get("view", {})
+    performance = (view.get("committed_checkpoint") or {}).get("analysis", {}).get("identity", {}).get("performance", {})
+    if (assignment.get("performance_config_sha256") or not desired or
+            performance.get("config_sha256") != desired["performance_config_sha256"] or
+            not view.get("performance_migration_verified") or not view.get("performance_source_backup_verified")):
+        raise Refused("performance transition requires verified explicit migration of paused source")
+
+
 def verify_assignment_profile(config, assignment):
     selected = selected_profile(config, assignment["experiment"], assignment["host"])
     if any(assignment.get(key) != value for key, value in selected.items()):
@@ -400,6 +434,8 @@ def verify_checkpoint_contract(assignment, checkpoint, *, complete=False):
             analysis.get("completed_validation_nodes") != checkpoint.get("completed_validation_nodes") or
             analysis.get("last_completed_validation") != checkpoint.get("last_completed_validation")):
         raise Refused("checkpoint inline analysis disagrees with committed identity/counters")
+    if assignment.get("performance_config_sha256") and (analysis.get("identity") or {}).get("performance", {}).get("config_sha256") != assignment["performance_config_sha256"]:
+        raise Refused("checkpoint performance sidecar identity mismatch")
     if complete:
         expected = [{"step": node, "effective_samples": node * budget["effective_batch_size"], "frame_count": 320}
                     for node in budget["validation_steps"]]
@@ -409,6 +445,7 @@ def verify_checkpoint_contract(assignment, checkpoint, *, complete=False):
 
 def trainer_command(config, assignment):
     verify_assignment_profile(config, assignment)
+    verify_assignment_performance(config, assignment)
     root = Path(config["root"])
     run, control = assignment_paths(config, assignment)
     runtime = assignment.get("runtime") or {"cpu_threads": 8, "gpu_memory_limit_gib": 64 if assignment["host"] == "H20" else 40}
@@ -420,6 +457,8 @@ def trainer_command(config, assignment):
                "--control-dir", str(control), "--attempt-id", assignment["token"],
                "--validation-gate", "--cpu-threads", str(runtime["cpu_threads"]), "--gpu-memory-limit-gib",
                str(runtime["gpu_memory_limit_gib"])]
+    if assignment.get("performance_config_path"):
+        command.extend(["--performance-config", assignment["performance_config_path"]])
     if assignment.get("resume"):
         command.extend(["--resume", str(run / assignment["resume"])])
     if not assignment.get("prefix_passed"):
@@ -475,6 +514,7 @@ class Coordinator:
                       "created_unix": time.time(), "state": "launch_unknown", "resume": resume,
                       "prefix_passed": prefix_passed}
         assignment.update(selected)
+        assignment.update(selected_performance(self.config, experiment, host))
         self.state["assignments"][experiment] = assignment
         self.save()  # The only permissible ordering is reserve BEFORE transport.
         try:
@@ -748,6 +788,16 @@ def inspect_worker(config, assignment):
     for kind in ("validation", "backup"):
         for suffix in ("request", "done"):
             result[kind + "_" + suffix] = read_json(control / f"{kind}.{suffix}.json")
+    result["performance_migration_verified"] = False
+    result["performance_source_backup_verified"] = False
+    analysis = (committed or {}).get("analysis", {})
+    if analysis.get("performance_migration"):
+        from suction20.pretrain_runtime import verify_performance_migration
+        verify_performance_migration(run, analysis["performance_migration"], analysis["identity"])
+        result["performance_migration_verified"] = True
+        source_manifest = read_json(run / Path(analysis["performance_migration"]["path"]).parent / "source-manifest.json")
+        result["performance_source_backup_verified"] = final_backup_verified(
+            config, assignment, source_manifest["current"], result.get("backup_done"))
     result["final_backup_verified"] = final_backup_verified(config, assignment, committed, result.get("backup_done")) if state == "exited" else False
     return result
 
@@ -819,16 +869,30 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
     pin_root = control / "backup-pins" / request["request_id"]
     # Logs may be ahead of checkpoint; canonical ledger cursor stays in checkpoint.
     for pattern in ("*.json", "*.jsonl", "attempts/**/*.json", "attempts/**/*.jsonl",
-                    "validations/*.json"):
+                    "validations/*.json", "migrations/*/receipt.json"):
         for path in run.glob(pattern):
             if path.name != "checkpoint-manifest.json" and path.is_file():
                 relative = str(path.relative_to(run))
                 if relative not in files:
                     pins[relative], size = pin_file(path, pin_root)
                     files[relative] = {"size_bytes": size}
+    verified_receipts = set()
+    for entry in entries:
+        analysis = entry.get("analysis", {})
+        reference = analysis.get("performance_migration")
+        if not reference or (reference["path"], reference["sha256"]) in verified_receipts:
+            continue
+        verified_receipts.add((reference["path"], reference["sha256"]))
+        from suction20.pretrain_runtime import verify_performance_migration
+        receipt = verify_performance_migration(run, reference, analysis["identity"])
+        parent = Path(reference["path"]).parent
+        for name, info in receipt["files"].items():
+            relative = str(parent / name)
+            pins[relative], _ = pin_file(run / relative, pin_root)
+            files[relative] = info
     control_sources = {}
     for name in ("assignment.json", "command.json", "worker.json", "status.json",
-                 "resources.jsonl", "selected-config.json", "pause.request", "validation.request.json", "validation.done.json"):
+                 "resources.jsonl", "selected-config.json", "performance-config.json", "pause.request", "validation.request.json", "validation.done.json"):
         path = control / name
         if path.is_file():
             relative = "supervisor/" + name
@@ -845,7 +909,7 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         safe_config = {key: config[key] for key in (
             "root", "python", "source_root", "label_root", "backup_root",
             "backbone_root", "manifest_sha256")}
-        safe_config.update({key: config[key] for key in ("contract_version", "profiles", "lock_root") if key in config})
+        safe_config.update({key: config[key] for key in ("contract_version", "profiles", "performance_configs", "lock_root") if key in config})
         safe_config["hosts"] = {host: {key: value[key] for key in (
             "machine_id", "hostname", "ssh", "gpus") if key in value}
             for host, value in config["hosts"].items()}
@@ -933,6 +997,7 @@ def run_worker(config, host, assignment):
     import concurrent.futures
     from suction20.training_telemetry import ResourceSampler
     sampler = ResourceSampler()
+    worker_samplers = {}
     host_guard(config, host)
     if assignment["host"] != host:
         raise Refused("assignment host mismatch")
@@ -992,6 +1057,17 @@ def run_worker(config, host, assignment):
                     os.replace(temporary, snapshot)
                     fsync_directory(snapshot.parent)
                     command[command.index("--config") + 1] = str(snapshot)
+                if assignment.get("performance_config_path"):
+                    payload = Path(assignment["performance_config_path"]).read_bytes()
+                    if hashlib.sha256(payload).hexdigest() != assignment["performance_config_sha256"]:
+                        raise Refused("performance sidecar changed before launch")
+                    snapshot = control / "performance-config.json"
+                    with snapshot.open("xb") as stream:
+                        stream.write(payload)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    fsync_directory(snapshot.parent)
+                    command[command.index("--performance-config") + 1] = str(snapshot)
                 atomic_json(control / "command.json", {"argv": command, "assignment": assignment})
                 environment = dict(os.environ, CUDA_VISIBLE_DEVICES=assignment["gpu_uuid"],
                                    OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1",
@@ -1024,6 +1100,24 @@ def run_worker(config, host, assignment):
                         sample["gpu"] = device
                     except (OSError, subprocess.SubprocessError, ValueError) as exc:
                         sample["gpu_error"] = str(exc)
+                    sample["telemetry"] = sampler.sample(pid=child.pid, gpu_uuid=assignment["gpu_uuid"],
+                        nvml_pid=established_gpu_pid, phase=status.get("phase"), attempt_id=assignment["token"],
+                        run_id=str(run), contract_revision=budget["contract_version"],
+                        profile_id=assignment.get("runtime_profile", {}).get("profile_id"))
+                    from suction20.training_telemetry import sample_loader_workers
+                    sample["telemetry"]["loader_workers"] = sample_loader_workers(
+                        worker_samplers, status.get("loader_worker_identities", []), child.pid)
+                    sample["trainer_rss_bytes"] = sample["rss_bytes"]
+                    sample["rss_bytes"] += sample["telemetry"]["loader_workers"]["rss_bytes"]
+                    process = sample["telemetry"]["process"]
+                    sample["telemetry"]["job_totals"] = {
+                        "rss_bytes": sample["rss_bytes"],
+                        "rss_complete": process.get("rss_bytes") is not None and
+                            sample["telemetry"]["loader_workers"]["rss_complete"],
+                        "cpu_core_equivalents": (process.get("cpu_core_equivalents") or 0.) +
+                            sample["telemetry"]["loader_workers"]["cpu_core_equivalents"],
+                        "cpu_complete": process.get("cpu_core_equivalents") is not None and
+                            sample["telemetry"]["loader_workers"]["cpu_complete"]}
                     reasons = pause_reasons(sample, status, now, last_backup, worker["started_unix"])
                     # Only launch-race detection. Once GPU ownership is established,
                     # another user's later arrival never triggers automatic yielding.
@@ -1087,10 +1181,6 @@ def run_worker(config, host, assignment):
                             done.get("request_id") != existing["request_id"]:
                         pending_request = existing
                         future = pool.submit(backup_snapshot, config, assignment, existing)
-                    sample["telemetry"] = sampler.sample(pid=child.pid, gpu_uuid=assignment["gpu_uuid"],
-                        nvml_pid=established_gpu_pid, phase=status.get("phase"), attempt_id=assignment["token"],
-                        run_id=str(run), contract_revision=budget["contract_version"],
-                        profile_id=assignment.get("runtime_profile", {}).get("profile_id"))
                     worker.update(heartbeat_unix=now, resources=sample,
                                   warning_rss=sample["rss_bytes"] >= 48 * GIB,
                                   progress_warning=(status.get("phase") != "waiting_validation" and
@@ -1363,6 +1453,10 @@ def main(argv=None):
                 return
             if args.command in ("resume", "recover"):
                 verify_assignment_profile(config, old)
+                if args.command == "resume":
+                    verify_performance_transition(config, old)
+                else:
+                    verify_assignment_performance(config, old)
             if args.command == "release" and not coordinator.state["evidence"].get("complete:" + args.experiment):
                 raise Refused("completion acceptance evidence required")
             if args.command == "resume" and old.get("view", {}).get("worker", {}).get("exit_code") != 75:

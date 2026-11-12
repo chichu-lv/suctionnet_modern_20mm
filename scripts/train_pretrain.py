@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import importlib.metadata
 import sys
 import uuid
 import json
@@ -14,12 +13,13 @@ import time
 import numpy as np
 import torch
 
+from suction20.performance import attach_performance, build_runtime_identity
 from suction20.pretrain_budget import CONTRACT_VERSION, resolve_budget, resolve_config, sampling_epoch, validate_resume_progress
 from suction20.datasets import collate_public, frame_key, split_scene_ids
 from suction20.losses import source_losses
 from suction20.runner import add_runtime_arguments, make_model, make_source_dataset, override_paths, require_device
 from suction20.training import (FrameSchedule, content_digest, decay_groups, learning_rate,
-                               load_checkpoint, load_config, move_to_device, optimizer_update,
+                               load_checkpoint, load_config, move_to_device, select_training_gpu_inputs, optimizer_update,
                                save_checkpoint, seed_everything, validate_resume_config, worktree_digest,
                                capture_rng, restore_rng, semantic_config, code_revision, source_supervision_counts)
 from suction20.pretrain_runtime import (AttemptLog, CheckpointStore, Progress, RunLock,
@@ -105,25 +105,12 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         raise ValueError("Use pause_at_step for formal training; bounded stops add off-protocol validation")
     if formal and init_checkpoint:
         raise ValueError("Formal experiments require independent initialization")
-    identity = {"source_label_config_sha256": content_digest(dataset.data_cfg),
-                "semantic_config_sha256": content_digest(semantic_config(config)),
-                "code_revision": code_revision(), "worktree_sha256": worktree_digest(),
-                "manifest_sha256": file_digest(manifest_path) if manifest_path.exists() else None,
-                "frozen_config_raw_sha256": file_digest(frozen_path) if frozen_path.exists() else None,
-                "raw_config_sha256": config.get("runtime", {}).get("raw_config_sha256"),
-                "budget_contract": budget["contract_version"], "runtime_profile": profile,
-                "dependencies": {}}
-    for package in ("torch", "numpy", "scipy", "spconv-cu120", "cumm-cu120"):
-        try:
-            identity["dependencies"][package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            identity["dependencies"][package] = None
-    math_settings = {"tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
-                     "tf32_cudnn": torch.backends.cudnn.allow_tf32,
-                     "cudnn_benchmark": torch.backends.cudnn.benchmark,
-                     "cudnn_deterministic": torch.backends.cudnn.deterministic,
-                     "deterministic_algorithms": torch.are_deterministic_algorithms_enabled()}
-    identity["math_settings"] = math_settings
+    identity = build_runtime_identity(config, dataset.data_cfg, code_revision_value=code_revision(),
+                                      worktree_sha256=worktree_digest())
+    math_settings = identity["math_settings"]
+    performance = config.get("runtime", {}).get("performance")
+    migration_receipt = None
+    progress.update(performance_identity=identity.get("performance"), performance_settings=performance)
     step, best, previous = 0, None, None
     if resume or init_checkpoint:
         source = store.recover(resume) if resume else init_checkpoint
@@ -141,6 +128,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             if state["scheduler_state_dict"]["global_step"] != state["global_step"]:
                 raise ValueError("Resume scheduler step differs")
             validate_resume_progress(state, budget)
+            if previous.get("performance_migration"):
+                from suction20.pretrain_runtime import verify_performance_migration
+                migration_receipt = verify_performance_migration(run_dir, previous["performance_migration"], identity)
             step, best = state["global_step"], state.get("best_metric")
     cap = int(train_cfg["max_optimizer_steps"])
     if stop_at_step is not None:
@@ -152,6 +142,10 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                  "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                  "gpu_uuid": normalize_gpu_uuid(torch.cuda.get_device_properties(device).uuid) if device.type == "cuda" else None,
                  "math_settings": math_settings, "runtime": config.get("runtime", {})}
+    if migration_receipt:
+        execution["performance_diagnostic_window"] = {
+            "start_step": migration_receipt["global_step"],
+            "end_step_exclusive": migration_receipt["global_step"] + 50}
     if device.type == "cuda":
         # NVML can report host PIDs outside our container PID namespace. The
         # supervisor may identify a sole NVML process only after this positive
@@ -183,6 +177,12 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
               checkpoint=store.current, recovery=store.recovery)
     progress.update(global_step=step, effective_samples_completed=step * effective_batch,
                     last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
+    migration = (previous or {}).get("performance_migration")
+    diagnostic_until_step = migration_receipt["global_step"] + 50 if migration_receipt else None
+    if diagnostic_until_step is not None:
+        log.event("performance_diagnostic_window", start_step=migration_receipt["global_step"],
+                  end_step_exclusive=diagnostic_until_step,
+                  policy="first 50 successful updates after explicit migration; timing only")
     saved_step, saved_time = step, time.monotonic()
 
     def save(*, retain=False, promote_best=False, reason="cadence"):
@@ -194,6 +194,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                              pending_validation=pending, validations=validations, consecutive_skips=skips,
                              budget=budget, effective_samples_completed=step * effective_batch,
                              last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
+        if migration:
+            runtime_state["performance_migration"] = migration
         def writer(path):
             save_checkpoint(path, model, optimizer, scaler, schedule, global_step=step,
                             config=config, source_label_config=dataset.data_cfg, best_metric=best,
@@ -209,6 +211,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                         counters={"effective_samples_completed": step * effective_batch, "consumed_samples": log.frames,
                                   "skipped_samples": log.skipped * effective_batch, "optimizer_attempts": log.attempts},
                         last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
+        if migration:
+            analysis["performance_migration"] = migration
         entry = store.publish(writer, step=step, attempt_id=log.attempt_id, pending=pending,
                               best_step=best["global_step"] if best else None,
                               retain=retain or retain_prefix, promote_best=promote_best, analysis=analysis)
@@ -298,7 +302,19 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     parameters = [p for p in model.parameters() if p.requires_grad]
     probe = parameters[0]
     optimizer.zero_grad(set_to_none=True)
+    loader, loader_iter = None, None
+    consumed_count = log.frames
     try:
+        if performance:
+            from suction20.prefetch import make_ticket_loader, consume_tickets, close_ticket_loader
+            from suction20.cpu_geometry import CpuGeometry, SamplerTargetsCPU
+            from suction20.run_supervisor import process_identity
+            loader = make_ticket_loader(dataset, schedule, start_sequence_id=consumed_count,
+                microbatch=microbatch, voxel_size_m=config["model"].get("voxel_size_m", .002),
+                loader_config=performance["loader"], seed=config.get("sampling_seed", 20261110))
+            loader_iter = iter(loader)
+            progress.update(loader_worker_identities=[process_identity(worker.pid)
+                            for worker in getattr(loader_iter, "_workers", [])])
         save(reason="resume" if resume else "initial")
         while True:
             if progress.pause_requested() or (pause_active and step >= pause_at_step):
@@ -323,6 +339,13 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             model.train()
+            detailed_timing_active = bool(performance and (performance["detailed_cpu_timing"] or
+                (diagnostic_until_step is not None and step < diagnostic_until_step)))
+            grouping = getattr(model, "contact_grouping", None)
+            if grouping is not None:
+                grouping.detailed_cpu_timing = detailed_timing_active
+            progress.update(performance_diagnostics={"active": detailed_timing_active,
+                            "until_step_exclusive": diagnostic_until_step})
             lr = learning_rate(step, peak=opt_cfg.get("lr_peak", .001),
                                start=scheduler.get("warmup_start_lr", 1e-5),
                                final=scheduler.get("final_lr", 1e-5),
@@ -331,41 +354,66 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             for group in optimizer.param_groups:
                 group["lr"] = lr
             totals, consumed, frame_stats, frame_details = {}, [], [], []
-            data_seconds, collate_seconds = 0., 0.
+            data_seconds, collate_seconds, loader_wait_s = 0., 0., 0.
+            production_timing = {}
             timing = {name: 0. for name in ("data", "collate", "h2d_host", "forward_host", "loss_host", "backward_host", "optimizer_host", "diagnostics_host")}
             before = probe.detach().clone()
             for micro_index in range(accumulation):
-                samples = []
-                micro_frames = []
-                for _ in range(microbatch):
-                    key, aug_seed = schedule.next()
-                    normalized_key = frame_key(key, config["data"].get("camera", "realsense"))
-                    index = key_to_index[normalized_key]
-                    loading_started = time.perf_counter()
-                    samples.append(dataset.get_sample(index, aug_seed))
-                    data_seconds += time.perf_counter() - loading_started
-                    consumed.append(list(normalized_key))
-                    detail = dict(sample_uid=list(normalized_key), augmentation_seed=aug_seed,
-                                  microbatch_index=micro_index, point_count=len(samples[-1]["inputs"]["xyz_cam_m"]),
-                                  consumed_sampler_epoch=schedule.epoch)
-                    micro_frames.append(detail)
-                    frame_details.append(detail)
-                regime_epoch = sampling_epoch(budget, step, schedule.epoch)
+                samples, micro_frames, cpu_kwargs = [], [], {}
+                if loader_iter is not None:
+                    waiting = time.perf_counter()
+                    packed = next(loader_iter)
+                    loader_wait_s += time.perf_counter() - waiting
+                    tickets = packed["tickets"]
+                    production = packed.get("production_timing", {})
+                    data_seconds += production.get("prepare_total_s", 0.)
+                    collate_seconds += production.get("collate_total_s", 0.)
+                    for name, seconds in production.items():
+                        production_timing[name] = production_timing.get(name, 0.) + seconds
+                    for index, ticket in enumerate(tickets):
+                        offsets = packed["inputs"]["point_offsets"]
+                        detail = dict(sequence_id=ticket.sequence_id, sample_uid=list(ticket.frame_key), augmentation_seed=ticket.augmentation_seed,
+                            microbatch_index=micro_index, point_count=int(offsets[index + 1] - offsets[index]),
+                            consumed_sampler_epoch=ticket.sample_epoch)
+                        micro_frames.append(detail)
+                        frame_details.append(detail)
+                        consumed.append(list(ticket.frame_key))
+                    cpu_kwargs = {"cpu_geometry": CpuGeometry.from_inputs(packed["inputs"]),
+                                  "sampler_targets_cpu": SamplerTargetsCPU.from_targets(packed["targets"])}
+                else:
+                    for _ in range(microbatch):
+                        key, aug_seed = schedule.next()
+                        normalized_key = frame_key(key, config["data"].get("camera", "realsense"))
+                        index = key_to_index[normalized_key]
+                        loading_started = time.perf_counter()
+                        samples.append(dataset.get_sample(index, aug_seed))
+                        data_seconds += time.perf_counter() - loading_started
+                        consumed.append(list(normalized_key))
+                        detail = dict(sequence_id=log.frames + len(consumed) - 1, sample_uid=list(normalized_key), augmentation_seed=aug_seed,
+                                      microbatch_index=micro_index, point_count=len(samples[-1]["inputs"]["xyz_cam_m"]),
+                                      consumed_sampler_epoch=schedule.epoch)
+                        micro_frames.append(detail)
+                        frame_details.append(detail)
+                    collate_started = time.perf_counter()
+                    packed = collate_public(samples, config["model"].get("voxel_size_m", .002))
+                    collate_seconds += time.perf_counter() - collate_started
+                regime_epoch = sampling_epoch(budget, step, tickets[-1].sample_epoch if loader_iter is not None else schedule.epoch)
                 model.set_epoch(regime_epoch)
-                collate_started = time.perf_counter()
-                packed = collate_public(samples, config["model"].get("voxel_size_m", .002))
-                collate_seconds += time.perf_counter() - collate_started
                 for frame_index, detail in enumerate(micro_frames):
                     detail["voxel_count"] = int((packed["inputs"]["voxel_coords"][:, 0] == frame_index).sum())
                 frame_stats.append({"microbatch_index": micro_index, "sampling_regime_epoch": regime_epoch, "point_count": len(packed["inputs"]["xyz_cam_m"]),
                                     "voxel_count": len(packed["inputs"]["voxel_coords"])})
+                if loader_iter is not None:
+                    frame_stats[-1].update(worker_pid=packed.get("worker_pid"),
+                        cache_info=packed.get("cache_info"), production_timing=packed.get("production_timing"))
                 timer = time.perf_counter()
-                inputs = move_to_device(packed["inputs"], device)
-                targets = move_to_device(packed["targets"], device)
+                upload = select_training_gpu_inputs(packed["inputs"]) if performance else packed["inputs"]
+                inputs = move_to_device(upload, device, non_blocking=bool(performance))
+                targets = move_to_device(packed["targets"], device, non_blocking=bool(performance))
                 timing["h2d_host"] += time.perf_counter() - timer
                 timer = time.perf_counter()
                 with torch.autocast(device_type=device.type, enabled=amp):
-                    prediction = model(inputs, sampler_mode="train", targets=targets)
+                    prediction = model(inputs, sampler_mode="train", targets=targets, **cpu_kwargs)
                 timing["forward_host"] += time.perf_counter() - timer
                 seed_counts = prediction["seed_valid"].sum(dim=-1).detach().cpu().tolist()
                 if not isinstance(seed_counts, list):
@@ -396,11 +444,13 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 else:
                     frame_stats[-1]["supervised_frame_counts"] = None
                 timing["diagnostics_host"] += time.perf_counter() - timer
-                del samples, packed, prediction, loss, inputs, targets
+                if loader_iter is not None:
+                    consumed_count = consume_tickets(schedule, tickets, consumed_count)
+                del samples, packed, prediction, loss, inputs, targets, cpu_kwargs, upload
             timer = time.perf_counter()
             updated, grad_norm = optimizer_update(optimizer, scaler, parameters, opt_cfg.get("grad_clip_norm", 10.))
             timing["optimizer_host"] += time.perf_counter() - timer
-            timing.update(data=data_seconds, collate=collate_seconds)
+            timing.update(data=data_seconds, collate=collate_seconds, loader_wait_s=loader_wait_s)
             if updated:
                 step += 1
                 skips = 0
@@ -417,8 +467,11 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                        started_utc=started_utc, ended_utc=datetime.now(timezone.utc).isoformat(),
                        started_unix=started_unix, ended_unix=time.time(),
                        started_monotonic=started_monotonic, ended_monotonic=time.monotonic(),
-                       timing_seconds=timing,
-                       timing_scope="Host intervals with incidental synchronization; excludes logging/checkpoint/validation; not isolated GPU kernel times",
+                       timing_seconds=timing, production_timing=production_timing,
+                       loader_wait_s=loader_wait_s, performance_identity=identity.get("performance"),
+                       performance_diagnostics={"active": detailed_timing_active,
+                           "until_step_exclusive": diagnostic_until_step},
+                       timing_scope="Host intervals with incidental synchronization; excludes logging/checkpoint/validation; producer data/collate overlap training; loader_wait_s is exposed wait; not isolated GPU kernel times",
                        memory_scope="CUDA peaks reset at each accumulation attempt; RSS is process lifetime maximum",
                        grad_norm_scope="unscaled pre-clipping total gradient norm",
                        amp_scale_before=amp_scale_before, amp_scale_after=scaler.get_scale(),
@@ -439,7 +492,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                             consumed_samples=row["consumed_samples"], skipped_samples=row["skipped_samples"],
                             progressed=True, phase="training",
                             last_update={key: row[key] for key in
-                                         ("data_seconds", "collate_seconds", "elapsed_seconds", "updated")})
+                                         ("data_seconds", "collate_seconds", "loader_wait_s", "elapsed_seconds", "updated")})
             print(json.dumps({"attempt_id": log.attempt_id, "global_step": step,
                               "updated": updated, "elapsed_seconds": row["elapsed_seconds"]}), flush=True)
             if skips >= 10:
@@ -455,6 +508,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         log.event("failed", global_step=step, error=f"{type(error).__name__}: {error}")
         raise
     finally:
+        if loader is not None:
+            close_ticket_loader(loader, loader_iter)
+            progress.update(loader_worker_identities=[])
         log.close()
 
 
@@ -462,6 +518,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--performance-config", help="Independent strict performance sidecar; frozen profile stays unchanged")
     parser.add_argument("--stop-at-step", type=int, help="Legacy bounded smoke stop; includes final validation")
     parser.add_argument("--pause-at-step", type=int, help="Pause at a successful update boundary without extra validation")
     parser.add_argument("--control-dir")
@@ -476,6 +533,8 @@ def main():
     args = parser.parse_args()
     config = override_paths(load_config(args.config), args)
     config.setdefault("runtime", {})["raw_config_sha256"] = file_digest(args.config)
+    if args.performance_config:
+        config = attach_performance(config, args.performance_config)
     for key in ("cpu_threads", "gpu_memory_limit_gib"):
         value = getattr(args, key)
         if value is not None:
