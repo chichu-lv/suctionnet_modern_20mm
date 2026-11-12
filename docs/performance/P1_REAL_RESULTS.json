@@ -1,0 +1,875 @@
+{
+  "schema_version": "suction20.performance-real-results.v1",
+  "date": "2026-11-12",
+  "status": "P0/P1 implemented, validated, deployed; E0/E3/E5 resumed; full E0-E5 training remains in progress",
+  "source_identity": {
+    "deployment_revision": "996421c664a5a0b84c308aa4ca47c31eaff4035b",
+    "deployment_worktree_sha256": "23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20",
+    "github_code_snapshot": "f6cb0102ebe4566bff023b251525171f15265fa8",
+    "equal_tree_sha": "c5d5cf22b8fe7fc58fba9131cfb769383e7d7cae"
+  },
+  "tests": {
+    "passed": 296,
+    "skipped": 1,
+    "code_ci_run_id": 43186974094,
+    "code_ci_conclusion": "success"
+  },
+  "unchanged_contract": {
+    "microbatch": 1,
+    "accumulation": 4,
+    "effective_batch": 4,
+    "target_effective_frames": 230400,
+    "successful_updates": 57600,
+    "validation_steps": [
+      5760,
+      11520,
+      17280,
+      23040,
+      28800,
+      34560,
+      40320,
+      46080,
+      51840,
+      57600
+    ],
+    "frames_per_validation": 320,
+    "network_voxel_mm": 2,
+    "candidate_count": 512
+  },
+  "selection": {
+    "fps": "compiled exact FP64, no fast-math/FMA contraction",
+    "query_chunk_size": null,
+    "query_workers": 1,
+    "loader_workers": 2,
+    "prefetch_factor": 2,
+    "multiprocessing_context": "spawn",
+    "persistent_workers": true,
+    "pin_memory": true,
+    "real_fixed_pose_query_seconds": {
+      "scalar_shared": [
+        1.728,
+        1.85
+      ],
+      "batch64_workers1": [
+        2.034,
+        2.037
+      ],
+      "batch64_workers4": [
+        3.146,
+        3.221
+      ]
+    }
+  },
+  "numeric_equivalence": {
+    "schema_version": "suction20.paired-pipeline-comparison.v1",
+    "passed": true,
+    "scope": "paired suffix/data/geometry plus VJP through one shared real backbone graph per frame",
+    "checkpoint_sha256": "8862bac5dbf59db444e66da800b83a1659fc094d241c3d185f1cee37d718a4f0",
+    "checkpoint_step": 380,
+    "config_sha256": "55e98e4d1adc6038590414ee92d15e8ad36152cd4ca0012128f25e7a19fab7c9",
+    "performance_config_sha256": "08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188",
+    "optimizer_updates": 0,
+    "failures": [],
+    "limitations": [
+      "Does not supersede the failed independent-process end-to-end comparison.",
+      "Shared-backbone boundary removes independent sparse CUDA forward variation from this diagnostic.",
+      "Two sequential backward VJPs may retain CUDA numerical variation; existing tolerances still apply.",
+      "AMP gradients use the same original checkpoint scale; no unscale or optimizer step.",
+      "Sequential synchronous data preparation; does not benchmark prefetch or training throughput.",
+      "Four real frames only; no convergence or physical-quality conclusion."
+    ],
+    "atol": 0.0002,
+    "rtol": 0.002,
+    "frames": [
+      {
+        "index": 0,
+        "frame_key": [
+          26,
+          "realsense",
+          144
+        ],
+        "augmentation_seed": 3004977040,
+        "gradient_health": {
+          "baseline": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          },
+          "optimized": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          }
+        },
+        "losses": {
+          "baseline": {
+            "q0": 0.13913790881633759,
+            "q": 0.11678659915924072,
+            "normal": 0.13850508630275726,
+            "seal": 0.2316146194934845,
+            "wrench": 0.10577475279569626,
+            "collision_free": 0.5372762680053711,
+            "total": 0.7289132475852966
+          },
+          "optimized": {
+            "q0": 0.13913790881633759,
+            "q": 0.11678659915924072,
+            "normal": 0.13850508630275726,
+            "seal": 0.2316146194934845,
+            "wrench": 0.10577475279569626,
+            "collision_free": 0.5372762680053711,
+            "total": 0.7289132475852966
+          }
+        }
+      },
+      {
+        "index": 1,
+        "frame_key": [
+          78,
+          "realsense",
+          161
+        ],
+        "augmentation_seed": 216422544,
+        "gradient_health": {
+          "baseline": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          },
+          "optimized": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          }
+        },
+        "losses": {
+          "baseline": {
+            "q0": 0.10116897523403168,
+            "q": 0.11001847684383392,
+            "normal": 0.13537923991680145,
+            "seal": 0.15213601291179657,
+            "wrench": 0.12492726743221283,
+            "collision_free": 0.5853277444839478,
+            "total": 0.6477785110473633
+          },
+          "optimized": {
+            "q0": 0.10116897523403168,
+            "q": 0.11001847684383392,
+            "normal": 0.13537923991680145,
+            "seal": 0.15213601291179657,
+            "wrench": 0.12492726743221283,
+            "collision_free": 0.5853277444839478,
+            "total": 0.6477785110473633
+          }
+        }
+      },
+      {
+        "index": 2,
+        "frame_key": [
+          87,
+          "realsense",
+          238
+        ],
+        "augmentation_seed": 527171085,
+        "gradient_health": {
+          "baseline": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          },
+          "optimized": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          }
+        },
+        "losses": {
+          "baseline": {
+            "q0": 0.0496697798371315,
+            "q": 0.06595182418823242,
+            "normal": 0.13630932569503784,
+            "seal": 0.13817116618156433,
+            "wrench": 0.1177825927734375,
+            "collision_free": 0.5298519730567932,
+            "total": 0.5397566556930542
+          },
+          "optimized": {
+            "q0": 0.0496697798371315,
+            "q": 0.06595182418823242,
+            "normal": 0.13630932569503784,
+            "seal": 0.13817116618156433,
+            "wrench": 0.1177825927734375,
+            "collision_free": 0.5298519730567932,
+            "total": 0.5397566556930542
+          }
+        }
+      },
+      {
+        "index": 3,
+        "frame_key": [
+          83,
+          "realsense",
+          200
+        ],
+        "augmentation_seed": 2700880752,
+        "gradient_health": {
+          "baseline": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          },
+          "optimized": {
+            "backbone": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 102
+            },
+            "boundary": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 1
+            },
+            "suffix": {
+              "finite": true,
+              "nonzero": true,
+              "tensors": 92
+            }
+          }
+        },
+        "losses": {
+          "baseline": {
+            "q0": 0.06571962684392929,
+            "q": 0.07898510992527008,
+            "normal": 0.13991816341876984,
+            "seal": 0.12849272787570953,
+            "wrench": 0.08782303333282471,
+            "collision_free": 0.46307557821273804,
+            "total": 0.5570507049560547
+          },
+          "optimized": {
+            "q0": 0.06571962684392929,
+            "q": 0.07898510992527008,
+            "normal": 0.13991816341876984,
+            "seal": 0.12849272787570953,
+            "wrench": 0.08782303333282471,
+            "collision_free": 0.46307557821273804,
+            "total": 0.5570507049560547
+          }
+        }
+      }
+    ]
+  },
+  "independent_process_checks": {
+    "old_vs_new_passed": false,
+    "mismatches": 299,
+    "old_vs_old_control_passed": false,
+    "control_mismatches": 300,
+    "explanation": "Identical inputs/targets/meta, but small sparse CUDA backbone forward variation changed hard geometry membership. Failed evidence retained; no tolerance relaxation. Paired check isolates all changed paths and propagates both cotangents through one actual backbone graph."
+  },
+  "runs": {
+    "E5": {
+      "host": "H20",
+      "gpu_index": 0,
+      "baseline": {
+        "updates": 50,
+        "first_step": 309,
+        "last_step": 358,
+        "elapsed_seconds": {
+          "median": 33.83472373499535,
+          "mean": 33.81065223441459
+        }
+      },
+      "optimized": {
+        "schema_version": "suction20.normal-performance-window.v1",
+        "log_prefix_sha256": "9e08943828d9671439dde91a195155611a2cc80c11de07a69c7da2972b28ee82",
+        "updates": 30,
+        "first_step": 381,
+        "last_step": 410,
+        "all_successful_and_finite": true,
+        "effective_batch_size": 4,
+        "elapsed_seconds": {
+          "mean": 11.35921319013772,
+          "median": 10.92731810361147,
+          "minimum": 10.056437192019075,
+          "maximum": 22.955322267021984
+        },
+        "excluding_first_update_seconds": {
+          "mean": 10.959347359900331,
+          "median": 10.92191947530955,
+          "minimum": 10.056437192019075,
+          "maximum": 11.84696445101872
+        },
+        "first_update_seconds": 22.955322267021984,
+        "loader_wait_seconds": {
+          "mean": 0.03523598865916332,
+          "median": 0.0018953478429466486,
+          "minimum": 0.001696217805147171,
+          "maximum": 0.9999147523194551
+        },
+        "producer_data_plus_collate_seconds": {
+          "mean": 3.887704767240211,
+          "median": 3.8297499411273748,
+          "minimum": 3.4202911937609315,
+          "maximum": 4.730305741075426
+        },
+        "window_wall_seconds": 341.0460093021393,
+        "summed_update_seconds": 340.7763957041316,
+        "window_events": [],
+        "peak_gpu_bytes": 12628001792,
+        "grouping_per_update": {
+          "geometry_cpu_setup_s": {
+            "mean": 0.012161412416025997,
+            "median": 0.011861566687002778,
+            "minimum": 0.0108618950471282,
+            "maximum": 0.018763311207294464
+          },
+          "tree_build_s": {
+            "mean": 1.0002813729302338,
+            "median": 0.9839895891491324,
+            "minimum": 0.8941135047934949,
+            "maximum": 1.1309485924430192
+          },
+          "pose_d2h_host_s": {
+            "mean": 0.0007699780476589997,
+            "median": 0.0006961880717426538,
+            "minimum": 0.0006183404475450516,
+            "maximum": 0.002983681857585907
+          },
+          "valid_candidates": {
+            "mean": 2044.8333333333333,
+            "median": 2048,
+            "minimum": 1999,
+            "maximum": 2048
+          },
+          "ball_calls": {
+            "mean": 8179.333333333333,
+            "median": 8192,
+            "minimum": 7996,
+            "maximum": 8192
+          },
+          "ball_api_calls": {
+            "mean": 8179.333333333333,
+            "median": 8192,
+            "minimum": 7996,
+            "maximum": 8192
+          },
+          "ball_returned_points": {
+            "mean": 32483703.433333334,
+            "median": 32544147,
+            "minimum": 28985290,
+            "maximum": 37600751
+          },
+          "fps_calls": {
+            "mean": 7125,
+            "median": 7180,
+            "minimum": 6736,
+            "maximum": 7322
+          },
+          "fps_input_points": {
+            "mean": 14883588.433333334,
+            "median": 14874364,
+            "minimum": 13271551,
+            "maximum": 17693704
+          },
+          "ball_query_s": {
+            "mean": 2.7969550788713,
+            "median": 2.749088605865836,
+            "minimum": 2.4904636945575476,
+            "maximum": 3.15454972255975
+          },
+          "region_filter_s": {
+            "mean": 2.0172499690515298,
+            "median": 1.9996534250676632,
+            "minimum": 1.815095853060484,
+            "maximum": 2.337614946067333
+          },
+          "fps_s": {
+            "mean": 1.3452734054376683,
+            "median": 1.3333718604408205,
+            "minimum": 1.228396953549236,
+            "maximum": 1.5450586816295981
+          },
+          "descriptor_pack_s": {
+            "mean": 0.20201667989604175,
+            "median": 0.2007003694307059,
+            "minimum": 0.18754357984289527,
+            "maximum": 0.2216057339683175
+          },
+          "spatial_index_seconds": {
+            "mean": 1.0124731136330714,
+            "median": 0.9958592262119055,
+            "minimum": 0.9050003243610263,
+            "maximum": 1.1433909614570439
+          },
+          "query_cpu_seconds": {
+            "mean": 6.388071774256726,
+            "median": 6.326196776703,
+            "minimum": 5.746036123018712,
+            "maximum": 7.218585209455341
+          },
+          "feature_projection_and_transfer_seconds": {
+            "mean": 0.040333780196184915,
+            "median": 0.039849600521847606,
+            "minimum": 0.03801333624869585,
+            "maximum": 0.05167412105947733
+          },
+          "feature_encoding_enqueue_seconds": {
+            "mean": 0.1567197368014604,
+            "median": 0.1451826032716781,
+            "minimum": 0.14184681931510568,
+            "maximum": 0.3899071249179542
+          },
+          "sampler_cpu_s": {
+            "mean": 0.1567722262038539,
+            "median": 0.1528862116392702,
+            "minimum": 0.10728909680619836,
+            "maximum": 0.21570927603170276
+          },
+          "q0_d2h_host_s": {
+            "mean": 0.0017488736659288407,
+            "median": 0.0015612426213920116,
+            "minimum": 0.0013474351726472378,
+            "maximum": 0.005271246191114187
+          },
+          "sampler_geometry_cpu_setup_s": {
+            "mean": 0.0043815681400398414,
+            "median": 0.004341957625001669,
+            "minimum": 0.004021036438643932,
+            "maximum": 0.005225994158536196
+          }
+        },
+        "limitations": [
+          "Normal sequential windows use different frames before and after optimization.",
+          "Update elapsed excludes checkpoint/logging/validation; window wall includes between-update events.",
+          "Producer timing overlaps training; exposed loader wait is reported separately.",
+          "First 30 post-migration updates include startup; a separate summary excludes the first update.",
+          "No additional optimizer updates or validation nodes were created for measurement."
+        ],
+        "performance_config_sha256": "08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188"
+      },
+      "median_ratio": 3.096342891657286,
+      "resource_summary": {
+        "sample_count": 5,
+        "job_rss_max_sampled_bytes": 4576350208,
+        "device_memory_max_sampled_mib": 20327,
+        "complete_cpu_samples": 4,
+        "job_cpu_core_equivalents_complete_samples": [
+          1.4557240325883327,
+          1.4934104177930252,
+          1.4871342779963477,
+          1.4641595117402586
+        ]
+      },
+      "migration": {
+        "source_step": 380,
+        "exact_tensor_count": 874,
+        "state_conservation_passed": true,
+        "next_frames_seeds_cursor_verified": true,
+        "two_loader_children_verified": true,
+        "normal_backup_migration_archive_hash_size_verified": true
+      }
+    },
+    "E0": {
+      "host": "L20",
+      "gpu_index": 1,
+      "baseline": {
+        "updates": 50,
+        "first_step": 532,
+        "last_step": 581,
+        "elapsed_seconds": {
+          "median": 11.349238292779773,
+          "mean": 11.311290133036673
+        }
+      },
+      "optimized": {
+        "schema_version": "suction20.normal-performance-window.v1",
+        "log_prefix_sha256": "0a550d3e8cf2ca102812768dc0fbda35e09741d7de96fa183deb223b182ead7c",
+        "updates": 30,
+        "first_step": 834,
+        "last_step": 863,
+        "all_successful_and_finite": true,
+        "effective_batch_size": 4,
+        "elapsed_seconds": {
+          "mean": 4.442768001385654,
+          "median": 4.2078180650714785,
+          "minimum": 3.8613366186618805,
+          "maximum": 11.783914621919394
+        },
+        "excluding_first_update_seconds": {
+          "mean": 4.189625014470698,
+          "median": 4.2022614339366555,
+          "minimum": 3.8613366186618805,
+          "maximum": 4.454010367393494
+        },
+        "first_update_seconds": 11.783914621919394,
+        "loader_wait_seconds": {
+          "mean": 0.023021234013140202,
+          "median": 0.001025124453008175,
+          "minimum": 0.0009369933977723122,
+          "maximum": 0.6603338392451406
+        },
+        "producer_data_plus_collate_seconds": {
+          "mean": 4.126474481510619,
+          "median": 4.057277121813968,
+          "minimum": 3.771934629417956,
+          "maximum": 5.078216942027211
+        },
+        "window_wall_seconds": 133.66404056549072,
+        "summed_update_seconds": 133.28304004156962,
+        "window_events": [],
+        "peak_gpu_bytes": 12594828288,
+        "grouping_per_update": {
+          "sampler_cpu_s": {
+            "mean": 0.12316980995237828,
+            "median": 0.12035607639700174,
+            "minimum": 0.09700157633051276,
+            "maximum": 0.16536296717822552
+          },
+          "q0_d2h_host_s": {
+            "mean": 0.0016547916612277428,
+            "median": 0.0013405075296759605,
+            "minimum": 0.0012500602751970291,
+            "maximum": 0.004665583372116089
+          },
+          "sampler_geometry_cpu_setup_s": {
+            "mean": 0.004183330961192648,
+            "median": 0.004132222617045045,
+            "minimum": 0.003932453226298094,
+            "maximum": 0.005072775762528181
+          }
+        },
+        "limitations": [
+          "Normal sequential windows use different frames before and after optimization.",
+          "Update elapsed excludes checkpoint/logging/validation; window wall includes between-update events.",
+          "Producer timing overlaps training; exposed loader wait is reported separately.",
+          "First 30 post-migration updates include startup; a separate summary excludes the first update.",
+          "No additional optimizer updates or validation nodes were created for measurement."
+        ],
+        "performance_config_sha256": "08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188"
+      },
+      "median_ratio": 2.697178945779107,
+      "resource_summary": {
+        "sample_count": 2,
+        "job_rss_max_sampled_bytes": 3672571904,
+        "device_memory_max_sampled_mib": 19352,
+        "complete_cpu_samples": 1,
+        "job_cpu_core_equivalents_complete_samples": [
+          1.9556122712029644
+        ]
+      },
+      "migration": {
+        "source_step": 833,
+        "exact_tensor_count": 642,
+        "state_conservation_passed": true,
+        "next_frames_seeds_cursor_verified": true,
+        "two_loader_children_verified": true,
+        "normal_backup_migration_archive_hash_size_verified": true
+      }
+    },
+    "E3": {
+      "host": "L20",
+      "gpu_index": 3,
+      "baseline": {
+        "updates": 50,
+        "first_step": 308,
+        "last_step": 357,
+        "elapsed_seconds": {
+          "median": 34.19032666226849,
+          "mean": 34.13694679854438
+        }
+      },
+      "optimized": {
+        "schema_version": "suction20.normal-performance-window.v1",
+        "log_prefix_sha256": "871d426c049a2b7a8b27fff600fec5836e0dfb78a5d0f4e3c619892fa982d9b6",
+        "updates": 20,
+        "first_step": 442,
+        "last_step": 461,
+        "all_successful_and_finite": true,
+        "effective_batch_size": 4,
+        "elapsed_seconds": {
+          "mean": 12.52732740205247,
+          "median": 12.183709401870146,
+          "minimum": 11.438006286974996,
+          "maximum": 20.489271104801446
+        },
+        "excluding_first_update_seconds": {
+          "mean": 12.108277733486734,
+          "median": 12.181028163060546,
+          "minimum": 11.438006286974996,
+          "maximum": 12.62666314188391
+        },
+        "first_update_seconds": 20.489271104801446,
+        "loader_wait_seconds": {
+          "mean": 0.031901476974599066,
+          "median": 0.001079849200323224,
+          "minimum": 0.001013865228742361,
+          "maximum": 0.6155110974796116
+        },
+        "producer_data_plus_collate_seconds": {
+          "mean": 3.8978019473375753,
+          "median": 3.8639320444781333,
+          "minimum": 3.5513830967247486,
+          "maximum": 4.778203095775098
+        },
+        "window_wall_seconds": 250.80637288093567,
+        "summed_update_seconds": 250.5465480410494,
+        "window_events": [],
+        "peak_gpu_bytes": 12525230592,
+        "grouping_per_update": {
+          "geometry_cpu_setup_s": {
+            "mean": 0.014666078984737397,
+            "median": 0.013525955844670534,
+            "minimum": 0.012148607056587934,
+            "maximum": 0.03001393424347043
+          },
+          "tree_build_s": {
+            "mean": 1.038090835069306,
+            "median": 1.0354735946748406,
+            "minimum": 0.9927252014167607,
+            "maximum": 1.1286257901228964
+          },
+          "pose_d2h_host_s": {
+            "mean": 0.0008399581536650657,
+            "median": 0.0008343951776623726,
+            "minimum": 0.000764770433306694,
+            "maximum": 0.0011232909746468067
+          },
+          "valid_candidates": {
+            "mean": 2046.2,
+            "median": 2048,
+            "minimum": 2013,
+            "maximum": 2048
+          },
+          "ball_calls": {
+            "mean": 8184.8,
+            "median": 8192,
+            "minimum": 8052,
+            "maximum": 8192
+          },
+          "ball_api_calls": {
+            "mean": 8184.8,
+            "median": 8192,
+            "minimum": 8052,
+            "maximum": 8192
+          },
+          "ball_returned_points": {
+            "mean": 32673270.6,
+            "median": 33255660,
+            "minimum": 29048429,
+            "maximum": 36059245
+          },
+          "fps_calls": {
+            "mean": 7101.8,
+            "median": 7083,
+            "minimum": 6899,
+            "maximum": 7387
+          },
+          "fps_input_points": {
+            "mean": 14956430.95,
+            "median": 15126662.5,
+            "minimum": 13040666,
+            "maximum": 16497544
+          },
+          "ball_query_s": {
+            "mean": 2.8171442636521533,
+            "median": 2.842893484281376,
+            "minimum": 2.529317817185074,
+            "maximum": 3.0222536330111325
+          },
+          "region_filter_s": {
+            "mean": 1.8709620472742245,
+            "median": 1.8944181648548692,
+            "minimum": 1.7161817313171923,
+            "maximum": 2.008445000741631
+          },
+          "fps_s": {
+            "mean": 1.449075534637086,
+            "median": 1.4592504564207047,
+            "minimum": 1.3040361157618463,
+            "maximum": 1.5620607263408601
+          },
+          "descriptor_pack_s": {
+            "mean": 0.22346121133305133,
+            "median": 0.2230071455705911,
+            "minimum": 0.21321113966405392,
+            "maximum": 0.2335847271606326
+          },
+          "spatial_index_seconds": {
+            "mean": 1.0527918794192375,
+            "median": 1.0488864604849368,
+            "minimum": 1.0055903419852257,
+            "maximum": 1.1429725354537368
+          },
+          "query_cpu_seconds": {
+            "mean": 6.388852297863923,
+            "median": 6.455512112472206,
+            "minimum": 5.843577512539923,
+            "maximum": 6.848589826840907
+          },
+          "feature_projection_and_transfer_seconds": {
+            "mean": 0.0453913614153862,
+            "median": 0.04537651711143553,
+            "minimum": 0.04275756748393178,
+            "maximum": 0.048405544832348824
+          },
+          "feature_encoding_enqueue_seconds": {
+            "mean": 0.16936600452754647,
+            "median": 0.16332735936157405,
+            "minimum": 0.1606846060603857,
+            "maximum": 0.22954773576930165
+          },
+          "sampler_cpu_s": {
+            "mean": 0.12235956669319421,
+            "median": 0.1181872677989304,
+            "minimum": 0.10227868380025029,
+            "maximum": 0.1662696683779359
+          },
+          "q0_d2h_host_s": {
+            "mean": 0.0015594179276376963,
+            "median": 0.001378153683617711,
+            "minimum": 0.0012476681731641293,
+            "maximum": 0.003560984507203102
+          },
+          "sampler_geometry_cpu_setup_s": {
+            "mean": 0.004227220173925161,
+            "median": 0.004112896975129843,
+            "minimum": 0.003970518242567778,
+            "maximum": 0.005488980561494827
+          }
+        },
+        "limitations": [
+          "Normal sequential windows use different frames before and after optimization.",
+          "Update elapsed excludes checkpoint/logging/validation; window wall includes between-update events.",
+          "Producer timing overlaps training; exposed loader wait is reported separately.",
+          "First 20 post-migration updates include startup; a separate summary excludes the first update.",
+          "No additional optimizer updates or validation nodes were created for measurement."
+        ],
+        "performance_config_sha256": "08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188"
+      },
+      "median_ratio": 2.8062329406034934,
+      "resource_summary": {
+        "sample_count": 4,
+        "job_rss_max_sampled_bytes": 3763605504,
+        "device_memory_max_sampled_mib": 25278,
+        "complete_cpu_samples": 3,
+        "job_cpu_core_equivalents_complete_samples": [
+          1.3076856783747801,
+          1.3201702935835855,
+          1.3086275681851258
+        ]
+      },
+      "migration": {
+        "source_step": 441,
+        "exact_tensor_count": 770,
+        "state_conservation_passed": true,
+        "next_frames_seeds_cursor_verified": true,
+        "two_loader_children_verified": true,
+        "normal_backup_migration_archive_hash_size_verified": true
+      }
+    }
+  },
+  "evidence_sha256": {
+    "performance-baseline-H20.json": "a168eb5964217a47e8f7b6f418122467de5ed538e09ec5435730fa55ce8ef4aa",
+    "performance-baseline-L20.json": "66c538cdf0412d7f053223a787e187ebc5cdc801069b67ccdb20b3bdf974795b",
+    "performance-paired-comparison.json": "9f7111dc70ac2bc13190f01470db770f7901bacf4e71f1a3697a4868d41ca881",
+    "performance-independent-comparison-evidence.json": "3e95f945e50e6a8d4e665873586dfc8cde713317c0c89be53e5bfd837d58c0b2",
+    "performance-H20-migration-audit.json": "67f4141be1c6189e07827648951f501b8069ad8daa4bfac6df8ef94175bdd3d3",
+    "performance-L20-migration-audit.json": "5fe6bb8389b6c7f368eebd3707d7e6571213af01cec396c4aa8bb0c401c7bec4",
+    "performance-normal-E5.json": "d9aee583563113bad622f78a5465d08f510be64f039bfc625fcdeb0bcfa29df4",
+    "performance-normal-E0.json": "a62f9881a0efe6ec2ced2dbb3fb3ddb5d2fa1f04cea192b1869a2e3983ffdc65",
+    "performance-normal-E3.json": "25ac1082af786e602874e32eced5dd756dceff8a15ac2628d3973039c9896689"
+  },
+  "limitations": [
+    "Before/after normal windows use different frames; ratios are descriptive, not a controlled same-input causal speedup.",
+    "E3 moved from occupied L20 GPU0/CPU0-7 to same-model/capacity GPU3/CPU24-31; assignment change is an additional confounder.",
+    "Update elapsed excludes checkpoint, logging and validation. Window wall includes between-update work; no checkpoint or validation event fell within these measured windows.",
+    "Resource aggregates come from sparse snapshots, not continuous peaks or averaged GPU utilization. First sample lacks a complete CPU delta and verified process attribution. Raw records retain explicit missing reasons in local evidence.",
+    "Four-frame paired equivalence is not independent end-to-end CUDA determinism, convergence, or physical validation.",
+    "Normal backup verification covers the four migration archive files and receipt/attempt binding; request live progress differs from committed checkpoint progress."
+  ],
+  "publication_policy": "Public aggregates, comparison outcomes and evidence hashes only. Raw resource records, process/device identities, absolute paths and migration archives remain in local task evidence and remote run storage."
+}

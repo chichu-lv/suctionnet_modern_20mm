@@ -6,7 +6,17 @@
 
 性能优化前已部署的代码固定为 `98862f4d6a133c99afa082a0755dbb888b41b38d`，运行源码 SHA256 为 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。该版本包含 JSON 数字读取修复：`.json` 使用 JSON parser，避免 `1e-08` 被 YAML 当作字符串。YAML 配置继续按 YAML 规则读取。
 
-此前 GitHub 以源码快照发布，发布 commit 有独立 SHA，不承诺原部署 commit 的 Git 祖先链或该 SHA 可从 GitHub checkout。本次候选分支已加入性能优化代码，**分支 HEAD 不代表已部署或已验收的运行版本**。普通恢复仍要求相同代码与性能身份；从上述旧版本切换必须使用下述显式迁移，不能直接用新 HEAD 恢复旧 checkpoint。部署冻结的 commit、源码摘要、性能配置及本机扩展身份最终记录在迁移 receipt 和新 attempt 中。
+H20/E5、L20/E0 与 E3 已切换到性能版本；代码部署和 GitHub 发布的对应关系如下。这里不表示其余 E1/E2/E4 已完成启动或训练。
+
+| 身份 | 已核验值 |
+| --- | --- |
+| 冻结部署 commit | `996421c664a5a0b84c308aa4ca47c31eaff4035b` |
+| 部署源码 SHA256 | `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` |
+| GitHub 同树源码发布 | [`f6cb0102ebe4566bff023b251525171f15265fa8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/f6cb0102ebe4566bff023b251525171f15265fa8) |
+| 发布 CI | [43186974094：通过](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43186974094) |
+| P1 性能 sidecar SHA256 | `08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188` |
+
+部署 commit 与该 GitHub commit 的 Git tree 已核对一致，但发布有独立 SHA，不承诺部署提交的 Git 祖先链。**本次后续文档发布不部署到训练 checkout，也不改变正在运行的身份。** 普通恢复仍要求相同代码与性能身份；旧 `98862f4` 仅通过显式迁移切换。current checkpoint、receipt 和新 attempt 保存实际 commit/源码摘要/sidecar/本机扩展身份，不能直接用后续文档 HEAD 替代。
 
 [六份正式配置及可移植哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 保留部署配置的原始字节。清单的 `config_path` 相对仓库根目录，`config_sha256` 是文件原始字节 SHA256；每组还记录测量文件名、SHA256、trial ID 和测量代码版本。原始测量日志、训练日志、权重、数据及私有控制配置不放入 Git。配置中的数据路径是占位符；运行时由 supervisor 参数覆盖，无需改写已绑定哈希的配置。
 
@@ -64,7 +74,7 @@ checkpoint 在完整更新边界每 100 成功步或 900 秒保存，并覆盖�
 
 完成须每组 230400 有效帧、10×320 帧验证、可恢复 best/last、连续规范日志与完整备份，六组都达标才关闭 README TODO1。当前没有发布完整验证结果、收敛/架构胜负、official-test、目标域微调或实机吸取结论。
 
-## 性能优化实现与待验收项
+## 性能优化验收与 rollout 状态
 
 [性能方案](PERFORMANCE_OPTIMIZATION.md) 保留 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97` 基线、CPU 原型和设计依据；当前分支已实现 CPython FP64 FPS、core/lip 复用、有界四球查询、selective NPZ、一维体素去重、CPU 几何上下文、有序后台预取，以及既有 checkpoint 的受限迁移。模型参数形状、原损失、完整观测和 v3 预算保持；六份硬件 profile 原始字节未改。
 
@@ -72,4 +82,11 @@ checkpoint 在完整更新边界每 100 成功步或 900 秒保存，并覆盖�
 
 迁移只接受上述 `98862f4` / `d634627b…` 源身份及已正常暂停的 current checkpoint；保留模型、Adam、AMP、RNG、已消费采样游标、成功步、best、验证和日志前缀。`migrations/performance-UUID/` 留存源状态硬链接、原 manifest、sidecar 和 receipt，备份一并验证和复制。迁移后前 50 次成功更新临时开启内部几何计时，之后回到 sidecar 默认关闭值；这 50 次属于原正式预算，不触发额外验证，也不改 sidecar 字节。
 
-本轮本地全套测试 **292 passed / 1 skipped**，代码复核已进行；**真实四帧 CUDA/AMP 对照、一次正常迁移续训、正常训练短窗提速仍待验收**。不把 CPU 原型加速当作整步收益，不据此宣称收敛或质量改善。验收结果另存证据；冻结部署 checkout 后不为补写报告而改变其源码身份。
+本轮本地全套测试 **296 passed / 1 skipped**，上述 GitHub CI 通过。真实四帧检查从 H20/E5 第 380 步 checkpoint 出发，保持原 AMP `atol=2e-4, rtol=2e-3`，没有 optimizer 更新：
+
+- 原独立进程新旧对照失败；旧代码自身重复运行也失败，稀疏骨干输出已有小幅差异，并通过预测轴影响硬边界区域选择。失败记录保留，没有放宽容差或改成“通过”。
+- 配对检查每帧仅计算一次相同的真实骨干输出，再执行旧/新下游路径；输入、完整查询索引/描述符与 RNG 精确核对，loss/输出/下游参数梯度/特征边界梯度按原容差比较，并把两份边界梯度分别通过同一真实骨干图回传。**四帧、零失败**；它验证本轮改动和梯度通路，不证明独立 CUDA 运行逐位确定。
+
+H20/E5 已在第 380 步正常暂停并迁移；迁移前后核对的 **874 个张量完全一致**，原源 checkpoint 和证据归档保留，随后正常接续更新。L20/E0 在第 833 步、E3 在第 441 步迁移，分别核对 642 / 770 个张量完全一致；E0 的下一批帧与 RNG 接续通过。E3 初次启动因 GPU0 被其他进程占用而在创建 trainer 前停止，保留失败 worker 证据，经原有恢复流程改用同主机授权空闲 GPU3（CPU 24–31）；硬件 profile 和学习状态不变，没有终止占用进程。
+
+原预算内正常窗口：E5 的 381–410 共 30 次成功更新，中位数 10.927 秒（旧窗口 33.835 秒），墙钟 341.046 秒；E0 的 834–863 共 30 次，中位数 4.208 秒（旧窗口 11.349 秒），墙钟 133.664 秒。观察到的中位数耗时比分别为 3.10 / 2.70，来自不同自然帧及运行时段，不能当作相同帧的因果倍率或跨架构公平排名。E3 的 442–461 共 20 次成功更新，中位数 12.184 秒（旧窗口 34.190 秒），墙钟 250.806 秒，观察到的中位数耗时比为 2.81；该组额外改变了 GPU/CPU affinity 放置。三个窗口均包含首步启动开销，窗口内没有 checkpoint/validation 事件；不能据此估算完整验证和长期备份开销。三项正常检查已完成，详见 [正常窗口表](PERFORMANCE_OPTIMIZATION.md#115-正常训练窗口) 与 [公开证据摘要](performance/P1_REAL_RESULTS.json)。六组完整训练、10 次开发验证、收敛和质量结论仍未完成。

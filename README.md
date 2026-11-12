@@ -18,12 +18,11 @@
 - [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录链路验证，完整训练效果见下方 TODO。
 
 - [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
-- [x] 基于 CD-009 当前代码的 [详细性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md)：精确 CPU 几何、读取与体素、后台预取、既有 checkpoint 续接及实现清单；已实现精确 C FPS、CPU 几何复用、按需读取与体素整理、有序预取和显式 checkpoint 迁移，本轮本地测试 **292 passed / 1 skipped**；真实 CUDA 对照、正常续训与整步提速验收待完成。
+- [x] 基于 CD-009 当前代码的 [详细性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md)：精确 CPU 几何、读取与体素、后台预取、既有 checkpoint 续接及实现清单；已实现精确 C FPS、CPU 几何复用、按需读取与体素整理、有序预取和显式 checkpoint 迁移，本轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 已在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
 
 ## TODO（待完成）
 
 - [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
-- [ ] 按 [性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md) 完成已实现 FPS/数据流水线的真实同批对照、一次正常续训及正常日志短窗计时这三项检查；保持既有数据、模型及 v3 训练预算。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -44,7 +43,7 @@
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 
-可执行命令见[运行指南](docs/MODEL_USAGE.md)。完整预训练和两种微调配置已提供；可选sidecar转换与residual uncertainty仍未实现。
+可执行命令见[运行指南](docs/MODEL_USAGE.md)。完整预训练和两种微调配置已提供；可选派生数据 sidecar 转换与 residual uncertainty 仍未实现。
 
 ## 目录
 

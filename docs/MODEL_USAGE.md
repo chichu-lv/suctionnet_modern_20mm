@@ -54,7 +54,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
-当前分支已实现精确 CPU 几何和预取流水线；真实 CUDA 同批对照、一次迁移续训和正常日志提速验收仍待完成。原设计与 CPU 原型见 [性能方案](PERFORMANCE_OPTIMIZATION.md)，不能把原型倍率当成训练吞吐。
+当前实现已通过四帧真实数据的共享骨干配对检查（含完整梯度回传），H20/E5 已完成第 380 步迁移并正常续训；独立进程数值差异保持失败记录，E5/E0 各 30 步与 E3 在同主机 GPU3 接续后的 20 步正常窗口均已记录。原设计与 CPU 原型见 [性能方案](PERFORMANCE_OPTIMIZATION.md)，不能把原型倍率当成训练吞吐。
 
 ### 本机扩展与独立性能配置
 
@@ -64,6 +64,10 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 python setup.py build_ext --inplace
 python -c 'import json; from models.geometry_ops import fps_backend_identity; print(json.dumps(fps_backend_identity("compiled"), indent=2))'
 ```
+
+实际 H20 部署使用 `/usr/bin/python3 setup.py build_ext --inplace`：训练 venv 没有 setuptools，系统 Python 已有；二者均为 Python 3.10.12，ABI 匹配。L20 构建采用相同方式，不因此自动启动迁移。使用这种方式前核对两解释器的版本和 `sysconfig.get_config_var("SOABI")`，构建后必须用**训练 venv 的 Python**执行上面的 `fps_backend_identity("compiled")` 导入检查。不要把 ABI 不匹配的系统扩展当作可用，也不需要为本次构建修改旧训练依赖。
+
+H20 最终部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e191aa231e582ede06d060971bf7`。临时 staging 与正式 checkout 的构建路径会影响带调试信息的二进制摘要，因此现场身份以正式构建的实际 hash 为准；C source、编译 flags、ABI 也同时记录，迁移后普通恢复必须匹配。
 
 `setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码摘要；实际扩展的 binary/source SHA256、compiler、flags、ABI 和 Python cache tag 单独进入运行身份。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
 
@@ -119,6 +123,16 @@ python scripts/migrate_performance_checkpoint.py \
 3. 更新私有 supervisor 的 sidecar 映射后，仍执行普通 `resume E5`（其他实验同理）。supervisor 仅在检查到有效迁移 receipt、目标 sidecar hash 相同且原源 checkpoint 的 final backup 仍有效时允许原 assignment 切换；新 attempt 沿用原设备、profile 和学习状态。普通 resume 不提供忽略身份检查的开关。
 
 现有备份会验证并复制 receipt 引用的三份归档文件及 receipt，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。实际切换按 [性能方案第 11 节](PERFORMANCE_OPTIMIZATION.md#11-精简验收只检查三个正常路径) 的三项正常检查验收。
+
+### 真实诊断结果的正确使用
+
+`scripts/benchmark_training_pipeline.py` 的独立旧/新进程结果保持失败，旧代码自身重复运行也出现骨干数值变化。随后 `scripts/benchmark_paired_pipeline.py` 从同一第 380 步 checkpoint、相同四帧与增强种子出发，共享每帧一次真实骨干输出，再比较两条实际下游路径及其完整骨干 VJP；四帧零失败，容差保持 `atol=2e-4, rtol=2e-3`。完整离散几何、描述符和 RNG 精确核对；该配对结果不覆盖原失败，也不证明独立 CUDA 运行逐位相同。
+
+两个脚本都不执行 optimizer 更新。配对脚本接受与独立脚本相同的路径/config/device 参数，须使用新的输出目录；具体命令和检查范围见 [性能方案 10.4 / 11.4](PERFORMANCE_OPTIMIZATION.md#104-当前实现入口与复现方法)。这类诊断保留临时 tensor 证据，不写正式 run，也不替代正常训练日志的吞吐统计。H20/E5 已完成一次正常第 380 步迁移与续训，后续文档发布不部署到当前训练代码。
+
+实际迁移源步为 H20/E5 380、L20/E0 833、L20/E3 441，源状态核对分别为 874、642、770 个张量完全一致。E3 的首次新 worker 因 GPU0 被占用在 trainer 启动前停止；经已有恢复流程切到同主机、同型号的授权空闲 GPU3，并继续原 profile、样本预算与学习状态。未停止占用进程；原失败 worker 证据保留。E3 的前后吞吐还受到 GPU/CPU affinity 放置变化影响，不能把全部差异归因于代码。
+
+E5/E0/E3 正常窗口已观察到更短的更新耗时和约 1–2 毫秒/更新的主线程数据等待，数字与比较边界见 [正常窗口表](PERFORMANCE_OPTIMIZATION.md#115-正常训练窗口) 和 [公开证据摘要](performance/P1_REAL_RESULTS.json)。这是不同自然帧的训练日志观察；配对脚本用于验证数值与梯度，不用于声称吞吐倍率。
 
 ### 50 次成功更新的计时窗口
 
