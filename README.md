@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-12）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。完整预训练与真实目标域效果实验尚未执行；验证范围和数值见 [验证记录](docs/MODEL_VALIDATION.md)。
+**当前状态（2026-11-12）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。实际部署代码身份、六份固定配置和策略见 [当前预训练](docs/CD009_PRETRAINING.md)，历史验证范围和数值见 [验证记录](docs/MODEL_VALIDATION.md)。
 
 ## Done（已完成）
 
@@ -17,9 +17,11 @@
 - [x] CPU 测试复跑 **129 passed / 1 skipped**，梯度 checkpoint 一致性和两种微调跨阶段恢复复核；跳过项需要真实 release 路径。
 - [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录链路验证，完整训练效果见下方 TODO。
 
+- [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
+
 ## TODO（待完成）
 
-- [ ] 按 [预训练方案](docs/implementation/TRAINING.md) 完成 E0–E5 六组独立、同预算训练，每组 40 轮 / 57,600 次成功 optimizer 更新。
+- [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -35,7 +37,7 @@
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
-| 公开数据预训练 | [训练策略](docs/implementation/TRAINING.md) |
+| 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

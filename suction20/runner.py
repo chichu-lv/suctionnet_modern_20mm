@@ -82,4 +82,8 @@ def require_device(device):
     result = torch.device(device)
     if result.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; a real sparse GPU backbone is required for model smoke")
+    if result.type == "cuda" and result.index is None:
+        # Some CUDA APIs (notably the allocator limit) require an explicit
+        # device index even though Tensor.to accepts the CLI's bare "cuda".
+        result = torch.device("cuda", torch.cuda.current_device())
     return result

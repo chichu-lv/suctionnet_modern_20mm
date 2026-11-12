@@ -1,0 +1,98 @@
+{
+  "contract_version": "suction20.pretrain.samples.v3",
+  "deployment_code_revision": "98862f4d6a133c99afa082a0755dbb888b41b38d",
+  "deployment_worktree_sha256": "d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8",
+  "profiles": [
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/H20-E5.json",
+      "config_sha256": "55e98e4d1adc6038590414ee92d15e8ad36152cd4ca0012128f25e7a19fab7c9",
+      "experiment": "E5",
+      "host": "H20",
+      "measured_frames_per_second": 0.11115062192412638,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "H20-e5-b1a4-nocheckpoint-chunk65536.json",
+        "sha256": "0f782e1eef1ce3d999353415690c89c609108ab0346323a3ca2c26ac288bf0f4",
+        "trial_id": "f6ea6fe1265341058a144d9c4f69280a"
+      },
+      "profile_id": "cd009-v3-H20-E5-b1a4-dense65536-no-recompute"
+    },
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/L20-E0.json",
+      "config_sha256": "22299a521be8ee000ef90e240307926f2424c32de53a1428fab125b866e0134e",
+      "experiment": "E0",
+      "host": "L20",
+      "measured_frames_per_second": 0.36216670002285667,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "profile-e0-b1a4-nocheckpoint-concurrent.json",
+        "sha256": "168cba9c7789875af8ecc3d0d549499f60c8256b9efa57827a8ec52f18903108",
+        "trial_id": "31b63ba287f94348a758f1435648791f"
+      },
+      "profile_id": "cd009-v3-L20-E0-b1a4-dense16384-no-recompute"
+    },
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/L20-E1.json",
+      "config_sha256": "5dc5ed7648d63f4362afd49537d8c6a552548405348a47c212bc18b80bcc80c9",
+      "experiment": "E1",
+      "host": "L20",
+      "measured_frames_per_second": 0.3623591406922436,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "profile-e1-b1a4-nocheckpoint-concurrent.json",
+        "sha256": "c299ab3d5ab98c8b3e1608cc677e141b69089922c99cc5807447bb30255449a9",
+        "trial_id": "a663939424f54703b56294cbdee0a182"
+      },
+      "profile_id": "cd009-v3-L20-E1-b1a4-dense16384-no-recompute"
+    },
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/L20-E2.json",
+      "config_sha256": "d67bf34afb0801ed057194527fcd173bd708b58cb141fa6a41767f5e06a31329",
+      "experiment": "E2",
+      "host": "L20",
+      "measured_frames_per_second": 0.3325029845325484,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "profile-e2-b1a4-nocheckpoint-concurrent.json",
+        "sha256": "12818d925680648a4ef073625319d15357576b4f4288bd8537a8a61d2bca4784",
+        "trial_id": "d86924ea37b94b49b0b84553575a80cc"
+      },
+      "profile_id": "cd009-v3-L20-E2-b1a4-dense16384-no-recompute"
+    },
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/L20-E3.json",
+      "config_sha256": "ca7540840777c8e2223fae61098b5414082b65a98e9ebffb5fa4e6e16e5aa85a",
+      "experiment": "E3",
+      "host": "L20",
+      "measured_frames_per_second": 0.10904871424513217,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "L20-e3-b1a4-nocheckpoint.json",
+        "sha256": "05665aa9fae0c427531ed37b29864fd184c1fd6e2cc1759e4f8127711045894c",
+        "trial_id": "14d50f4057974a13ae719242cf6542a4"
+      },
+      "profile_id": "cd009-v3-L20-E3-b1a4-dense16384-no-recompute"
+    },
+    {
+      "config_path": "configs/runtime_profiles/cd009-v3/L20-E4.json",
+      "config_sha256": "207b5c854c1b4cea477a646270d0888645d8d1cd0772bdf8bdb4b3cb1ea5cc8c",
+      "experiment": "E4",
+      "host": "L20",
+      "measured_frames_per_second": 0.1063752568964864,
+      "measurement": {
+        "code_revision": "bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48",
+        "file": "profile-e4-b1a4-nocheckpoint-concurrent.json",
+        "sha256": "a09a91dc87e10405aa434f2be4399091cfb1577c2e17ad4bf6fa0bca0d0d1e1b",
+        "trial_id": "970eb8066d004f95adfd604360523826"
+      },
+      "profile_id": "cd009-v3-L20-E4-b1a4-dense16384-no-recompute"
+    }
+  ],
+  "profiling": {
+    "distinct_trials": 17,
+    "optimizer_updates": 0,
+    "physical_frame_presentations": 216,
+    "raw_measurements_in_repository": false
+  },
+  "schema_version": 1
+}

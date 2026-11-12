@@ -102,23 +102,28 @@ optimizer:
   - 0.999
   eps: 1.0e-08
   grad_clip_norm: 10.0
+runtime_profile:
+  profile_id: pending
+  training_version: v3
+  selection_status: pending
 training:
+  budget_contract: suction20.pretrain.samples.v3
+  target_effective_samples: 230400
+  warmup_effective_samples: 11520
+  validation_effective_samples: 23040
+  epoch_effective_samples: 5760
   epochs: 40
-  max_optimizer_steps: 57600
   world_size: 1
   microbatch_size: 1
   gradient_accumulation_steps: 4
   effective_batch_size: 4
   amp: true
   bn_mode: train
-  validate_every_optimizer_steps: 5760
 scheduler:
   name: linear_warmup_cosine
   unit: successful_optimizer_step
-  warmup_optimizer_steps: 2880
   warmup_start_lr: 1.0e-05
   final_lr: 1.0e-05
-  total_optimizer_steps: 57600
 checkpoint:
   save_last: true
   save_best: true

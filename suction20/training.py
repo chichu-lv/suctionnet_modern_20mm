@@ -5,6 +5,8 @@ import copy
 import hashlib
 import json
 import math
+import os
+import uuid
 import random
 import subprocess
 from pathlib import Path
@@ -22,8 +24,11 @@ EXPERIMENTS = {
 
 
 def load_config(path: str | Path) -> dict:
-    with Path(path).open() as stream:
-        config = yaml.safe_load(stream)
+    path = Path(path)
+    with path.open() as stream:
+        # PyYAML's implicit scalar rules treat JSON numbers such as 1e-08
+        # as strings. Preserve JSON's numeric types for selected profiles.
+        config = json.load(stream) if path.suffix.lower() == ".json" else yaml.safe_load(stream)
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a mapping")
     config = copy.deepcopy(config)
@@ -219,9 +224,17 @@ def save_checkpoint(path, model, optimizer, scaler, schedule, *, global_step, co
     state.update(extra)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    torch.save(state, temporary)
-    temporary.replace(path)
+    from .pretrain_runtime import fsync_directory
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as stream:
+            torch.save(state, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_checkpoint(path, model, *, optimizer=None, scaler=None, schedule=None,
@@ -245,3 +258,31 @@ def load_checkpoint(path, model, *, optimizer=None, scaler=None, schedule=None,
         schedule.load_state_dict(state["sampler_state"])
         restore_rng(state["rng_state"])
     return state
+
+
+def source_supervision_counts(prediction, packed):
+    """Per-term denominators for logging, using CPU targets and tiny seed copies.
+
+    Call after the trainer's existing loss scalar reads have waited for backward.
+    No RNG, CUDA kernels, or explicit CUDA synchronization are introduced here.
+    These counts describe existing loss reduction; they do not renormalize it.
+    """
+    inputs, targets = packed['inputs'], packed['targets']
+    batch = inputs['batch_index'].numpy()
+    instance = targets['instance_id_gt'].numpy()
+    quality = targets['quality_valid'].numpy().astype(bool)
+    valid_seed = prediction['seed_valid'].detach().cpu().numpy().astype(bool)
+    selected = prediction['seed_point_index'].detach().cpu().numpy().reshape(-1)[valid_seed.reshape(-1)]
+    def count(mask, indices=None):
+        owned = mask & (instance > 0)
+        return int(np.unique(batch[owned] if indices is None else batch[indices][owned[indices]]).size)
+    counts = {'q0': count(quality), 'q': count(quality, selected),
+              'normal': count(targets['axis_valid'].numpy().astype(bool)) if 'axis_valid' in targets else 0}
+    for name, output, target, mask in [('seal', 'seal_aux', 'seal_target', 'seal_valid'),
+                                      ('wrench', 'wrench_aux', 'wrench_target', 'wrench_valid'),
+                                      ('collision_free', 'collision_free_logit', 'collision_free_target', 'collision_valid')]:
+        if output in prediction:
+            available = targets[mask].numpy().astype(bool) if mask in targets else quality.copy()
+            available &= np.isfinite(targets[target].numpy()) if target in targets else False
+            counts[name] = count(available, selected)
+    return counts
