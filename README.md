@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前正式采用配置（2026-11-13，北京时间）：** [十二档补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)全部完成，确认 **H20/E5：B4A12、有效batch48、zone128、depth2**；**L20：B1A12、有效batch12**，接触组使用zone128/depth2。两台代表模型实测2.887176与3.700548帧/s，较同轮旧配置分别提高17.60%和4.54%。按用户最新指令，六组都在新目录从step0重新训练，不接续旧checkpoint，不再补测。配置、预算和启动命令见[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)。最新已发布运行快照仍是补测后按有效batch8恢复的旧任务；本次提交确认新配方与启动实现，尚无新任务的实际启动记录。
+**当前正式采用配置（2026-11-13，北京时间）：** [十二档补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)全部完成，确认 **H20/E5：B4A12、有效batch48、zone128、depth2**；**L20：B1A12、有效batch12**，接触组使用zone128/depth2。两台代表模型实测2.887176与3.700548帧/s，较同轮旧配置分别提高17.60%和4.54%。按用户最新指令，六组都在新目录从step0重新训练，不接续旧checkpoint，不再补测。配置、预算和启动命令见[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)。**新六组已实际启动并全部产生成功更新**，旧有效batch8任务已停止。[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)包含冻结版本、启动命令、日志/模型位置及旧验证故障的兼容修复；完整训练和新定期验证尚未完成。
 
 ## Done（已完成）
 
