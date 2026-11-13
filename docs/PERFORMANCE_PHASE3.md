@@ -1,18 +1,18 @@
 # CD-009 P3：整合待应用优化与正常续训
 
-2026-11-13。依据新增的 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 调整本轮方案。**按本次运行说明，P2 相关优化仅做过测试、尚待正式应用；P3 尚未在 H20/L20 训练机测试。** 本文给出整合后的目标实现、已有证据和应用步骤，不把代码已经入库等同于正式训练已经启用。
+2026-11-13 更新。依据 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 及随后完成的[真实 checkpoint 配对结果](performance/P3_INTEGRATED_RESULTS.md)调整方案。**H20/E5 的 64k + split + native 组合已通过四帧配对并取得续训首 25 步窗口；用户已明确批准 L20 使用通过配对的 16k + split + native 组合，L20 部署与首 25 次正常更新窗口仍待完成。** L20 原 64k 组合未通过原梯度门槛，现予延后，原失败报告保留。
 
-本轮使用新配置 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json)：**P2 全点 CPU grid 与坐标快路径 + compiled FPS + P3 原生接触查询 + 实际 dense chunk 65,536 + `torch.split` 输入分块。** 两卡继续 B1A4，保持原硬件 profile、2 mm 网络体素、每帧 512 候选、完整观测和 230,400 有效帧 / 57,600 成功更新预算。`no_instance_voxel_heads` 继续为 `false`。
+H20 保持 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json) 的实际 dense chunk **65,536**；L20 采用 [cd009-p3-l20-16k.json](../configs/performance/cd009-p3-l20-16k.json) 的 **16,384**。两者均启用 **P2 全点 CPU grid 与坐标快路径、compiled FPS、P3 原生接触查询及 `torch.split` 输入分块**。两卡继续 B1A4，保持原硬件 profile、2 mm 网络体素、每帧 512 候选、完整观测和 230,400 有效帧 / 57,600 成功更新预算。`no_instance_voxel_heads` 继续为 `false`。
 
 ## 1. 当前状态与待应用清单
 
 | 项目 | 已有证据 | 本轮处理 |
 | --- | --- | --- |
-| P2 全点 CPU grid、backbone 坐标快路径 | 已有实现及历史训练机测试记录 | 合入目标配置，仍列为待正式应用 |
+| P2 全点 CPU grid、backbone 坐标快路径 | 本轮实际源 checkpoint 已使用 P2 | 保留在两种目标配置中 |
 | P2 无实例 voxel heads | 既有真实 AMP 梯度比较未通过，见 [P2 记录](PERFORMANCE_PHASE2.md) | 保持关闭，不随其他 P2 改动启用 |
-| P3 融合原生接触查询 | 本地 CPU 几何与小模型对照通过；固定输入 query 约 3.06× | 实现保留，本轮做训练机配对与正常窗口观察 |
-| dense chunk 65,536 | H20 原配置已是 65,536；L20/E5 从 16,384 增大后的短测吞吐 +28.40% | 通过性能 sidecar 覆盖实际执行值，不改冻结 profile |
-| `chunk_input_mode=split` | 本次将逐块独立切片改为一次 `torch.split` 的多个视图 | 纳入同一次配对；尚无训练机 GPU 收益结论 |
+| P3 融合原生接触查询 | 修复正负零字节差异后，H20 64k 与 L20 16k 完整四帧配对通过 | H20 已续训；L20 按用户批准的 16k 组合待迁移 |
+| dense chunk 65,536 | H20 原配置已是 65,536；L20 原 64k 候选未通过严格梯度门槛 | H20 保持 64k；L20 保留 16k，64k 延后，不改冻结 profile |
+| `chunk_input_mode=split` | H20 64k 与 L20 16k 组合均通过完整配对 | 保留；不从组合窗口推定 split 的独立收益 |
 | H20 实例特征广播的 indexing backward | 已定位 fusion scope 内的主要 GPU 热点 | 下一候选，尚待实现；不阻塞本次已有组合 |
 | B2A2 | H20 短测仅 +2.20%；L20 在 64k 下仍比 B1A4 慢 9.33% | 两卡保持 B1A4，不继续扩大 batch |
 
@@ -32,7 +32,7 @@ H20/E5 的 B1A4 未插桩四帧块平均 **8.8660 s**，其中 CPU query **5.144
 
 本次 split 针对输入切片的反向组织，**不会被写成已经解决上述实例广播热点**。等价的实例分组梯度归约保留为下一处 GPU 候选，不要求在本轮应用前一起完成。
 
-### 2.2 L20：采用已有 64k 方向，继续保持 B1
+### 2.2 L20：保留 16k 接续，64k 延后
 
 L20/E5 原 16k chunk 下，B1A4 → B2A2 的四帧块墙钟从 **11.3407 s** 增至 **14.5683 s**，backward 与 loss 回读从 **4.8328 s** 增至 **8.1228 s**。配对 trace 中，`SliceBackward0` 相关清零和累加合计从 **3.180685 s** 增至 **6.364260 s**，而实例广播 indexing backward 约 **0.733 s** 不变。捕获块没有 allocator retry、OOM 或缓存段释放，现有证据不支持把这次退化归因于 36 GiB cap 触发反复清缓存。[来源](performance/L20_P2_BATCH_DIAGNOSIS.md)
 
@@ -48,14 +48,16 @@ L20/E5 原 16k chunk 下，B1A4 → B2A2 的四帧块墙钟从 **11.3407 s** 增
 
 B1 吞吐提高 **28.40%**，对应每块耗时约减少 **22.1%**；不能把二者写成同一个百分比。64k 下 B2 吞吐仍比 B1 低 **9.33%**。这次测试是相同 16 帧、4 帧预热加 12 帧测量、fresh seed42、零 optimizer 更新，没有修改正式 profile，也没有做完整梯度等价比较。[来源](performance/L20_P2_BATCH_DIAGNOSIS.md#定向复测dense-chunk-改为-65536)
 
-因此本轮将 64k 作为 L20 的目标执行值，并在已有四帧配对中覆盖 **实际 baseline 16k → candidate 64k**。**该收益只在 L20/E5 测过，不能宣称其他 L20 实验都已有同样收益；H20 原本就是 64k，不能再计一次 +28.4%。** split 的独立 GPU 收益尚未测量，也不与 64k 或 P3 本地 CPU 倍率相乘预测整步速度。
+原方案据此将 64k 作为 L20 目标，并执行了 **实际 baseline 16k → candidate 64k** 的四帧配对；该组合未通过原梯度门槛。随后保持原 16k、保留 split 与修复后的 native，在相同四帧及原门槛下通过。**用户已选择 L20 16k + split + native，64k 延后；原 64k 失败证据不被替换或重新判为通过。** 详见[失败分析与通过组合](performance/P3_INTEGRATED_RESULTS.md)。
+
+上述 28.40% 仅为历史 L20/E5 零更新短测结果，不是获准的 16k 组合收益；H20 原本就是 64k，不能再计一次该收益。split 的独立 GPU 收益尚未测量，也不与 64k 或 P3 本地 CPU 倍率相乘预测整步速度。
 
 ## 3. 本轮整合的执行变化
 
 ```mermaid
 flowchart TD
     A["同一帧与完整点云"] --> B["原骨干 + P2 坐标快路径"]
-    B --> C["64k dense chunk + split 视图"]
+    B --> C["H20 64k / L20 16k dense chunk + split 视图"]
     C --> D["原候选与预测姿态"]
     D --> E["P2 全点 grid + P3 原生查询"]
     E --> F["原 GPU 接触编码与评分"]
@@ -76,17 +78,17 @@ P3 将四球查询、五区筛选、首点/FPS 与描述量打包合成一次 C+
 
 这部分直接影响启用接触分组的 E3/E4/E5。E0/E1/E2 的 chunk/坐标快路径可以使用同一 sidecar，但不获得原生接触查询收益。
 
-### 3.2 64k 与 split
+### 3.2 dense 块大小与 split
 
-`dense_chunk_size_override=65536` 只覆盖模型执行时的 dense chunk；冻结 `model.dense_chunk_size`、硬件 profile 原字节及其 hash 保持。H20 的有效值仍为 65,536，L20 的有效值从原 16,384 变为 65,536。pose chunk 仍为 32。
+`dense_chunk_size_override` 只覆盖模型执行时的 dense chunk；冻结 `model.dense_chunk_size`、硬件 profile 原字节及其 hash 保持。H20 sidecar 使用 65,536，L20 sidecar 使用 16,384，分别保留本轮实际 baseline 的块大小。pose chunk 仍为 32。
 
 `chunk_input_mode=split` 在现有 `chunk_apply` 中对每个输入调用一次 `torch.split(tensor, chunk_size, dim=0)`，随后按原顺序执行各块的原回调与 `torch.cat`。它用同一多输出视图组织梯度，代替每次循环单独创建 `tensor[start:end]` 的切片反向路径；dense 与接触编码沿现有入口传递这一执行选项。
 
-没有新增 MLP 层、改变参数名或初始化顺序，也没有改变稀疏骨干 BN 的训练模式、帧组批、损失权重、梯度累积或 activation checkpoint 选择。64k 调整块大小，split 调整输入视图组织；浮点归约结果仍以真实 AMP 配对为准，不仅依据数学等价宣称通过。**split 尚无 H20/L20 性能结果。**
+没有新增 MLP 层、改变参数名或初始化顺序，也没有改变稀疏骨干 BN 的训练模式、帧组批、损失权重、梯度累积或 activation checkpoint 选择。split 调整输入视图组织；浮点归约结果以真实 AMP 配对为准，不仅依据数学等价宣称通过。H20 已有组合的正常窗口结果，**split 的独立收益及 L20 新组合正常窗口仍未确定**。
 
 ## 4. 配置与实现入口
 
-整合配置使用 v3 的两个**顶层可选字段**，不是新的嵌套 `execution` 对象：
+整合配置使用 v3 的两个**顶层可选字段**，不是新的嵌套 `execution` 对象。以下为 H20 64k 示例；L20 配置仅将 `dense_chunk_size_override` 改为 16,384：
 
 ```json
 {
@@ -114,11 +116,11 @@ P3 将四球查询、五区筛选、首点/FPS 与描述量打包合成一次 C+
 }
 ```
 
-实际入口为 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json)。旧 v1/v2 配置解释不变；旧 v3 未提供覆盖值时继承 profile 的 dense chunk，未提供输入模式时使用 `slice`。旧 [cd009-p3.json](../configs/performance/cd009-p3.json) 不改写，其原始字节 SHA256 仍为 `551597d8ffb3e3995c284b2611d7ffe4a8220800641c65aa6334958aad8c3b2e`。
+H20 入口为 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json)，L20 入口为 [cd009-p3-l20-16k.json](../configs/performance/cd009-p3-l20-16k.json)。旧 v1/v2 配置解释不变；旧 v3 未提供覆盖值时继承 profile 的 dense chunk，未提供输入模式时使用 `slice`。旧 [cd009-p3.json](../configs/performance/cd009-p3.json) 不改写，其原始字节 SHA256 仍为 `551597d8ffb3e3995c284b2611d7ffe4a8220800641c65aa6334958aad8c3b2e`。
 
-本次整合 sidecar 原始字节 SHA256 为 `e896f4bcc49e635ce8e4cbdfcaa0e602e1ca63f8bcf8462eca58d7a7c05ef5c3`，与旧 geometry-only 配置的身份分开保存。
+H20 64k sidecar 原始字节 SHA256 保持 `e896f4bcc49e635ce8e4cbdfcaa0e602e1ca63f8bcf8462eca58d7a7c05ef5c3`。L20 16k sidecar SHA256 为 `39c8422e1c817d1af14e8ff160299669d008d8ca9fc56b782d22368b7e5b1f24`，与通过配对的隔离配置逐字节一致（`json.dumps(indent=2)`，无末尾换行）；这两个身份与旧 geometry-only 配置分开保存。
 
-原生接触路径仍要求 grid、compiled FPS、`query_chunk_size=null` 与 `query_workers=1`；这两个旧查询字段不控制 P3 的原生候选线程。模型 `execution_settings` 只报告实际 chunk 和模式，**不是 sidecar 的嵌套字段**。配对及 benchmark 报告记录该有效值，便于确认 L20 实际比较了 16k 与 64k。
+原生接触路径仍要求 grid、compiled FPS、`query_chunk_size=null` 与 `query_workers=1`；这两个旧查询字段不控制 P3 的原生候选线程。模型 `execution_settings` 只报告实际 chunk 和模式，**不是 sidecar 的嵌套字段**。报告保留有效值，以区分 L20 原 16k→64k 失败比较与获准的 16k→16k 比较。
 
 | 文件 | 本轮职责 |
 | --- | --- |
@@ -132,7 +134,7 @@ P3 将四球查询、五区筛选、首点/FPS 与描述量打包合成一次 C+
 
 ## 5. 训练机只沿用三项正常验收
 
-不重跑完整实验矩阵，也不要求把 grid、native、64k、split 分别做消融。先完成 H20/E5 的目标组合对照；L20 使用同一流程确认其实际 16k→64k 路径。其余运行使用各自原 profile 和学习状态接续，不据此宣称每个架构都已独立测得收益。
+不重跑完整实验矩阵，也不要求把 grid、native、64k、split 分别做消融。H20/E5 的 64k→64k 与 L20/E3 的 16k→16k + split/native 配对已经通过，沿用既有通过证据。其余运行使用各自原 profile 和学习状态接续，不据此宣称每个架构都已独立测得收益。L20 部署及各自 20–30 次正常更新窗口仍待完成。
 
 执行顺序为：按 5.2 的现有命令正常暂停并取得 current checkpoint → 完成 5.1 配对 → 在同一次暂停内迁移和恢复 → 读取 5.3 正常窗口。下面按三项验收内容分节，不要求重复暂停。
 
@@ -144,11 +146,11 @@ P3 将四球查询、五区筛选、首点/FPS 与描述量打包合成一次 C+
 
 64k 还可能使轴 MLP 产生正常的浮点末位差异，进而改变浮点几何描述量。配对时，两条实际分支的描述量使用上述既有浮点容差；若 query 输入与 roll RNG 完全一致，全部几何结果仍直接逐位比较。若输入不同，则在同四帧内用 **baseline 姿态和入口 RNG、candidate 自己的空间索引** 重放一次 candidate query，与 baseline 全部几何结果精确比较，随后恢复实际 RNG。重放只检查相同输入下的算法，既不替换实际前向结果，也不参与梯度；实际离散索引不同仍判失败。这不新增模型前反向、额外帧或独立验收任务。
 
-通过条件是报告 `passed=true`：相同四帧/增强，完整几何比较、输出/损失、逐帧及累积梯度通过原比较，采样器后态一致。报告中的执行设置应对应 H20 64k→64k、L20 实际 baseline chunk→64k，以及 candidate `split`；这不是扩大 batch 的比较。不通过时修复对应实现，不通过放宽容差接受改动。
+通过条件是报告 `passed=true`：相同四帧/增强，完整几何比较、输出/损失、逐帧及累积梯度通过原比较，采样器后态一致。当前获准报告的执行设置对应 H20 64k→64k、L20 16k→16k，以及 candidate `split`；这不是扩大 batch 的比较。原 L20 16k→64k 报告仍为失败，不通过放宽容差接受改动。
 
 该工具共享一次真实 backbone 图后比较两条后续路径和 VJP，属于数值诊断。其 `seconds_including_evidence_and_checks` 包含两条路径、证据保存及检查，**不是 baseline/candidate 各自的性能墙钟**，不用于计算速度比。
 
-命令在目标 checkout 中执行。以下变量均取自实际运行：`BASELINE_REPO` 为原实现快照，`PROFILE` 为原冻结 profile，`SOURCE_CHECKPOINT` 为当前 committed checkpoint；`BASELINE_PERFORMANCE_CONFIG` 为原 sidecar，original 无 sidecar 时留空。保持原训练环境、单卡与 CPU affinity。
+命令在目标 checkout 中执行。以下变量均取自实际运行：`BASELINE_REPO` 为原实现快照，`PROFILE` 为原冻结 profile，`SOURCE_CHECKPOINT` 为当前 committed checkpoint；`BASELINE_PERFORMANCE_CONFIG` 为原 sidecar，original 无 sidecar 时留空。`TARGET_PERFORMANCE_CONFIG` 按主机选择上述实际 SHA 固定的 H20 64k 或 L20 16k sidecar。保持原训练环境、单卡与 CPU affinity。
 
 ```bash
 python setup.py build_ext --inplace
@@ -162,13 +164,13 @@ python scripts/benchmark_paired_pipeline.py \
   --baseline-repo "$BASELINE_REPO" --candidate-repo "$TARGET_REPO" \
   --checkpoint "$SOURCE_CHECKPOINT" --config "$PROFILE" \
   "${BASELINE_FLAGS[@]}" \
-  --performance-config "$TARGET_REPO/configs/performance/cd009-p3-integrated.json" \
+  --performance-config "$TARGET_PERFORMANCE_CONFIG" \
   --source-root "$SOURCE_ROOT" --label-root "$LABEL_ROOT" \
   --backbone-root "$BACKBONE_ROOT" --device "$DEVICE" \
   --out-dir "$COMPARE_DIR"
 ```
 
-L20 的 `PROFILE` 仍保留原 16k，只有 candidate sidecar 施加 64k 覆盖；不能先把公共 profile 改成 64k，再将两边都运行 64k 称为跨 chunk 验证。可复用已有 `--frame-plan-report` 指定的四帧，无需增加样本。
+L20 的 `PROFILE` 及获准 candidate 的实际执行值均保留原 16k；此前的 16k→64k 失败报告保留原身份，不改写成同块大小比较。可复用已有 `--frame-plan-report` 指定的四帧，无需增加样本。
 
 **可选的性能比较：** 如果需要在切换前补充独立墙钟，用已有 [benchmark_batch_cpu.py](../scripts/benchmark_batch_cpu.py) 只跑实际 baseline 与 candidate 各一组 **B1A4、CPU8、workers2**；已有相同执行身份的可比测量可直接复用。它固定一块预热、三块测量，fresh seed42、零 optimizer 更新，不能代替后续真实训练窗口。无 sidecar 的 original 起点可省略该可选工具，直接观察原预算内窗口。
 
@@ -206,10 +208,12 @@ python -m suction20.run_supervisor --config "$SUPERVISOR_CONFIG" \
 
 在拥有该 run 的主机、目标 checkout 中执行：
 
+本轮实际执行代码固定在已验证的 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`。L20 将批准的 16k sidecar 独立放在运行根目录的 `performance/` 下，以其实际 SHA 选择；本次配置与文档入库不改变正在部署的代码身份。`TARGET_PERFORMANCE_CONFIG` 指向该独立固定文件。
+
 ```bash
 python scripts/migrate_performance_checkpoint.py \
   --config "$PROFILE" \
-  --performance-config "$TARGET_REPO/configs/performance/cd009-p3-integrated.json" \
+  --performance-config "$TARGET_PERFORMANCE_CONFIG" \
   --run-dir "$RUN_DIR" --control-dir "$PAUSED_ATTEMPT_DIR" \
   --expected-source-sha256 "$SOURCE_CHECKPOINT_SHA256" \
   --source-root "$SOURCE_ROOT" --label-root "$LABEL_ROOT" \
