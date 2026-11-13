@@ -45,7 +45,10 @@ def test_fused_request_uses_plain_cpu_adamw_and_original_decay_groups():
     assert optimizer.state
 
 
-def test_bf16_dense_keeps_sparse_network_in_fp32(monkeypatch):
+@pytest.mark.parametrize('dtype,training', [(torch.bfloat16, True),
+                                          (torch.bfloat16, False),
+                                          (torch.float16, False)])
+def test_mixed_precision_sparse_boundary(monkeypatch, dtype, training):
     from models.backbones import spconv_resunet14 as wrapper
 
     class SparseTensor:
@@ -68,11 +71,12 @@ def test_bf16_dense_keeps_sparse_network_in_fp32(monkeypatch):
     monkeypatch.setitem(sys.modules, "spconv.pytorch", sub)
     monkeypatch.setattr(wrapper, "_load_external", lambda _: Network)
     backbone = wrapper.SpconvResUNet14("unused", backbone_coordinate_fastpath=True)
+    backbone.train(training)
     inputs = {"voxel_features": torch.randn(4, 8), "g_cam": torch.zeros(1, 3),
               "voxel_coords": torch.tensor([[0, 0, 0, i] for i in range(4)])}
-    with resolve_precision({"training": {"precision": "bf16"}}, "cpu").autocast():
+    with torch.autocast('cpu', dtype=dtype):
         output = backbone(inputs)
-    assert output.dtype == torch.bfloat16
+    assert output.dtype == dtype
     output.float().square().mean().backward()
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in backbone.parameters())
 

@@ -102,14 +102,20 @@ class SpconvResUNet14(nn.Module):
         # Four stride-2 stages require at least 16 cells along each axis.
         shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
         device_type = inputs['voxel_features'].device.type
-        bf16_dense = (torch.is_autocast_enabled(device_type) and
+        autocast_enabled = torch.is_autocast_enabled(device_type)
+        bf16_dense = (autocast_enabled and
                       torch.get_autocast_dtype(device_type) == torch.bfloat16)
+        fp32_sparse = bf16_dense or (autocast_enabled and not self.training)
         # spconv 2.3.6's tensorview bridge has no BF16 dtype and its custom AMP
         # functions explicitly cast to FP16. Disable autocast for the sparse
         # network rather than silently running FP16 under a BF16 configuration.
-        context = torch.autocast(device_type, enabled=False) if bf16_dense else nullcontext()
+        # The eval path bypasses spconv's custom AMP cast: a 1x1 torch matmul
+        # can produce FP16 features while the next implicit GEMM still receives
+        # FP32 weights, leaving its tuner without a matching algorithm. Keep
+        # sparse evaluation in FP32; projection/dense heads retain outer AMP.
+        context = torch.autocast(device_type, enabled=False) if fp32_sparse else nullcontext()
         with context:
-            features = inputs['voxel_features'].float() if bf16_dense else inputs['voxel_features']
+            features = inputs['voxel_features'].float() if fp32_sparse else inputs['voxel_features']
             sparse = spconv.SparseConvTensor(features.contiguous(), coords, shape,
                                             len(inputs['g_cam']))
             output = self.network(sparse)
