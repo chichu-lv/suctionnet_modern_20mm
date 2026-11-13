@@ -1,6 +1,6 @@
 # CD-010：从头预训练的性能实现与使用方案
 
-更新：2026-11-13，北京时间。初始实现基于 `main@ed2fa7a0` 的 P1/P2/P3；后续已纳入 `84cae54` 的[真实 H20/L20 短测](performance/CD010_FROM_SCRATCH_RESULTS.md)。本文维护从头训练的实现与入口；[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)已确认H20/E5 +19.90%、L20/E3 +33.82%。下一项是[显存与batch扫描](GEOMETRY_MEMORY_SCALING.md)：取消人工显存上限，在每机相同有效batch下，一次比较多档microbatch。
+更新：2026-11-13，北京时间。初始实现基于 `main@ed2fa7a0` 的 P1/P2/P3；后续已有[资源短测](performance/CD010_FROM_SCRATCH_RESULTS.md)、[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)和[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。当前采用H20/E5 microbatch4/depth2、L20/E3 microbatch1/depth2继续性能比较；下一项为[接触头gather与pose chunk优化](CONTACT_HEAD_OPTIMIZATION.md)，尚无新增GPU吞吐结果。
 
 **结论：从头训练可以启用共享体素头、重新选择 dense chunk、改变广播梯度归约和几何精度，不再把旧 checkpoint 的四帧 AMP 梯度/RNG 对齐作为准入条件。已实现配置生成器、两级分段广播反向、FP32 原生几何、可调线程与 worker、静态缓存、显式精度、融合 AdamW、按更新读回 loss，以及可选的局部编译。** CUDA 全点接触查询/FPS 和 GPU 数据增强本轮没有实现，理由与后续接口见第 8 节。
 
@@ -57,7 +57,7 @@ flowchart TB
 | E4 | 有 | 有 | 关闭 | 开启 | 开启 |
 | E5 | 有 | 有 | 关闭 | 开启 | 开启 |
 
-E5继续带原辅助头。B1A4表示microbatch1、累积4次，B2A2为microbatch2、累积2次，两者有效batch均4。最新H20/E5的B2已有约20%的吞吐改善；它改变训练期BN行为，作为从头训练配置显式记录即可，不要求历史数值等价。当前扫描batch，线程/worker固定，不展开这些参数的交叉矩阵。
+E5继续带原辅助头。B表示microbatch，A表示梯度累积次数，B×A为有效batch。此前B2A2的收益已有记录；最新[无上限扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)选择H20/E5的B4/depth2、L20/E3的B1/depth2。microbatch改变训练期BN分组；本轮保持已测的同机有效batch24/12继续比较接触头，不把它们自动选为正式训练配方。
 
 ### H20 / L20 分开选择资源
 
@@ -224,7 +224,7 @@ python scripts/prepare_from_scratch.py \
 
 此例选择L20资源候选。若在H20跑E2，仍用E2的base config，并增加`--hardware-preset H20`，同时选择新的H20配置/run目录；生成器会设置H20资源与host字段，保持E2模型/损失/预算。不要把H20/E5直接当成E2的实验配置。
 
-支持的调节项：`--hardware-preset`、`--dense-chunk-size`、`--pose-chunk-size`、`--microbatch-size`、`--effective-batch-size`、`--geometry-pipeline-depth`、`--workers`、`--geometry-threads`、`--cpu-affinity-count`、`--cpu-threads`、`--no-gpu-memory-limit`或`--gpu-memory-limit-gib`、`--geometry-precision`、`--precision`、`--scene-cache-size`、`--object-cache-size`、`--instance-broadcast-mode`。显式数值覆盖对应preset。无人工显存上限为新配置默认值，两个显存CLI选项互斥；trainer和supervisor均支持JSON `null`。`--compile-dense-heads`显式开启局部编译；`--no-voxel-heads`、`--no-fused-optimizer`关闭相应项。microbatch覆盖会从选定的有效batch自动派生累积次数；显式effective batch改变时按原样本预算重新派生总更新/warmup/验证步数，不自动放大学习率。depth2要求至少两个microbatch及E3/E4/E5接触模块，详见[显存扩展](GEOMETRY_MEMORY_SCALING.md)。
+支持的调节项：`--hardware-preset`、`--dense-chunk-size`、`--pose-chunk-size`、`--microbatch-size`、`--effective-batch-size`、`--geometry-pipeline-depth`、`--workers`、`--geometry-threads`、`--cpu-affinity-count`、`--cpu-threads`、`--no-gpu-memory-limit`或`--gpu-memory-limit-gib`、`--geometry-precision`、`--precision`、`--scene-cache-size`、`--object-cache-size`、`--instance-broadcast-mode`、`--contact-feature-gather-mode chunk|zone`。接触特征gather默认为已测的`chunk`，`zone`显式启用按区一次索引；详见[接触头方案](CONTACT_HEAD_OPTIMIZATION.md)。显式数值覆盖对应preset。无人工显存上限为新配置默认值，两个显存CLI选项互斥；trainer和supervisor均支持JSON `null`。`--compile-dense-heads`显式开启局部编译；`--no-voxel-heads`、`--no-fused-optimizer`关闭相应项。microbatch覆盖会从选定的有效batch自动派生累积次数；显式effective batch改变时按原样本预算重新派生总更新/warmup/验证步数，不自动放大学习率。depth2要求至少两个microbatch及E3/E4/E5接触模块，详见[显存扩展](GEOMETRY_MEMORY_SCALING.md)。
 
 ### 6.2 v4 性能配置示例
 
@@ -328,20 +328,22 @@ H20配置中的`hosts.H20.gpus[GPU].cpus`须包含实际为该任务分配的16�
 
 初次实现的本地C/C++扩展构建成功，完整[GitHub CI](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43390906646)为 **381 passed / 1 skipped**，包括本地沙箱不支持的Unix socket预取测试。1项既有跳过需要真实release路径。主机preset/CPU解耦补充使用现有配置与supervisor正常路径检查。这些是CPU小模型/接线检查，不构成真实spconv CUDA/BF16/Inductor/fused AdamW的硬件性能证明。本环境无H20/L20、CUDA编译器或真实冻结数据，因此没有执行正式训练或产生新速度数字。
 
-### 已完成的资源选择与一次多档batch扫描
+### 已完成的资源选择、batch扫描与下一项接触头比较
 
-资源选择见[原实测记录](performance/CD010_FROM_SCRATCH_RESULTS.md)，几何重叠见[后续实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5 depth2为1.842032帧/s、allocated45.28 GiB；L20/E3为2.841787帧/s、allocated11.72 GiB。无需重复已完成的串行/depth2比较。
+资源选择见[原实测](performance/CD010_FROM_SCRATCH_RESULTS.md)，几何重叠见[后续实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。最新[无显存上限的12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已全部尝试，9档完成、3档OOM，不再重复该矩阵。
 
-下一轮执行[显存与batch扫描](GEOMETRY_MEMORY_SCALING.md)，使用`benchmark_geometry_overlap.py --suite batch-scan`，默认`--no-gpu-memory-limit`：
+| 主机 / 实验 | 采用的性能对照 | 帧/s | allocated / reserved GiB | 选择 |
+|---|---|---:|---:|---|
+| H20 / E5 | B4A6 / depth2，有效batch24 | 2.259727 | 89.08 / 138.55 | 本轮完成候选中最快；相对B2快7.59% |
+| L20 / E3 | B1A12 / depth2，有效batch12 | 3.038967 | 11.56 / 25.54 | B2只快0.17%，保留B1；B3更慢 |
 
-| 主机 | 唯一实验 | 扫描共同有效batch | depth2的microbatch | 附加容量对照 | 共计 |
-|---|---|---:|---|---|---:|
-| H20 | E5 | 24 | 1 / 2 / 3 / 4 / 6 / 8 | B8A3、depth1 | 7档 |
-| L20 | E3 | 12 | 1 / 2 / 3 / 4 | B4A3、depth1 | 5档 |
+H20 B6/B8双图、L20 B4双图发生OOM；各机最大batch的单图设置能运行但更慢。当前loader等待约3ms/更新，几何future等待约占更新中位数量级的2%；这些是host统计，不能作为GPU idle或CUDA kernel瓶颈结论。下一步不继续扩batch、worker或CPU线程。
 
-每机内部保持相同AdamW更新频率，24/12只是本轮性能扫描设置，尚未成为正式训练配方。两机固定64k dense、32 pose chunk、geometry8、affinity16、Torch8、4 workers，取消112/36 GiB人工上限；可显式设置`--gpu-memory-limit-gib N`。旧`--suite memory`的两档比较方案保留，但不是本轮推荐入口；原B2A2/有效batch4的已测吞吐作为历史参考。
+[接触头方案](CONTACT_HEAD_OPTIMIZATION.md)提供`benchmark_geometry_overlap.py --suite contact-head`：每机固定上述batch/depth，比较原chunk32、按区gather的zone32、zone64、zone128四档。默认性能路径仍是`contact_feature_gather_mode="chunk"`，`zone`只在候选中显式启用。H20/B4原pose32通常有320次区域索引，L20/B1有80次，zone模式均为每区一次共5次；这是源码操作数减少，不是已测速度收益。
 
-每档48有效帧预热、240帧计时，共288帧：H20窗口step2结束至step12结束，L20为step4结束至step24结束。独立进程依次执行，CUDA OOM记录后继续下一档，包括末尾depth1；其他错误停止并保留已有结果。比较有效帧/s和显存峰值，真实loss、backward、AdamW照常执行，读取、skip和日志间隙计入窗口。`--batch-sizes`、`--effective-batch-size`可自定义扫描，`--overlap-only`省略depth1对照。只测两机各一个模型实验，不增加恢复31、历史AMP/RNG对齐、完整验证或额外trace。
+两机仍固定dense64k、geometry8、affinity16、Torch8、4 workers，无人工显存上限。每档48有效帧预热、240帧计时；H20窗口step2→12，L20为step4→24。独立进程运行，CUDA OOM记录后继续，其他错误停止；完整窗口且正常退出的候选进入排名。新增实现只做正常输出/梯度与接线检查，不增加恢复31、历史AMP/RNG对齐、完整验证或额外trace。
+
+有效batch24/12仅用于接续同机性能比较，尚未成为正式训练配方。若H20最终选择B4A2/有效batch8，流水线填充/收尾比例及更新频率不同，不能照搬B4A6的实测帧/s。总样本预算及按样本定义的warmup/验证节点继续保留。
 
 ## 8. 本轮没有实现的部分，以及真正需要的后续工作
 
@@ -377,4 +379,4 @@ H20配置中的`hosts.H20.gpus[GPU].cpus`须包含实际为该任务分配的16�
 | [spatial_index_cpu.cpp](../models/csrc/spatial_index_cpu.cpp) / [fps_cpu.c](../models/csrc/fps_cpu.c) | FP32原生几何与可调候选并行 |
 | [datasets.py](../suction20/datasets.py) / [full_data.py](../suction20/full_data.py) / [runner.py](../suction20/runner.py) | 缓存配置下传与场景重复读取去除 |
 
-这份交付是可运行的新执行路径及其配置/说明。CD-010原路径已有[真实H20/L20短测](performance/CD010_FROM_SCRATCH_RESULTS.md)；几何重叠也已测得收益；更大microbatch的显存扩展尚待两机各一个实验的比较。E2新精度下的完整训练表现、CUDA几何和GPU增强均没有被记为已完成。
+这份交付是可运行的新执行路径及其配置/说明。CD-010原路径已有[真实H20/L20短测](performance/CD010_FROM_SCRATCH_RESULTS.md)；几何重叠和12档batch扫描也已有真实结果；新增接触头gather/pose chunk候选尚待两机各一个实验的比较。E2新精度下的完整训练表现、CUDA几何和GPU增强均没有被记为已完成。

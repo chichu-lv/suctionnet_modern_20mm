@@ -46,7 +46,7 @@ class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
                  query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None,
                  contact_query_backend='numpy', chunk_input_mode='slice',
-                 geometry_threads=2, geometry_precision='float64'):
+                 geometry_threads=2, geometry_precision='float64', feature_gather_mode='chunk'):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -67,6 +67,9 @@ class ContactGrouping(nn.Module):
             raise ValueError('pose_chunk_size must be positive')
         self.checkpointed = checkpointed
         self.chunk_input_mode = chunk_input_mode
+        if feature_gather_mode not in ('chunk', 'zone'):
+            raise ValueError('Contact feature gather mode must be chunk or zone')
+        self.feature_gather_mode = feature_gather_mode
         self.fps_fn = fps_fn
         self.spatial_index_config = dict(spatial_index or {})
         if geometry_precision not in ('float32', 'float64'):
@@ -475,8 +478,10 @@ class ContactGrouping(nn.Module):
         transferred = time.perf_counter()
         features = {}
         for name, q in prepared.items():
-            def encode_zone(rows, mask, geometry, count, name=name):
-                p = torch.cat((projected[rows], geometry.to(projected)), -1)
+            def encode_zone(rows_or_features, mask, geometry, count, name=name):
+                selected = (rows_or_features if self.feature_gather_mode == 'zone'
+                            else projected[rows_or_features])
+                p = torch.cat((selected, geometry.to(projected)), -1)
                 p = self.point_mlp(p)
                 # Pool and log counts in FP32 even under AMP.
                 p = p.float()
@@ -486,7 +491,11 @@ class ContactGrouping(nn.Module):
                 stats = torch.stack((count.float().log1p(), (count > 0).float()), -1)
                 output = self.zone_projections[name](torch.cat((maximum, mean, stats), -1))
                 return output * (count > 0)[:, None]
-            features[name] = chunk_apply(encode_zone, q['indices'], q['mask'], q['geometry'], q['counts'],
+            # A single gather per zone joins its gradient before scattering
+            # into projected. With split inputs this avoids one full-source
+            # indexing backward branch for every small pose chunk.
+            zone_input = projected[q['indices']] if self.feature_gather_mode == 'zone' else q['indices']
+            features[name] = chunk_apply(encode_zone, zone_input, q['mask'], q['geometry'], q['counts'],
                                          chunk_size=self.chunk_size,
                                          input_mode=self.chunk_input_mode,
                                          checkpointed=self.checkpointed and self.training)

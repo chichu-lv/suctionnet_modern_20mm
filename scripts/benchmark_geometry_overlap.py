@@ -5,7 +5,9 @@ The default suite compares serial/overlap: H20 E5/B2A2, L20 E3/B1A4.
 8 in both), or L20 B1A4 to B2A2 (effective batch stays 4).
 Those pairs warm up on 40 credited frames and time 80.
 --suite batch-scan runs multiple microbatches at one effective batch per host,
-with 48 warmup and 240 timed credited frames. New configurations have no
+with 48 warmup and 240 timed credited frames. --suite contact-head keeps the
+measured H20 B4A6 / L20 B1A12 depth2 choices and compares per-chunk vs per-zone
+feature gathers and pose chunks32/64/128. New configurations have no
 artificial GPU memory cap. By default only prepare; --run executes the plan.
 """
 from __future__ import annotations
@@ -37,6 +39,10 @@ SCAN_SETTINGS = {
     'H20': {'effective_batch_size': 24, 'batch_sizes': (1, 2, 3, 4, 6, 8)},
     'L20': {'effective_batch_size': 12, 'batch_sizes': (1, 2, 3, 4)},
 }
+CONTACT_HEAD_SETTINGS = {
+    'H20': {'microbatch_size': 4, 'effective_batch_size': 24},
+    'L20': {'microbatch_size': 1, 'effective_batch_size': 12},
+}
 SCAN_WARMUP_FRAMES = 48
 SCAN_TIMED_FRAMES = 240
 
@@ -51,11 +57,12 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                  batch_sizes=None, effective_batch_size=None, overlap_only=False):
     """Fresh configurations with equal credited-frame windows within a suite."""
     selected = HOSTS[hardware]
-    if suite not in ('overlap', 'memory', 'batch-scan'):
-        raise ValueError('suite must be overlap, memory or batch-scan')
+    if suite not in ('overlap', 'memory', 'batch-scan', 'contact-head'):
+        raise ValueError('suite must be overlap, memory, batch-scan or contact-head')
     if suite != 'batch-scan' and (batch_sizes is not None or effective_batch_size is not None or overlap_only):
         raise ValueError('Batch list, effective batch and overlap-only overrides require --suite batch-scan')
     warmup_frames, timed_frames = WARMUP_FRAMES, TIMED_FRAMES
+    head_settings = {}
     if suite == 'overlap':
         specifications = [('serial', selected['microbatch_size'], 4, 1),
                           ('overlap', selected['microbatch_size'], 4, 2)]
@@ -71,7 +78,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
             'speed is a historical reference, not this comparison baseline.' if hardware == 'H20' else
             'L20 effective batch stays 4, but microbatch grouping changes BN/loss numerical behavior. '
             'This comparison measures throughput, not convergence.')
-    else:
+    elif suite == 'batch-scan':
         scan = SCAN_SETTINGS[hardware]
         effective = scan['effective_batch_size'] if effective_batch_size is None else effective_batch_size
         batches = list(scan['batch_sizes'] if batch_sizes is None else batch_sizes)
@@ -94,6 +101,20 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                if not overlap_only else '') + 'This effective batch is '
             'a throughput-screening setting, not an automatic change to the final training recipe. '
             'BN/loss grouping changes; historical effective-batch4/8 speeds are references only.')
+    else:
+        selected_head = CONTACT_HEAD_SETTINGS[hardware]
+        microbatch, effective = selected_head['microbatch_size'], selected_head['effective_batch_size']
+        head_settings = {'chunk_pose32': ('chunk', 32), 'zone_pose32': ('zone', 32),
+                         'zone_pose64': ('zone', 64), 'zone_pose128': ('zone', 128)}
+        specifications = [(name, microbatch, effective, 2) for name in head_settings]
+        warmup_frames, timed_frames = SCAN_WARMUP_FRAMES, SCAN_TIMED_FRAMES
+        comparison_note = (
+            f'Keep the measured {hardware} B{microbatch}A{effective // microbatch}/depth2 '
+            f'performance setting at effective batch {effective}. chunk_pose32 is the existing '
+            'path; zone_pose32 isolates one gather per zone, and zone_pose64/128 change only '
+            'the contact encoder chunk on that path. Geometry, dense chunk, resources and '
+            'frame windows stay fixed. New operator speedups require these GPU measurements; '
+            'the scan effective batch is not an automatically selected final training recipe.')
     memory_limit = gpu_memory_limit_gib
     if no_gpu_memory_limit and memory_limit is not None:
         raise ValueError('Choose unrestricted memory or a numeric limit, not both')
@@ -104,12 +125,14 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
     base = load_config(ROOT / f'configs/runtime_profiles/cd009-v3/{hardware}-{selected["experiment"]}.json')
     variants = []
     for name, microbatch, effective_batch, depth in specifications:
+        gather_mode, pose_chunk_size = head_settings.get(name, ('chunk', 32))
         warmup_steps = warmup_frames // effective_batch
         stop_step = (warmup_frames + timed_frames) // effective_batch
         config, performance = from_scratch_config(base,
             hardware_preset=hardware, microbatch_size=microbatch,
             effective_batch_size=effective_batch,
-            geometry_pipeline_depth=depth, dense_chunk_size=65536, pose_chunk_size=32,
+            geometry_pipeline_depth=depth, dense_chunk_size=65536, pose_chunk_size=pose_chunk_size,
+            contact_feature_gather_mode=gather_mode,
             geometry_threads=8, workers=4, cpu_affinity_count=16, cpu_threads=8,
             gpu_memory_limit_gib=memory_limit, no_gpu_memory_limit=memory_limit is None)
         config['seed'] = 42
@@ -132,6 +155,8 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                          'microbatch_size': microbatch,
                          'gradient_accumulation_steps': effective_batch // microbatch,
                          'effective_batch_size': effective_batch,
+                         'contact_feature_gather_mode': gather_mode,
+                         'pose_chunk_size': pose_chunk_size,
                          'warmup_successful_steps': warmup_steps,
                          'stop_at_successful_step': stop_step,
                          'warmup_credited_frames': warmup_frames,
@@ -146,6 +171,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                                                *variant['command']])
     plan = {
         'schema_version': ('suction20.geometry_overlap_benchmark.v1' if suite == 'overlap'
+                           else 'suction20.geometry_overlap_benchmark.v4' if suite == 'contact-head'
                            else 'suction20.geometry_overlap_benchmark.v3' if suite == 'batch-scan'
                            else 'suction20.geometry_overlap_benchmark.v2'),
         'suite': suite,
@@ -154,7 +180,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
         'total_credited_frames_per_variant': warmup_frames + timed_frames,
         'gpu_memory_limit_gib': memory_limit,
         'memory_policy': 'No artificial allocator cap; use available device VRAM' if memory_limit is None else f'Explicit {memory_limit:g} GiB allocator cap',
-        'continue_on_cuda_oom': suite == 'batch-scan',
+        'continue_on_cuda_oom': suite in ('batch-scan', 'contact-head'),
         'comparison_note': comparison_note,
         'working_directory': str(ROOT), 'environment': environment,
         'gpu_selection': 'Inherit CUDA_VISIBLE_DEVICES; no device discovery or reassignment',
@@ -267,7 +293,8 @@ def summarize_plan(plan, out_dir):
         result = {'name': variant['name'],
                   **{key: variant.get(key, plan.get(key)) for key in
                      ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
-                      'geometry_pipeline_depth', 'gpu_memory_limit_gib')},
+                      'geometry_pipeline_depth', 'gpu_memory_limit_gib',
+                      'contact_feature_gather_mode', 'pose_chunk_size')},
                   **summarize_run(variant['run_dir'], warmup_steps=warmup, stop_step=stop)}
         execution_path = Path(variant['run_dir']).parent / 'execution.json'
         if execution_path.exists():
@@ -291,7 +318,8 @@ def summarize_plan(plan, out_dir):
                     key=lambda result: result['frames_per_second'], reverse=True)
     ranking = [{key: result.get(key) for key in
                 ('name', 'microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
-                 'geometry_pipeline_depth', 'frames_per_second', 'peak_allocated_gib', 'peak_reserved_gib')}
+                 'geometry_pipeline_depth', 'contact_feature_gather_mode', 'pose_chunk_size',
+                 'frames_per_second', 'peak_allocated_gib', 'peak_reserved_gib')}
                for result in ranked]
     change = results[1]['throughput_change_from_first_percent'] if len(results) == 2 else None
     summary = {'hardware': plan['hardware'], 'experiment': plan['experiment'],
@@ -312,12 +340,13 @@ def summarize_plan(plan, out_dir):
         return '—' if not value else f'{number(value["median"])} / {number(value["p95"])}'
     lines = [f'# {plan["hardware"]} / {plan["experiment"]}: {plan.get("suite", "overlap")} comparison', '',
              plan.get('memory_policy', 'See per-variant allocator configuration.') + '.', '',
-             '| Variant | Microbatch / accumulation / effective | Depth | Outcome | frames/s | Change from first (%) | Update median / p95 (s) | Allocated / reserved (GiB) | Success / skip |',
-             '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |']
+             '| Variant | Microbatch / accumulation / effective | Depth | Gather / pose chunk | Outcome | frames/s | Change from first (%) | Update median / p95 (s) | Allocated / reserved (GiB) | Success / skip |',
+             '| --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |']
     for result in results:
         batch = ' / '.join(str(result.get(key) or '—') for key in
                            ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size'))
         lines.append(f'| {result["name"]} | {batch} | {result.get("geometry_pipeline_depth", "—")} | '
+                     f'{result.get("contact_feature_gather_mode") or "—"} / {result.get("pose_chunk_size") or "—"} | '
                      f'{result["execution_status"]} | {number(result.get("frames_per_second"), 6)} | '
                      f'{number(result["throughput_change_from_first_percent"], 2)} | '
                      f'{pair(result, "update_seconds")} | {number(result.get("peak_allocated_gib"))} / {number(result.get("peak_reserved_gib"))} | '
@@ -389,11 +418,11 @@ def run_plan(plan, out_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hardware', required=True, choices=tuple(HOSTS))
-    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan'), default='overlap',
-                        help='overlap: serial/depth2 pair; memory: larger-batch pair; batch-scan: full-VRAM multi-batch scan')
+    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan', 'contact-head'), default='overlap',
+                        help='overlap: serial/depth2 pair; memory: larger-batch pair; batch-scan: full-VRAM scan; contact-head: selected batches with gather/chunk candidates')
     parser.add_argument('--out-dir', required=True, help='New benchmark directory, or existing one with --summarize-existing')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--run', action='store_true', help='Prepare and sequentially run all planned candidates; batch-scan continues after CUDA OOM')
+    mode.add_argument('--run', action='store_true', help='Prepare and sequentially run all planned candidates; batch-scan/contact-head continue after CUDA OOM')
     mode.add_argument('--summarize-existing', action='store_true', help='Read plan/logs; launch no process')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')

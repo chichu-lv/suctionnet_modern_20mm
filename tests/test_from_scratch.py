@@ -75,12 +75,13 @@ def test_reference_preset_keeps_common_comparison_without_inheriting_old_memory_
 def test_pipeline_config_uses_memory_without_changing_sample_budget():
     root = Path(__file__).resolve().parents[1]
     source = json.loads((root / 'configs/runtime_profiles/cd009-v3/H20-E5.json').read_text())
-    config, _ = from_scratch_config(source, microbatch_size=2,
-        geometry_pipeline_depth=2, pose_chunk_size=128)
+    config, performance = from_scratch_config(source, microbatch_size=2,
+        geometry_pipeline_depth=2, pose_chunk_size=128, contact_feature_gather_mode='zone')
     assert config['training']['microbatch_size'] == 2
     assert config['training']['gradient_accumulation_steps'] == 2
     assert config['training']['geometry_pipeline_depth'] == 2
     assert config['model']['pose_chunk_size'] == 128
+    assert performance['contact_feature_gather_mode'] == 'zone'
     assert resolve_budget(config) == resolve_budget(source)
     with pytest.raises(ValueError, match='at least two microbatches'):
         from_scratch_config(source, microbatch_size=4, geometry_pipeline_depth=2)

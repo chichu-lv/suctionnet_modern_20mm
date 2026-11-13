@@ -29,6 +29,7 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
                         no_gpu_memory_limit=False,
                         microbatch_size=None, effective_batch_size=None,
                         geometry_pipeline_depth=1, pose_chunk_size=None,
+                        contact_feature_gather_mode='chunk',
                         scene_cache_size=90, object_cache_size=88,
                         voxel_heads=True, instance_broadcast_mode='segment',
                         compile_dense_heads=False, fused_optimizer=True):
@@ -108,6 +109,7 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
         'fps_backend': 'compiled',
         'spatial_index': {'backend': 'uniform_grid_cpu', 'cell_size_m': .02},
         'contact_query_backend': 'native_cpu',
+        'contact_feature_gather_mode': contact_feature_gather_mode,
         'no_instance_voxel_heads': bool(voxel_heads and experiment in ('E0', 'E1', 'E3')),
         'backbone_coordinate_fastpath': True,
         'dense_chunk_size_override': dense_chunk_size,
@@ -138,7 +140,8 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
                        f'-cpu{cpu_affinity_count}-geo{geometry_threads}-w{workers}-{precision}'
                        f'-b{training.get("microbatch_size", 1)}-e{effective_batch}'
                        f'-pipe{geometry_pipeline_depth}'
-                       f'-pose{config["model"].get("pose_chunk_size", 32)}'),
+                       f'-pose{config["model"].get("pose_chunk_size", 32)}'
+                       f'-gather{contact_feature_gather_mode}'),
         'training_version': 'v3',
         'selection_status': 'from_scratch',
         'selection_basis': (f'{preset_name} resource preset; 64k retained after CD010 measurements. '

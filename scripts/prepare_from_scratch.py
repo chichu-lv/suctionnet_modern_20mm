@@ -40,6 +40,8 @@ def main():
                         help='2 overlaps detached CPU contact geometry within the same optimizer update')
     parser.add_argument('--pose-chunk-size', type=int,
                         help='Contact GPU head candidates per chunk, separate from dense chunk')
+    parser.add_argument('--contact-feature-gather-mode', choices=('chunk', 'zone'), default='chunk',
+                        help='chunk: measured per-chunk gather; zone: gather once per contact zone')
     parser.add_argument('--geometry-precision', choices=('float32', 'float64'), default='float32')
     parser.add_argument('--scene-cache-size', type=int, default=90)
     parser.add_argument('--object-cache-size', type=int, default=88)
@@ -61,6 +63,7 @@ def main():
         microbatch_size=args.microbatch_size, effective_batch_size=args.effective_batch_size,
         geometry_pipeline_depth=args.geometry_pipeline_depth,
         pose_chunk_size=args.pose_chunk_size,
+        contact_feature_gather_mode=args.contact_feature_gather_mode,
         geometry_precision=args.geometry_precision, scene_cache_size=args.scene_cache_size,
         object_cache_size=args.object_cache_size, voxel_heads=not args.no_voxel_heads,
         instance_broadcast_mode=args.instance_broadcast_mode,
@@ -99,6 +102,7 @@ def main():
                           effective_batch_size=config['training']['effective_batch_size'],
                           gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
                           pose_chunk_size=config['model'].get('pose_chunk_size', 32),
+                          contact_feature_gather_mode=performance['contact_feature_gather_mode'],
                           data_workers=performance['loader']['num_workers'], measured=False),
                       'status': 'prepared; no training launched'}, indent=2, ensure_ascii=False))
 

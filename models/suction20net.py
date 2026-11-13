@@ -103,6 +103,7 @@ class Suction20Net(nn.Module):
         fresh_execution = {'instance_broadcast_mode': self.instance_broadcast_mode,
                            'geometry_threads': geometry_threads,
                            'geometry_precision': geometry_precision,
+                           'contact_feature_gather_mode': performance.get('contact_feature_gather_mode', 'chunk'),
                            'compile_dense_heads': bool(performance.get('compile_dense_heads', False))}
         self.execution_settings.update({key: value for key, value in fresh_execution.items()
                                         if key in performance})
@@ -122,6 +123,7 @@ class Suction20Net(nn.Module):
                                   contact_query_backend=performance.get('contact_query_backend', 'numpy'),
                                   geometry_threads=geometry_threads,
                                   geometry_precision=geometry_precision,
+                                  feature_gather_mode=performance.get('contact_feature_gather_mode', 'chunk'),
                                   chunk_input_mode=self.chunk_input_mode,
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)

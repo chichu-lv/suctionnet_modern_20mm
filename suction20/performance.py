@@ -68,6 +68,7 @@ def validate_performance_config(value):
         optional_keys = {'dense_chunk_size_override', 'chunk_input_mode'}
     if fresh:
         keys |= {'geometry_threads', 'geometry_precision', 'instance_broadcast_mode', 'compile_dense_heads'}
+        optional_keys.add('contact_feature_gather_mode')
     if not keys.issubset(value) or set(value) - keys - optional_keys:
         raise ValueError('Unsupported performance configuration fields/schema')
     if value['schema_version'] in (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, SCHEMA_VERSION_V4):
@@ -106,6 +107,8 @@ def validate_performance_config(value):
             raise ValueError('Instance broadcast mode must be indexed or segment')
         if type(value['compile_dense_heads']) is not bool:
             raise ValueError('compile_dense_heads must be boolean')
+        if value.get('contact_feature_gather_mode', 'chunk') not in ('chunk', 'zone'):
+            raise ValueError('Contact feature gather mode must be chunk or zone')
     if type(value['detailed_cpu_timing']) is not bool:
         raise ValueError('Performance detailed_cpu_timing must be boolean')
     loader = value['loader']

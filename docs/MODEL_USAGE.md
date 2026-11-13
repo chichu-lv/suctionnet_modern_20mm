@@ -58,9 +58,9 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 `--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
 
-[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2：H20/E5 +19.90%、L20/E3 +33.82%。下一轮[显存与batch扫描](GEOMETRY_MEMORY_SCALING.md)使用`benchmark_geometry_overlap.py --suite batch-scan --hardware H20|L20 --out-dir NEW [--run]`：H20/E5固定有效batch24，microbatch1/2/3/4/6/8、depth2，附加B8A3/depth1；L20/E3固定有效batch12，microbatch1/2/3/4、depth2，附加B4A3/depth1，共7/5档。每档48帧预热、240帧计时；24/12是性能比较设置，不是最终训练配方。独立进程串行执行，CUDA OOM记录后继续下一档，其他错误停止。`--batch-sizes`、`--effective-batch-size`可自定义，`--overlap-only`省略depth1。默认只生成，`--run`才执行短测；旧两档`--suite memory`仍保留，不恢复完整训练。
+[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2；随后[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已完成，9档完成、3档OOM。H20/E5采用microbatch4/depth2，已测B4A6/有效24为2.259727帧/s；L20/E3保留microbatch1/depth2，已测B1A12/有效12为3.038967帧/s。B2的0.17%差异不支持L20扩大batch，已有扫描不重复。下一步[接触头比较](CONTACT_HEAD_OPTIMIZATION.md)使用`benchmark_geometry_overlap.py --suite contact-head --hardware H20|L20 --out-dir NEW [--run]`，各机在上述设置上比较chunk32、zone32、zone64、zone128四档。每档48帧预热、240帧计时；24/12仍是性能比较设置，不是最终训练配方。独立进程依次执行，CUDA OOM记录后继续，其他错误停止。默认只生成，`--run`才执行短测，不恢复完整训练。
 
-新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头，本轮固定32。
+新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头，新的定向比较使用32/64/128。`--contact-feature-gather-mode chunk|zone`选择分块内索引或按区域一次索引；默认`chunk`保持已测路径，`zone`候选尚无GPU收益数据。
 
 精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
 

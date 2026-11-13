@@ -11,7 +11,7 @@ from test_contact_grouping import FROZEN
 from test_model import TinyTestBackbone, model_inputs
 
 
-def make_model():
+def make_model(feature_gather_mode='chunk'):
     pytest.importorskip('models._fps_cpu')
     pytest.importorskip('models._spatial_index_cpu')
     return Suction20Net(
@@ -20,7 +20,8 @@ def make_model():
         performance={'fps_backend': 'compiled', 'geometry_precision': 'float32',
                      'geometry_threads': 2, 'contact_query_backend': 'native_cpu',
                      'spatial_index': {'backend': 'uniform_grid_cpu', 'cell_size_m': .02},
-                     'chunk_input_mode': 'split', 'instance_broadcast_mode': 'segment'})
+                     'chunk_input_mode': 'split', 'instance_broadcast_mode': 'segment',
+                     'contact_feature_gather_mode': feature_gather_mode})
 
 
 def batch():
@@ -62,7 +63,7 @@ def test_staged_query_preserves_prediction_and_has_no_worker_rng_or_shared_stats
 
 def test_two_inflight_graphs_finish_and_update_with_finite_gradients():
     torch.manual_seed(42)
-    model = make_model().train()
+    model = make_model(feature_gather_mode='zone').train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=.001)
     before = model.backbone.linear.weight.detach().clone()
     jobs = []

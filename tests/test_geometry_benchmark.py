@@ -141,6 +141,25 @@ def test_scan_covers_full_memory_batches_at_equal_optimizer_frequency(hardware, 
         assert variant['gradient_accumulation_steps'] >= 2
 
 
+@pytest.mark.parametrize('hardware,microbatch,effective', [('H20', 4, 24), ('L20', 1, 12)])
+def test_contact_head_comparison_keeps_selected_batch_and_changes_one_head_option(hardware, microbatch, effective, tmp_path):
+    plan = prepare_plan(hardware, tmp_path, suite='contact-head')
+    assert len(plan['variants']) == 4
+    assert plan['continue_on_cuda_oom']
+    for variant, (mode, chunk) in zip(plan['variants'], [('chunk', 32), ('zone', 32), ('zone', 64), ('zone', 128)]):
+        config = json.loads(Path(variant['train_config']).read_text())
+        performance = json.loads(Path(variant['performance_config']).read_text())
+        assert config['training']['microbatch_size'] == microbatch
+        assert config['training']['effective_batch_size'] == effective
+        assert config['training']['geometry_pipeline_depth'] == 2
+        assert config['runtime']['gpu_memory_limit_gib'] is None
+        assert config['model']['pose_chunk_size'] == variant['pose_chunk_size'] == chunk
+        assert performance['contact_feature_gather_mode'] == variant['contact_feature_gather_mode'] == mode
+        assert performance['dense_chunk_size_override'] == 65536
+        assert variant['warmup_successful_steps'] * effective == 48
+        assert (variant['stop_at_successful_step'] - variant['warmup_successful_steps']) * effective == 240
+
+
 @pytest.mark.parametrize('failure,expected_calls,expected_exit', [
     ('torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00 GiB', 3, 0),
     ('FileNotFoundError: missing training input', 2, 1),

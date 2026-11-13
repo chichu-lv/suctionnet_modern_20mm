@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、两种微调、推理及R20评价已实现，旧`dc4ad6b00535`数据继续复用。[最新运行记录](docs/performance/CD010_RUN_STATUS.md)确认完整训练和协调器已停止，最终代码确定前只做优化测试。几何重叠已取得[真实收益](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5为1.842032帧/s（+19.90%），L20/E3为2.841787帧/s（+33.82%）。下一项[显存与batch扫描](docs/GEOMETRY_MEMORY_SCALING.md)取消人工显存上限，一次执行H20/E5七档、L20/E3五档；各机分别固定有效batch24/12供性能比较，尚未选为正式训练设置。六组完整训练与目标域效果实验尚未完成，测试脚本不恢复完整训练。以上为已发布记录，不是实时监控。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、两种微调、推理及R20评价已实现，旧`dc4ad6b00535`数据继续复用。完整训练与协调器保持停止，最终代码确定前只做优化测试。[12档显存/batch扫描](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已完成：9档完成、3档OOM；H20/E5选择microbatch4/depth2，已测B4A6为2.259727帧/s，L20/E3保留microbatch1/depth2，已测B1A12为3.038967帧/s。有效batch24/12仍只是性能比较条件。下一项[接触头优化](docs/CONTACT_HEAD_OPTIMIZATION.md)减少重复gather并比较pose chunk；新增候选GPU收益待测。六组完整训练与目标域效果实验尚未完成。以上为已发布记录，不是实时监控。
 
 ## Done（已完成）
 
@@ -29,14 +29,16 @@
 - [x] [E4 / L20 GPU4 启动](docs/performance/E4_GPU4_STARTUP.md)：使用固定 `f4f7f0d` trainer 与 16k + split + native，原预算内首 100 次成功更新、正常暂停 checkpoint 和最终备份通过，恢复首步 101 的采样连续性通过；首 100 步中位数为 4.4400 秒/更新。读取时观察到 107 步、当时持久化为 100 步；这是当时的启动与恢复记录，当前训练状态见上文。
 - [x] [CD-010 从头训练性能实现](docs/FROM_SCRATCH_PERFORMANCE.md)及[真实 H20/L20 短测](docs/performance/CD010_FROM_SCRATCH_RESULTS.md)：split、共享体素头、分段实例广播反向、FP32原生几何、缓存与预取、显式精度、融合AdamW、每更新loss读回。H20/E5已测支持64k/geometry8/affinity16，B2A2比B1A4更快；128k只提高0.50%，生成器现保留64k。L20/E3支持geometry8/affinity16，E0支持6 workers，E2的BF16 dense/FP32 sparse已通过短程更新。详细数值、版本和范围以实测文档为准。
 - [x] [CPU几何/GPU重叠实现](docs/GEOMETRY_GPU_OVERLAP.md)及[两机实测](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5与L20/E3分别提速19.90%和33.82%，allocated峰值分别45.28和11.72 GiB。四项短测均正常结束，不再重复串行对照。
-- [x] [显存与batch扫描入口](docs/GEOMETRY_MEMORY_SCALING.md)：`--suite batch-scan`默认取消人工显存上限；H20/E5扫描microbatch1/2/3/4/6/8、有效batch24，L20/E3扫描1/2/3/4、有效batch12，均用depth2并各加最大microbatch的depth1容量对照。每档48帧预热、240帧计时；独立进程依次执行，CUDA OOM记录后继续下一档。旧`--suite memory`两档方案仍保留供复用；新扫描收益待测。
+- [x] [显存/batch扫描](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已执行全部12档，9档完成、3档OOM；人工显存上限已取消。H20/E5 microbatch4/depth2为本轮最快，L20/E3 B2只比B1快0.17%，保留microbatch1/depth2。两机的大batch单图方案都更慢，继续保留几何重叠。
+
+- [x] [接触头可选实现与比较入口](docs/CONTACT_HEAD_OPTIMIZATION.md)：v4 `contact_feature_gather_mode="zone"`按区域一次gather，默认`chunk`保持已测路径；`--suite contact-head`在两机采用的batch上各比较chunk32、zone32、zone64、zone128。源码操作减少已落实，新增GPU吞吐待测。
 
 ## TODO（待完成）
 
 - [ ] **最终代码确定后：** 启动并完成E0–E5独立预训练，每组230,400有效样本和原10个按样本计的验证节点。当前完整训练停止；有效batch4对应57,600次更新，若显式选择8则为28,800次，不把两者训练轨迹视为等价。
 - [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
 - [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
-- [ ] 仅用 **H20/E5、L20/E3各一个实验**，一次运行[多档batch扫描](docs/GEOMETRY_MEMORY_SCALING.md)并选出净吞吐最好的可用档位。旧小batch的depth2收益已确认；新增最大batch的depth1用于区分双份在途图与单份图的容量，不增加恢复审计或完整验证。CUDA接触查询/FPS及GPU增强仍未实现。
+- [ ] 仅用 **H20/E5、L20/E3各一个实验**，按[接触头方案](docs/CONTACT_HEAD_OPTIMIZATION.md)完成每机四档定向性能比较。已完成的12档batch扫描不重复，不继续扩大worker/CPU矩阵，不增加恢复审计或完整验证。CUDA接触查询/FPS及GPU增强仍未实现。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -54,7 +56,7 @@
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
-| 独立从头训练的优化 | [CD-010实现与运行](docs/FROM_SCRATCH_PERFORMANCE.md) · [几何重叠实测](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md) · [显存扩展与更大batch](docs/GEOMETRY_MEMORY_SCALING.md) |
+| 独立从头训练的优化 | [CD-010实现与运行](docs/FROM_SCRATCH_PERFORMANCE.md) · [batch扫描实测](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md) · [接触头下一步](docs/CONTACT_HEAD_OPTIMIZATION.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 
