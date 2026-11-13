@@ -30,7 +30,7 @@ def test_fresh_config_preserves_budget_and_source(experiment, voxel_heads, tmp_p
     assert performance['geometry_threads'] == (8 if host == 'H20' else 4)
     assert config['runtime']['cpu_affinity_count'] == (16 if host == 'H20' else 8)
     assert config['runtime']['cpu_threads'] == 8
-    assert config['runtime']['gpu_memory_limit_gib'] == (112 if host == 'H20' else 36)
+    assert config['runtime']['gpu_memory_limit_gib'] is None
     assert config['runtime_profile']['hardware_preset'] == host
     assert performance['loader']['num_workers'] == 4
     path = tmp_path / 'performance.json'
@@ -61,14 +61,14 @@ def test_fresh_optional_controls_and_legacy_loader_policy():
         validate_performance_config(legacy)
 
 
-def test_reference_preset_keeps_common_comparison_and_source_memory_limit():
+def test_reference_preset_keeps_common_comparison_without_inheriting_old_memory_limit():
     root = Path(__file__).resolve().parents[1]
     source = json.loads((root / 'configs/runtime_profiles/cd009-v3/H20-E5.json').read_text())
-    config, performance = from_scratch_config(source, hardware_preset='reference')
+    config, performance = from_scratch_config(source, hardware_preset='reference', no_gpu_memory_limit=True)
     assert performance['dense_chunk_size_override'] == 65536
     assert performance['geometry_threads'] == 4
     assert config['runtime']['cpu_affinity_count'] == 8
-    assert config['runtime']['gpu_memory_limit_gib'] == 112
+    assert config['runtime']['gpu_memory_limit_gib'] is None
     assert config['runtime_profile']['host'] == 'H20'
 
 

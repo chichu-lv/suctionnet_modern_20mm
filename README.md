@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、两种微调、推理及R20评价已实现，旧`dc4ad6b00535`数据继续复用。[最新运行记录](docs/performance/CD010_RUN_STATUS.md)确认完整训练和协调器已停止，最终代码确定前只做优化测试。几何重叠已取得[真实收益](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5为1.842032帧/s（+19.90%），L20/E3为2.841787帧/s（+33.82%）。下一项[显存扩展短测](docs/GEOMETRY_MEMORY_SCALING.md)只比较两机各一个实验的更大microbatch；H20对照均使用有效batch8，L20保持有效batch4。六组完整训练与目标域效果实验尚未完成，测试脚本不恢复完整训练。以上为已发布记录，不是实时监控。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、两种微调、推理及R20评价已实现，旧`dc4ad6b00535`数据继续复用。[最新运行记录](docs/performance/CD010_RUN_STATUS.md)确认完整训练和协调器已停止，最终代码确定前只做优化测试。几何重叠已取得[真实收益](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5为1.842032帧/s（+19.90%），L20/E3为2.841787帧/s（+33.82%）。下一项[显存与batch扫描](docs/GEOMETRY_MEMORY_SCALING.md)取消人工显存上限，一次执行H20/E5七档、L20/E3五档；各机分别固定有效batch24/12供性能比较，尚未选为正式训练设置。六组完整训练与目标域效果实验尚未完成，测试脚本不恢复完整训练。以上为已发布记录，不是实时监控。
 
 ## Done（已完成）
 
@@ -26,17 +26,17 @@
 - [x] [P3 原生接触几何及 split 分块](docs/PERFORMANCE_PHASE3.md) 已整合、修复原生几何正负零字节差异并完成实际接续：H20/E5 使用 [64k 配置](configs/performance/cd009-p3-integrated.json)，L20/E0/E1/E3 使用 [16k 配置](configs/performance/cd009-p3-l20-16k.json)。各首 25 次正常更新的中位数分别为 **5.7462、1.8446、1.7423、3.2120 秒/更新**；E0/E1 无接触分组，改善主要出现在反向。实际运行代码为 `f4f7f0d`，详见 [配对、失败取舍与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。
 - [x] [优化全程总览](docs/PERFORMANCE_HISTORY.md)：整理初始 profile、P1/P2/P3 的实现、实测、未采用路线和当前状态，并同步各运行指南。局部 CPU 原型、零更新短测和自然训练窗口分开呈现，不相乘为累计加速承诺。
 - [x] supervisor 支持显式登记的 L20 GPU4 和独立 `control_repo`，管理代码可与固定 trainer checkout 分开。仍是单卡单组实验，不是多卡 DDP。
-- [x] [E4 / L20 GPU4 启动](docs/performance/E4_GPU4_STARTUP.md)：使用固定 `f4f7f0d` trainer 与 16k + split + native，原预算内首 100 次成功更新、正常暂停 checkpoint 和最终备份通过，恢复首步 101 的采样连续性通过；首 100 步中位数为 4.4400 秒/更新。读取时观察到 107 步、当时持久化为 100 步；这是启动与恢复记录，完整训练仍在进行。
+- [x] [E4 / L20 GPU4 启动](docs/performance/E4_GPU4_STARTUP.md)：使用固定 `f4f7f0d` trainer 与 16k + split + native，原预算内首 100 次成功更新、正常暂停 checkpoint 和最终备份通过，恢复首步 101 的采样连续性通过；首 100 步中位数为 4.4400 秒/更新。读取时观察到 107 步、当时持久化为 100 步；这是当时的启动与恢复记录，当前训练状态见上文。
 - [x] [CD-010 从头训练性能实现](docs/FROM_SCRATCH_PERFORMANCE.md)及[真实 H20/L20 短测](docs/performance/CD010_FROM_SCRATCH_RESULTS.md)：split、共享体素头、分段实例广播反向、FP32原生几何、缓存与预取、显式精度、融合AdamW、每更新loss读回。H20/E5已测支持64k/geometry8/affinity16，B2A2比B1A4更快；128k只提高0.50%，生成器现保留64k。L20/E3支持geometry8/affinity16，E0支持6 workers，E2的BF16 dense/FP32 sparse已通过短程更新。详细数值、版本和范围以实测文档为准。
 - [x] [CPU几何/GPU重叠实现](docs/GEOMETRY_GPU_OVERLAP.md)及[两机实测](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5与L20/E3分别提速19.90%和33.82%，allocated峰值分别45.28和11.72 GiB。四项短测均正常结束，不再重复串行对照。
-- [x] [下一档显存扩展入口](docs/GEOMETRY_MEMORY_SCALING.md)：显式有效batch配置、按样本派生预算、`--suite memory`。H20/E5比较B2A4/B4A2（共同有效batch8），L20/E3比较B1A4/B2A2（共同有效batch4）；每设置40帧预热、80帧计时。更大batch的GPU收益待测。
+- [x] [显存与batch扫描入口](docs/GEOMETRY_MEMORY_SCALING.md)：`--suite batch-scan`默认取消人工显存上限；H20/E5扫描microbatch1/2/3/4/6/8、有效batch24，L20/E3扫描1/2/3/4、有效batch12，均用depth2并各加最大microbatch的depth1容量对照。每档48帧预热、240帧计时；独立进程依次执行，CUDA OOM记录后继续下一档。旧`--suite memory`两档方案仍保留供复用；新扫描收益待测。
 
 ## TODO（待完成）
 
 - [ ] **最终代码确定后：** 启动并完成E0–E5独立预训练，每组230,400有效样本和原10个按样本计的验证节点。当前完整训练停止；有效batch4对应57,600次更新，若显式选择8则为28,800次，不把两者训练轨迹视为等价。
 - [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
 - [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
-- [ ] 仅用 **H20/E5、L20/E3各一个实验**，按[显存扩展短测](docs/GEOMETRY_MEMORY_SCALING.md)确认更大microbatch的净吞吐与峰值显存。depth2收益已确认，不重复串行测试，不增加恢复审计或完整验证。CUDA接触查询/FPS及GPU增强仍未实现。
+- [ ] 仅用 **H20/E5、L20/E3各一个实验**，一次运行[多档batch扫描](docs/GEOMETRY_MEMORY_SCALING.md)并选出净吞吐最好的可用档位。旧小batch的depth2收益已确认；新增最大batch的depth1用于区分双份在途图与单份图的容量，不增加恢复审计或完整验证。CUDA接触查询/FPS及GPU增强仍未实现。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。

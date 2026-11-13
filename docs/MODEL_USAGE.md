@@ -48,7 +48,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 `configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。此前六组CD-010使用从[原CD-009 profile](../configs/runtime_profiles/cd009-v3/manifest.json)派生的新配置；现已全部停止，最终代码确定前只做优化测试。当前状态和停止前记录见[CD-010运行状态](performance/CD010_RUN_STATUS.md)。旧CD-009也停止，其[原策略和身份](CD009_PRETRAINING.md)保留作历史记录。
 
-每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；当前 E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练正在分阶段执行，尚未完成六组与各 10 次开发验证。
+每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练当前停止，尚未完成六组与各 10 次开发验证；最终有效batch确定后按同一样本预算派生更新数。
 
 正式多机管理复用下方[supervisor入口](#cd-009-persistent-multi-host-pretraining)和[公共模板](implementation/examples/cd009-supervisor.json)，私有控制配置不提交到仓库。六组与协调器当前保持停止，短测不恢复完整训练，不重复首100步、恢复审计或全机检查。性能比较使用下方两机各一个实验的入口。
 
@@ -58,7 +58,9 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 `--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
 
-[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2：H20/E5 +19.90%、L20/E3 +33.82%。下一轮[显存扩展](GEOMETRY_MEMORY_SCALING.md)使用`benchmark_geometry_overlap.py --suite memory --hardware H20|L20 --out-dir NEW [--run]`：H20/E5比较B2A4与B4A2（共同有效batch8），L20/E3比较B1A4与B2A2（共同有效batch4）。每设置40帧预热、80帧计时；默认只生成，`--run`才执行短测，不启动完整训练。新增`--effective-batch-size`显式改变训练batch并按样本重新派生步数；`--pose-chunk-size`单独控制接触头，本轮固定32。
+[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2：H20/E5 +19.90%、L20/E3 +33.82%。下一轮[显存与batch扫描](GEOMETRY_MEMORY_SCALING.md)使用`benchmark_geometry_overlap.py --suite batch-scan --hardware H20|L20 --out-dir NEW [--run]`：H20/E5固定有效batch24，microbatch1/2/3/4/6/8、depth2，附加B8A3/depth1；L20/E3固定有效batch12，microbatch1/2/3/4、depth2，附加B4A3/depth1，共7/5档。每档48帧预热、240帧计时；24/12是性能比较设置，不是最终训练配方。独立进程串行执行，CUDA OOM记录后继续下一档，其他错误停止。`--batch-sizes`、`--effective-batch-size`可自定义，`--overlap-only`省略depth1。默认只生成，`--run`才执行短测；旧两档`--suite memory`仍保留，不恢复完整训练。
+
+新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头，本轮固定32。
 
 精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
 
@@ -296,8 +298,9 @@ immediately before spawn, matching index/UUID, no compute PID and memory below
 1GiB. CPU affinity pools are nonoverlapping; each selected profile chooses a
 thread count within its pool. Target host
 concurrency requires128GiB available RAM per run and200GiB free local/shared
-disk. RSS remains limited to64GiB; GPU allocator and whole-process memory
-budgets come from each measured profile with physical headroom. Disk free
+disk. RSS remains limited to64GiB; numeric GPU allocator and whole-process memory
+budgets come from the selected profile. Explicit `gpu_memory_limit_gib:null`
+removes these artificial GPU caps for fresh-run configurations. Disk free
 below100GiB or task storage above100GiB requests pause. Full-process GPU memory
 is monitored separately. NVML PIDs may be host PIDs while the trainer has a
 container PID. Ownership therefore requires the matching attempt, trainer PID
@@ -426,7 +429,9 @@ Save each selected resolved configuration as `.json` (parsed with the JSON parse
 preserving numeric scientific notation such as `1e-08`),
 with `runtime_profile` containing `profile_id`, `training_version:"v3"`,
 `selection_status:"selected"`, `host`, `experiment`, and measurement references.
-Set positive `runtime.cpu_threads` and `runtime.gpu_memory_limit_gib` explicitly.
+Set positive `runtime.cpu_threads` explicitly. Set `runtime.gpu_memory_limit_gib`
+to a positive GiB cap or explicit JSON `null` for no artificial GPU memory limit;
+new fresh-run presets default to `null`, while existing finite profiles stay unchanged.
 Register its absolute path and raw SHA256 in supervisor `profiles[host][experiment]`.
 The supervisor binds the profile, sample budget and config hash to each assignment,
 then copies the exact config into its attempt directory before launch.

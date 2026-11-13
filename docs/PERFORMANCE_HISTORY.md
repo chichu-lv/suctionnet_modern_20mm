@@ -4,7 +4,7 @@
 
 ## 1. 先确认我们现在到了哪里
 
-**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)，已有[资源短测](performance/CD010_FROM_SCRATCH_RESULTS.md)和[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。depth2令H20/E5、L20/E3分别提高19.90%、33.82%；两机均保留64k，H20的128k收益只有0.50%。完整训练现已停止，下一项是[更大microbatch显存扩展](GEOMETRY_MEMORY_SCALING.md)，只测两机各一个实验。下文保存CD-009历史，不把不同阶段提速比例相乘。
+**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)，已有[资源短测](performance/CD010_FROM_SCRATCH_RESULTS.md)和[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。depth2令H20/E5、L20/E3分别提高19.90%、33.82%；两机均保留64k，H20的128k收益只有0.50%。完整训练现已停止，下一项是[多档batch扫描](GEOMETRY_MEMORY_SCALING.md)：默认取消人工显存上限，仅用H20/E5与L20/E3，一次顺序执行7/5档（含最大microbatch的depth1容量对照）；CUDA OOM记录后继续，其他错误停止。有效batch24/12仅用于本轮性能比较，尚未选为正式训练设置。下文保存CD-009历史，包括当时112/36 GiB上限，不把不同阶段提速比例相乘。
 
 **目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
 

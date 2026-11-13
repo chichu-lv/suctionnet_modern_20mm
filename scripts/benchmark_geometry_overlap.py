@@ -1,10 +1,12 @@
-"""Compare geometry scheduling or a larger working set on one experiment/GPU.
+"""Compare geometry scheduling or batch capacity on one experiment/GPU.
 
 The default suite compares serial/overlap: H20 E5/B2A2, L20 E3/B1A4.
 --suite memory keeps overlap and compares H20 B2A4 to B4A2 (effective batch
 8 in both), or L20 B1A4 to B2A2 (effective batch stays 4).
-Both warm up on 40 credited frames and time 80.
-By default only write fresh configurations; --run executes the two trainers.
+Those pairs warm up on 40 credited frames and time 80.
+--suite batch-scan runs multiple microbatches at one effective batch per host,
+with 48 warmup and 240 timed credited frames. New configurations have no
+artificial GPU memory cap. By default only prepare; --run executes the plan.
 """
 from __future__ import annotations
 
@@ -28,9 +30,15 @@ STOP_STEP = 30
 WARMUP_FRAMES = 40
 TIMED_FRAMES = 80
 HOSTS = {
-    'H20': {'experiment': 'E5', 'microbatch_size': 2, 'gpu_memory_limit_gib': 112},
-    'L20': {'experiment': 'E3', 'microbatch_size': 1, 'gpu_memory_limit_gib': 36},
+    'H20': {'experiment': 'E5', 'microbatch_size': 2},
+    'L20': {'experiment': 'E3', 'microbatch_size': 1},
 }
+SCAN_SETTINGS = {
+    'H20': {'effective_batch_size': 24, 'batch_sizes': (1, 2, 3, 4, 6, 8)},
+    'L20': {'effective_batch_size': 12, 'batch_sizes': (1, 2, 3, 4)},
+}
+SCAN_WARMUP_FRAMES = 48
+SCAN_TIMED_FRAMES = 240
 
 
 def write_json(path, value):
@@ -39,16 +47,20 @@ def write_json(path, value):
 
 def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                  backbone_root=None, cpu_list=None, python=sys.executable,
-                 suite='overlap', gpu_memory_limit_gib=None):
-    """Two fresh configurations, with equal credited-frame comparison windows."""
+                 suite='overlap', gpu_memory_limit_gib=None, no_gpu_memory_limit=False,
+                 batch_sizes=None, effective_batch_size=None, overlap_only=False):
+    """Fresh configurations with equal credited-frame windows within a suite."""
     selected = HOSTS[hardware]
-    if suite not in ('overlap', 'memory'):
-        raise ValueError('suite must be overlap or memory')
+    if suite not in ('overlap', 'memory', 'batch-scan'):
+        raise ValueError('suite must be overlap, memory or batch-scan')
+    if suite != 'batch-scan' and (batch_sizes is not None or effective_batch_size is not None or overlap_only):
+        raise ValueError('Batch list, effective batch and overlap-only overrides require --suite batch-scan')
+    warmup_frames, timed_frames = WARMUP_FRAMES, TIMED_FRAMES
     if suite == 'overlap':
         specifications = [('serial', selected['microbatch_size'], 4, 1),
                           ('overlap', selected['microbatch_size'], 4, 2)]
         comparison_note = 'Only geometry pipeline depth changes; microbatch and effective batch stay fixed.'
-    else:
+    elif suite == 'memory':
         larger_microbatch, larger_effective = (4, 8) if hardware == 'H20' else (2, 4)
         specifications = [('baseline', selected['microbatch_size'], larger_effective, 2),
                           ('larger_batch', larger_microbatch, larger_effective, 2)]
@@ -59,7 +71,32 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
             'speed is a historical reference, not this comparison baseline.' if hardware == 'H20' else
             'L20 effective batch stays 4, but microbatch grouping changes BN/loss numerical behavior. '
             'This comparison measures throughput, not convergence.')
-    memory_limit = selected['gpu_memory_limit_gib'] if gpu_memory_limit_gib is None else gpu_memory_limit_gib
+    else:
+        scan = SCAN_SETTINGS[hardware]
+        effective = scan['effective_batch_size'] if effective_batch_size is None else effective_batch_size
+        batches = list(scan['batch_sizes'] if batch_sizes is None else batch_sizes)
+        if type(effective) is not int or effective < 1 or not batches:
+            raise ValueError('Choose a positive effective batch and a nonempty batch list')
+        if any(type(batch) is not int or batch < 1 or effective % batch or effective // batch < 2
+               for batch in batches):
+            raise ValueError('Every microbatch must divide the effective batch with at least two accumulation steps')
+        batches = sorted(set(batches))
+        specifications = [(f'b{batch}_a{effective // batch}_d2', batch, effective, 2) for batch in batches]
+        if not overlap_only:
+            largest = batches[-1]
+            specifications.append((f'b{largest}_a{effective // largest}_d1', largest, effective, 1))
+        warmup_frames = math.ceil(SCAN_WARMUP_FRAMES / effective) * effective
+        timed_frames = math.ceil(SCAN_TIMED_FRAMES / effective) * effective
+        comparison_note = (
+            f'All {hardware} candidates use effective batch {effective}, preserving AdamW update '
+            'frequency within this scan. Depth2 varies microbatch. '
+            + ('The final depth1 candidate compares one larger resident graph against CPU/GPU overlap. '
+               if not overlap_only else '') + 'This effective batch is '
+            'a throughput-screening setting, not an automatic change to the final training recipe. '
+            'BN/loss grouping changes; historical effective-batch4/8 speeds are references only.')
+    memory_limit = gpu_memory_limit_gib
+    if no_gpu_memory_limit and memory_limit is not None:
+        raise ValueError('Choose unrestricted memory or a numeric limit, not both')
     output = Path(out_dir).resolve()
     if (output / 'plan.json').exists() or any((output / spec[0]).exists() for spec in specifications):
         raise ValueError('Choose a new output directory; benchmark runs are fresh starts')
@@ -67,14 +104,14 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
     base = load_config(ROOT / f'configs/runtime_profiles/cd009-v3/{hardware}-{selected["experiment"]}.json')
     variants = []
     for name, microbatch, effective_batch, depth in specifications:
-        warmup_steps = WARMUP_FRAMES // effective_batch
-        stop_step = (WARMUP_FRAMES + TIMED_FRAMES) // effective_batch
+        warmup_steps = warmup_frames // effective_batch
+        stop_step = (warmup_frames + timed_frames) // effective_batch
         config, performance = from_scratch_config(base,
             hardware_preset=hardware, microbatch_size=microbatch,
             effective_batch_size=effective_batch,
             geometry_pipeline_depth=depth, dense_chunk_size=65536, pose_chunk_size=32,
             geometry_threads=8, workers=4, cpu_affinity_count=16, cpu_threads=8,
-            gpu_memory_limit_gib=memory_limit)
+            gpu_memory_limit_gib=memory_limit, no_gpu_memory_limit=memory_limit is None)
         config['seed'] = 42
         for key, value in (('source_root', source_root), ('label_root', label_root)):
             if value is not None:
@@ -97,8 +134,8 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                          'effective_batch_size': effective_batch,
                          'warmup_successful_steps': warmup_steps,
                          'stop_at_successful_step': stop_step,
-                         'warmup_credited_frames': WARMUP_FRAMES,
-                         'timed_credited_frames': TIMED_FRAMES,
+                         'warmup_credited_frames': warmup_frames,
+                         'timed_credited_frames': timed_frames,
                          'gpu_memory_limit_gib': memory_limit,
                          'train_config': str(train_path), 'performance_config': str(performance_path),
                          'run_dir': str(directory / 'run'), 'command': command})
@@ -109,19 +146,23 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                                                *variant['command']])
     plan = {
         'schema_version': ('suction20.geometry_overlap_benchmark.v1' if suite == 'overlap'
+                           else 'suction20.geometry_overlap_benchmark.v3' if suite == 'batch-scan'
                            else 'suction20.geometry_overlap_benchmark.v2'),
         'suite': suite,
         'hardware': hardware, 'experiment': selected['experiment'],
-        'warmup_credited_frames': WARMUP_FRAMES, 'timed_credited_frames': TIMED_FRAMES,
-        'total_credited_frames_per_variant': WARMUP_FRAMES + TIMED_FRAMES,
+        'warmup_credited_frames': warmup_frames, 'timed_credited_frames': timed_frames,
+        'total_credited_frames_per_variant': warmup_frames + timed_frames,
+        'gpu_memory_limit_gib': memory_limit,
+        'memory_policy': 'No artificial allocator cap; use available device VRAM' if memory_limit is None else f'Explicit {memory_limit:g} GiB allocator cap',
+        'continue_on_cuda_oom': suite == 'batch-scan',
         'comparison_note': comparison_note,
         'working_directory': str(ROOT), 'environment': environment,
         'gpu_selection': 'Inherit CUDA_VISIBLE_DEVICES; no device discovery or reassignment',
         'cuda_visible_devices_at_prepare': os.environ.get('CUDA_VISIBLE_DEVICES'),
         'cpu_list': cpu_list,
         'cpu_allocation': '16 allocated logical CPUs; supply --cpu-list or launch under the intended affinity',
-        'measurement_scope': ('After 40 warmup credited frames, time the next 80: effective batch4 '
-                              'uses step10 end to30 end; effective batch8 uses step5 end to15 end. '
+        'measurement_scope': (f'After {warmup_frames} warmup credited frames, time the next {timed_frames}; '
+                              'exact successful-step boundaries are recorded per variant. '
                               'Real forward/loss/backward/AdamW, including skips and '
                               'intervening waits; excludes startup and final checkpoint/cleanup. Compare '
                               'frames/s, not seconds/update across different effective batches.'),
@@ -192,6 +233,10 @@ def summarize_rows(rows, *, warmup_steps=WARMUP_STEPS, stop_step=STOP_STEP):
                 for name in ('sampler_cpu_s', 'spatial_index_seconds', 'query_cpu_seconds'))
             for row in window) if pipeline_depth == 1 else None,
         'gradients_finite': all(row.get('gradients_finite', True) for row in window),
+        'stage_host_seconds': {
+            name: distribution(row.get('timing_seconds', {}).get(name) for row in window)
+            for name in ('h2d_host', 'forward_host', 'loss_host', 'backward_host', 'optimizer_host', 'diagnostics_host')},
+        'stage_timing_scope': 'Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.',
     }
     for source, target in (('peak_gpu_bytes', 'peak_allocated_gib'),
                            ('peak_gpu_reserved_bytes', 'peak_reserved_gib')):
@@ -221,22 +266,43 @@ def summarize_plan(plan, out_dir):
         stop = variant.get('stop_at_successful_step', plan.get('stop_at_successful_step', STOP_STEP))
         result = {'name': variant['name'],
                   **{key: variant.get(key, plan.get(key)) for key in
-                     ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size')},
+                     ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
+                      'geometry_pipeline_depth', 'gpu_memory_limit_gib')},
                   **summarize_run(variant['run_dir'], warmup_steps=warmup, stop_step=stop)}
         execution_path = Path(variant['run_dir']).parent / 'execution.json'
         if execution_path.exists():
             result.update(json.loads(execution_path.read_text()))
         result['normal_pause'] = (result.get('trainer_phase') == 'paused' and result['exit_code'] == 75
                                   if 'exit_code' in result else None)
+        if result.get('outcome') == 'oom':
+            result['execution_status'] = 'oom'
+        elif result.get('exit_code') not in (None, 75):
+            result['execution_status'] = 'error'
+        elif result['normal_pause'] and result['measurement_status'] == 'complete':
+            result['execution_status'] = 'completed'
+        else:
+            result['execution_status'] = result['measurement_status']
         results.append(result)
-    base_fps, candidate_fps = (result.get('frames_per_second') for result in results)
-    change = (candidate_fps / base_fps - 1.) * 100. if base_fps and candidate_fps else None
+    base_fps = results[0].get('frames_per_second')
+    for result in results:
+        fps = result.get('frames_per_second')
+        result['throughput_change_from_first_percent'] = (fps / base_fps - 1.) * 100. if base_fps and fps else None
+    ranked = sorted((result for result in results if result['execution_status'] == 'completed'),
+                    key=lambda result: result['frames_per_second'], reverse=True)
+    ranking = [{key: result.get(key) for key in
+                ('name', 'microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
+                 'geometry_pipeline_depth', 'frames_per_second', 'peak_allocated_gib', 'peak_reserved_gib')}
+               for result in ranked]
+    change = results[1]['throughput_change_from_first_percent'] if len(results) == 2 else None
     summary = {'hardware': plan['hardware'], 'experiment': plan['experiment'],
                'suite': plan.get('suite', 'overlap'),
                'throughput_change_percent': change, 'results': results,
+               'ranking': ranking, 'best_variant': ranking[0]['name'] if ranking else None,
+               'gpu_memory_limit_gib': plan.get('gpu_memory_limit_gib'),
+               'memory_policy': plan.get('memory_policy'),
                'scope': plan['measurement_scope'],
                'comparison_note': plan.get('comparison_note'),
-               'conclusion_scope': 'One short performance comparison; does not measure convergence. No historical checkpoint/gradient equivalence gate or automatic production switch.'}
+               'conclusion_scope': 'One-pass throughput/capacity screening; only complete windows with observed normal trainer exits enter ranking. Does not measure convergence or automatically change the final training recipe.'}
     output = Path(out_dir)
     write_json(output / 'summary.json', summary)
     def number(value, digits=3):
@@ -245,21 +311,49 @@ def summarize_plan(plan, out_dir):
         value = result.get(key)
         return '—' if not value else f'{number(value["median"])} / {number(value["p95"])}'
     lines = [f'# {plan["hardware"]} / {plan["experiment"]}: {plan.get("suite", "overlap")} comparison', '',
-             '| Variant | Microbatch / accumulation / effective | frames/s | Update median / p95 (s) | Allocated / reserved (GiB) | Geometry job median / p95 (s) | Exposed future wait median / p95 (s) | Loader wait median / p95 (s) | Success / skip | Normal pause |',
-             '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |']
+             plan.get('memory_policy', 'See per-variant allocator configuration.') + '.', '',
+             '| Variant | Microbatch / accumulation / effective | Depth | Outcome | frames/s | Change from first (%) | Update median / p95 (s) | Allocated / reserved (GiB) | Success / skip |',
+             '| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |']
     for result in results:
-        pause = 'unobserved' if result['normal_pause'] is None else str(result['normal_pause'])
         batch = ' / '.join(str(result.get(key) or '—') for key in
                            ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size'))
-        lines.append(f'| {result["name"]} | {batch} | {number(result.get("frames_per_second"), 6)} | '
+        lines.append(f'| {result["name"]} | {batch} | {result.get("geometry_pipeline_depth", "—")} | '
+                     f'{result["execution_status"]} | {number(result.get("frames_per_second"), 6)} | '
+                     f'{number(result["throughput_change_from_first_percent"], 2)} | '
                      f'{pair(result, "update_seconds")} | {number(result.get("peak_allocated_gib"))} / {number(result.get("peak_reserved_gib"))} | '
-                     f'{pair(result, "geometry_job_wall_seconds")} | {pair(result, "geometry_future_wait_seconds")} | '
-                     f'{pair(result, "loader_wait_seconds")} | {result.get("successful_updates", "—")} / {result.get("skipped_updates", "—")} | {pause} |')
-    lines.extend(['', f'Throughput change: {number(change, 2)}%.', '', plan['measurement_scope'] + '.', '',
+                     f'{result.get("successful_updates", "—")} / {result.get("skipped_updates", "—")} |')
+    lines.extend(['', f'Fastest completed candidate: {summary["best_variant"] or "none"}.', '',
+                  '## Existing stage diagnostics', '',
+                  '| Variant | Future wait median / p95 (s) | Loader wait median / p95 (s) | Forward host median / p95 (s) | Backward host median / p95 (s) | Optimizer host median / p95 (s) |',
+                  '| --- | ---: | ---: | ---: | ---: | ---: |'])
+    for result in results:
+        stages = result.get('stage_host_seconds', {})
+        lines.append(f'| {result["name"]} | {pair(result, "geometry_future_wait_seconds")} | '
+                     f'{pair(result, "loader_wait_seconds")} | {pair(stages, "forward_host")} | '
+                     f'{pair(stages, "backward_host")} | {pair(stages, "optimizer_host")} |')
+    lines.extend(['', 'Host stages include incidental synchronization; they are not isolated CUDA kernel times. No additional trace or synchronization is required.', '',
+                  plan['measurement_scope'] + '.', '',
                   'Serial geometry has no background future, so its job/future cells are not applicable. Summed background job time overlaps GPU work and must not be added to update wall time. The JSON also reports serial geometry host intervals.', '',
                   summary.get('comparison_note') or '', '', summary['conclusion_scope'], ''])
+    failures = [result for result in results if result.get('error_message')]
+    if failures:
+        lines.extend(['## Failed candidates', ''])
+        for result in failures:
+            message = result['error_message'].replace('\n', ' ')
+            lines.extend([f'- `{result["name"]}`: {message}', f'  Full console: `{result.get("console_log")}`'])
+        lines.append('')
     (output / 'summary.md').write_text('\n'.join(lines))
     return summary
+
+
+def cuda_oom_message(console_path):
+    """Recognize CUDA allocation failures; CPU OOM and unrelated errors stop."""
+    for line in reversed(Path(console_path).read_text(errors='replace').splitlines()):
+        lowered = line.lower()
+        if any(marker in lowered for marker in
+               ('cuda out of memory', 'cuda error: out of memory', 'cudaerrormemoryallocation')):
+            return line.strip()
+    return None
 
 
 def run_plan(plan, out_dir):
@@ -270,34 +364,47 @@ def run_plan(plan, out_dir):
         with console_path.open('x') as stream:
             completed = subprocess.run(variant['command'], cwd=plan['working_directory'],
                                        env=environment, stdout=stream, stderr=subprocess.STDOUT, check=False)
-        write_json(console_path.parent / 'execution.json', {
+        oom = cuda_oom_message(console_path) if completed.returncode != 75 else None
+        execution = {
             'exit_code': completed.returncode,
-            'cuda_visible_devices_at_run': os.environ.get('CUDA_VISIBLE_DEVICES')})
+            'outcome': 'completed' if completed.returncode == 75 else 'oom' if oom else 'error',
+            'console_log': str(console_path),
+            'cuda_visible_devices_at_run': os.environ.get('CUDA_VISIBLE_DEVICES')}
         if completed.returncode != 75:
-            # Keep a partial measurement (e.g. shutdown failure) visible; do
-            # not turn the benchmark into automatic retries or OOM searches.
-            summary = summarize_plan(plan, out_dir)
+            execution['error_message'] = oom or f'Trainer exited with code {completed.returncode}; see console.log'
+        write_json(console_path.parent / 'execution.json', execution)
+        # Persist progress after every candidate, including CUDA OOM. A new
+        # process starts the next candidate with its own allocator/context.
+        summary = summarize_plan(plan, out_dir)
+        if oom and plan.get('continue_on_cuda_oom', False):
+            print(f'{variant["name"]}: CUDA OOM; continuing the fixed candidate list.', flush=True)
+            continue
+        if completed.returncode != 75:
             print(json.dumps(summary, indent=2, ensure_ascii=False))
             return 1
-    print(json.dumps(summarize_plan(plan, out_dir), indent=2, ensure_ascii=False))
-    return 0
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0 if summary['ranking'] else 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hardware', required=True, choices=tuple(HOSTS))
-    parser.add_argument('--suite', choices=('overlap', 'memory'), default='overlap',
-                        help='overlap: serial vs depth2; memory: depth2 baseline vs one larger microbatch')
+    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan'), default='overlap',
+                        help='overlap: serial/depth2 pair; memory: larger-batch pair; batch-scan: full-VRAM multi-batch scan')
     parser.add_argument('--out-dir', required=True, help='New benchmark directory, or existing one with --summarize-existing')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--run', action='store_true', help='Prepare and sequentially run just the two real training candidates')
+    mode.add_argument('--run', action='store_true', help='Prepare and sequentially run all planned candidates; batch-scan continues after CUDA OOM')
     mode.add_argument('--summarize-existing', action='store_true', help='Read plan/logs; launch no process')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')
     parser.add_argument('--backbone-root')
     parser.add_argument('--cpu-list', help='Actual allocated CPU IDs for taskset, e.g. an assigned 16-core range; otherwise inherit affinity')
-    parser.add_argument('--gpu-memory-limit-gib', type=float,
-                        help='Explicit allocator limit for both candidates; default H20 112 / L20 36; never auto-raised')
+    memory = parser.add_mutually_exclusive_group()
+    memory.add_argument('--gpu-memory-limit-gib', type=float, help='Optional finite GiB allocator cap; default is unrestricted')
+    memory.add_argument('--no-gpu-memory-limit', action='store_true', help='Explicitly use all available GPU memory (already the default)')
+    parser.add_argument('--batch-sizes', type=int, nargs='+', help='batch-scan microbatch list; defaults H20 1 2 3 4 6 8 / L20 1 2 3 4')
+    parser.add_argument('--effective-batch-size', type=int, help='batch-scan common effective batch; defaults H20 24 / L20 12')
+    parser.add_argument('--overlap-only', action='store_true', help='batch-scan: omit the largest-batch depth1 scheduling comparison')
     args = parser.parse_args()
     if args.run and not os.environ.get('CUDA_VISIBLE_DEVICES'):
         parser.error('Set CUDA_VISIBLE_DEVICES to the GPU allocated for this short test')
@@ -309,7 +416,9 @@ def main():
         return
     plan = prepare_plan(args.hardware, args.out_dir, source_root=args.source_root,
                         label_root=args.label_root, backbone_root=args.backbone_root, cpu_list=args.cpu_list,
-                        suite=args.suite, gpu_memory_limit_gib=args.gpu_memory_limit_gib)
+                        suite=args.suite, gpu_memory_limit_gib=args.gpu_memory_limit_gib,
+                        no_gpu_memory_limit=args.no_gpu_memory_limit, batch_sizes=args.batch_sizes,
+                        effective_batch_size=args.effective_batch_size, overlap_only=args.overlap_only)
     if args.run:
         sys.exit(run_plan(plan, args.out_dir))
     print(json.dumps({'status': 'prepared; no training launched', **plan}, indent=2, ensure_ascii=False))

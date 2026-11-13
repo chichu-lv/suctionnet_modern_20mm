@@ -13,19 +13,20 @@ from .pretrain_budget import CONTRACT_VERSION, resolve_config
 
 HARDWARE_PRESETS = {
     'H20': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 8,
-            'cpu_affinity_count': 16, 'cpu_threads': 8, 'gpu_memory_limit_gib': 112,
+            'cpu_affinity_count': 16, 'cpu_threads': 8, 'gpu_memory_limit_gib': None,
             'gpu_model': 'NVIDIA H20-3e'},
     'L20': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 4,
-            'cpu_affinity_count': 8, 'cpu_threads': 8, 'gpu_memory_limit_gib': 36,
+            'cpu_affinity_count': 8, 'cpu_threads': 8, 'gpu_memory_limit_gib': None,
             'gpu_model': 'NVIDIA L20'},
     'reference': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 4,
-                  'cpu_affinity_count': 8, 'cpu_threads': 8},
+                  'cpu_affinity_count': 8, 'cpu_threads': 8, 'gpu_memory_limit_gib': None},
 }
 
 
 def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_chunk_size=None,
                         workers=None, geometry_threads=None, geometry_precision='float32',
                         cpu_affinity_count=None, cpu_threads=None, gpu_memory_limit_gib=None,
+                        no_gpu_memory_limit=False,
                         microbatch_size=None, effective_batch_size=None,
                         geometry_pipeline_depth=1, pose_chunk_size=None,
                         scene_cache_size=90, object_cache_size=88,
@@ -36,9 +37,11 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     An explicit effective-batch change preserves v3 sample milestones and
     derives their update counts. Optimizer hyperparameters, including peak LR,
     are retained; this is a new training recipe, not a checkpoint migration.
+    Fresh presets use the full available device memory (JSON null); an explicit
+    numeric gpu_memory_limit_gib can still set an allocator cap.
     """
     config = deepcopy(base)
-    old_profile, old_runtime = config.get('runtime_profile', {}), config.get('runtime', {})
+    old_profile = config.get('runtime_profile', {})
     source_host = old_profile.get('host', 'custom')
     preset_name = hardware_preset or (source_host if source_host in ('H20', 'L20') else 'reference')
     if preset_name not in HARDWARE_PRESETS:
@@ -49,13 +52,16 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     geometry_threads = preset['geometry_threads'] if geometry_threads is None else geometry_threads
     cpu_affinity_count = preset['cpu_affinity_count'] if cpu_affinity_count is None else cpu_affinity_count
     cpu_threads = preset['cpu_threads'] if cpu_threads is None else cpu_threads
+    if no_gpu_memory_limit and gpu_memory_limit_gib is not None:
+        raise ValueError('Choose no GPU memory limit or a numeric limit, not both')
     if gpu_memory_limit_gib is None:
-        gpu_memory_limit_gib = preset.get('gpu_memory_limit_gib', old_runtime.get('gpu_memory_limit_gib', 64))
+        gpu_memory_limit_gib = preset['gpu_memory_limit_gib']
     for key, value in (('cpu_affinity_count', cpu_affinity_count), ('cpu_threads', cpu_threads)):
         if type(value) is not int or value < 1:
             raise ValueError(f'{key} must be a positive integer')
-    if type(gpu_memory_limit_gib) not in (int, float) or not 0 < gpu_memory_limit_gib < 1000:
-        raise ValueError('GPU memory limit must be positive GiB')
+    if gpu_memory_limit_gib is not None and (
+            type(gpu_memory_limit_gib) not in (int, float) or not 0 < gpu_memory_limit_gib < 1000):
+        raise ValueError('GPU memory limit must be positive GiB or None for no allocator cap')
     experiment = config.get('experiment', config.get('model', {}).get('experiment'))
     if experiment not in ('E0', 'E1', 'E2', 'E3', 'E4', 'E5'):
         raise ValueError('From-scratch configuration requires an E0–E5 experiment')

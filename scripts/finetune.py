@@ -35,8 +35,9 @@ def finetune(config, run_dir, device, *, init_checkpoint=None, resume=None, stop
     seed_everything(config.get("seed", 42))
     runtime = config.get("runtime", {})
     torch.set_num_threads(runtime.get("cpu_threads", 8))
-    if device.type == "cuda":
-        torch.cuda.set_per_process_memory_fraction(min(1., runtime.get("gpu_memory_limit_gib", 64) * 1024**3 /
+    memory_limit = runtime.get("gpu_memory_limit_gib", 64)
+    if device.type == "cuda" and memory_limit is not None:
+        torch.cuda.set_per_process_memory_fraction(min(1., memory_limit * 1024**3 /
                                                        torch.cuda.get_device_properties(device).total_memory), device)
     mode = config["mode"]
     target_data = config["target_data"]

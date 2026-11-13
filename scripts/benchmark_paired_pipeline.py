@@ -314,8 +314,10 @@ def run(args, report):
                 raise ValueError('Paired diagnostic requires the approved 1 x 4 profile')
             training.seed_everything(config.get('seed', 42))
             torch.set_num_threads(config.get('runtime', {}).get('cpu_threads', 8))
-            cap = config['runtime']['gpu_memory_limit_gib'] * 1024**3
-            torch.cuda.set_per_process_memory_fraction(min(1., cap / torch.cuda.get_device_properties(device).total_memory), device)
+            memory_limit = config['runtime']['gpu_memory_limit_gib']
+            if memory_limit is not None:
+                cap = memory_limit * 1024**3
+                torch.cuda.set_per_process_memory_fraction(min(1., cap / torch.cuda.get_device_properties(device).total_memory), device)
             performance = None
             performance_path = (args.performance_config if phase == 'optimized'
                                 else args.baseline_performance_config)

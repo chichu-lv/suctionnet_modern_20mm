@@ -393,8 +393,10 @@ def selected_profile(config, experiment, host):
         raise Refused("selected profile host/experiment/version mismatch")
     runtime = resolved.get("runtime", {})
     threads, memory = runtime.get("cpu_threads"), runtime.get("gpu_memory_limit_gib")
-    if type(threads) is not int or threads < 1 or isinstance(memory, bool) or not isinstance(memory, (int, float)) or not 0 < memory < 1000:
-        raise Refused("selected profile must specify positive CPU threads and GPU memory limit")
+    memory_valid = "gpu_memory_limit_gib" in runtime and (
+        memory is None or (type(memory) in (int, float) and 0 < memory < 1000))
+    if type(threads) is not int or threads < 1 or not memory_valid:
+        raise Refused("selected profile must specify positive CPU threads and a positive GPU memory limit or null")
     selected_runtime = {"cpu_threads": threads, "gpu_memory_limit_gib": memory}
     if "cpu_affinity_count" in runtime:
         affinity_count = runtime["cpu_affinity_count"]
@@ -488,8 +490,11 @@ def trainer_command(config, assignment):
                "--run-dir", str(run), "--device", "cuda:0", "--source-root", config["source_root"],
                "--label-root", config["label_root"], "--backbone-root", config["backbone_root"],
                "--control-dir", str(control), "--attempt-id", assignment["token"],
-               "--validation-gate", "--cpu-threads", str(runtime["cpu_threads"]), "--gpu-memory-limit-gib",
-               str(runtime["gpu_memory_limit_gib"])]
+               "--validation-gate", "--cpu-threads", str(runtime["cpu_threads"])]
+    if runtime["gpu_memory_limit_gib"] is None:
+        command.append("--no-gpu-memory-limit")
+    else:
+        command.extend(["--gpu-memory-limit-gib", str(runtime["gpu_memory_limit_gib"])])
     if assignment.get("performance_config_path"):
         command.extend(["--performance-config", assignment["performance_config_path"]])
     if assignment.get("resume"):
@@ -1196,7 +1201,7 @@ def run_worker(config, host, assignment):
                                     for path in (Path(config["root"]) / "control/attempts").glob("*/worker.json"))
                         if not newer:
                             reasons.append("sustained shared pressure; pause newest local job")
-                    if (sample.get("gpu", {}).get("process_memory_mib", {}).get(str(established_gpu_pid)) or 0) > memory_limit * 1024:
+                    if memory_limit is not None and (sample.get("gpu", {}).get("process_memory_mib", {}).get(str(established_gpu_pid)) or 0) > memory_limit * 1024:
                         reasons.append("GPU process memory budget exceeded")
                     if reasons:
                         if not (control / "pause.request").exists():

@@ -240,6 +240,21 @@ def test_cpu_trainer_does_not_claim_cuda_context(tmp_path, harness):
     assert 'gpu_uuid' not in status
 
 
+def test_explicit_null_disables_cuda_cap_and_numeric_legacy_limits_still_apply(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(torch.cuda, 'get_device_properties',
+                        lambda device: SimpleNamespace(total_memory=128 * 1024**3))
+    monkeypatch.setattr(torch.cuda, 'set_per_process_memory_fraction',
+                        lambda fraction, device: calls.append((fraction, device)))
+    device = torch.device('cuda:0')
+    entry.apply_gpu_memory_limit({'runtime': {'gpu_memory_limit_gib': None}}, device)
+    assert calls == []
+    entry.apply_gpu_memory_limit({'runtime': {'gpu_memory_limit_gib': 32}}, device)
+    entry.apply_gpu_memory_limit({}, device)
+    assert calls == [(.25, device), (.5, device)]
+
+
 @pytest.mark.parametrize('prefix', ['', 'GPU-'])
 def test_torch_and_nvml_uuid_formats_have_one_identity(prefix):
     value = '1ec9b2a9-e0aa-6b31-d39f-35ad07f58653'

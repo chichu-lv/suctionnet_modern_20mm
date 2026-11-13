@@ -15,7 +15,7 @@ from suction20.training import load_config
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-config', required=True,
-                        help='Existing E0–E5 profile supplies experiment and hardware limits')
+                        help='Existing E0–E5 profile supplies experiment and source hardware')
     parser.add_argument('--out-dir', required=True, help='New directory for train.json and performance.json')
     parser.add_argument('--run-dir', required=True, help='New, independent training run directory')
     parser.add_argument('--hardware-preset', choices=('auto', 'H20', 'L20', 'reference'), default='auto',
@@ -27,7 +27,11 @@ def main():
     parser.add_argument('--geometry-threads', type=int, help='Override host preset native geometry threads')
     parser.add_argument('--cpu-affinity-count', type=int, help='Number of allocated logical CPUs; actual IDs come from supervisor/taskset')
     parser.add_argument('--cpu-threads', type=int, help='PyTorch CPU threads, independent of affinity count')
-    parser.add_argument('--gpu-memory-limit-gib', type=float, help='Override host preset allocator limit')
+    memory = parser.add_mutually_exclusive_group()
+    memory.add_argument('--gpu-memory-limit-gib', type=float,
+                        help='Optional allocator cap in GiB; fresh presets default to no cap')
+    memory.add_argument('--no-gpu-memory-limit', action='store_true',
+                        help='Use all available GPU memory (the fresh-preset default)')
     parser.add_argument('--microbatch-size', type=int,
                         help='Divide the selected effective batch; accumulation is derived automatically')
     parser.add_argument('--effective-batch-size', type=int,
@@ -53,6 +57,7 @@ def main():
         workers=args.workers, geometry_threads=args.geometry_threads,
         cpu_affinity_count=args.cpu_affinity_count, cpu_threads=args.cpu_threads,
         gpu_memory_limit_gib=args.gpu_memory_limit_gib,
+        no_gpu_memory_limit=args.no_gpu_memory_limit,
         microbatch_size=args.microbatch_size, effective_batch_size=args.effective_batch_size,
         geometry_pipeline_depth=args.geometry_pipeline_depth,
         pose_chunk_size=args.pose_chunk_size,

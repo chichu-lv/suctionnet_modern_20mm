@@ -28,6 +28,14 @@ from suction20.pretrain_runtime import (AttemptLog, CheckpointStore, Progress, R
                                        atomic_json, file_digest, read_json, normalize_gpu_uuid)
 
 
+def apply_gpu_memory_limit(config, device):
+    """Explicit null uses full available VRAM; omitted legacy limits stay 64 GiB."""
+    memory_limit = config.get("runtime", {}).get("gpu_memory_limit_gib", 64)
+    if device.type == "cuda" and memory_limit is not None:
+        fraction = min(1., memory_limit * 1024**3 / torch.cuda.get_device_properties(device).total_memory)
+        torch.cuda.set_per_process_memory_fraction(fraction, device)
+
+
 def train(config, run_dir, device, *, resume=None, init_checkpoint=None, stop_at_step=None,
           pause_at_step=None, control_dir=None, validation_gate=False, attempt_id=None,
           profile_update=None):
@@ -79,10 +87,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         raise ValueError("pause_at_step must be positive")
     seed_everything(config.get("seed", 42))
     torch.set_num_threads(config.get("runtime", {}).get("cpu_threads", 8))
-    if device.type == "cuda":
-        memory_limit = config.get("runtime", {}).get("gpu_memory_limit_gib", 64) * 1024**3
-        fraction = min(1., memory_limit / torch.cuda.get_device_properties(device).total_memory)
-        torch.cuda.set_per_process_memory_fraction(fraction, device)
+    apply_gpu_memory_limit(config, device)
     train_cfg = config["training"]
     if train_cfg.get("world_size", 1) != 1:
         raise ValueError("This trainer supports one GPU; no silent distributed batch change")
@@ -614,7 +619,10 @@ def main():
     parser.add_argument("--attempt-id")
     parser.add_argument("--profile-update", type=int, help="Capture one update CPU/CUDA trace; use a separate diagnostic run, not a throughput window")
     parser.add_argument("--cpu-threads", type=int)
-    parser.add_argument("--gpu-memory-limit-gib", type=float)
+    memory = parser.add_mutually_exclusive_group()
+    memory.add_argument("--gpu-memory-limit-gib", type=float)
+    memory.add_argument("--no-gpu-memory-limit", action="store_true",
+                        help="Remove the config allocator cap and use all available GPU memory")
     initial = parser.add_mutually_exclusive_group()
     initial.add_argument("--resume")
     initial.add_argument("--init-checkpoint")
@@ -630,6 +638,8 @@ def main():
             if value <= 0:
                 parser.error(f"--{key.replace('_', '-')} must be positive")
             config.setdefault("runtime", {})[key] = value
+    if args.no_gpu_memory_limit:
+        config.setdefault("runtime", {})["gpu_memory_limit_gib"] = None
     train(config, args.run_dir, require_device(args.device), resume=args.resume,
           init_checkpoint=args.init_checkpoint, stop_at_step=args.stop_at_step,
           pause_at_step=args.pause_at_step, control_dir=args.control_dir,

@@ -624,7 +624,10 @@ def test_from_scratch_profile_passes_v4_sidecar_to_trainer(config, coordinator):
     assert assignment['budget']['target_updates'] == 57600
     assert assignment['cpus'] == list(range(16, 32))
     assert assignment['runtime']['cpu_affinity_count'] == 16
+    assert assignment['runtime']['gpu_memory_limit_gib'] is None
     assert command[command.index('--cpu-threads') + 1] == '8'
+    assert '--no-gpu-memory-limit' in command
+    assert '--gpu-memory-limit-gib' not in command
     assert command[command.index('--performance-config') + 1] == str(sidecar)
     assert '--init-checkpoint' not in command
 

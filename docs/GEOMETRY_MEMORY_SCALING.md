@@ -1,90 +1,114 @@
-# 几何重叠后的显存扩展：H20 / L20 下一档 batch
+# 几何重叠后的显存扩展：一次完成 H20 / L20 多档 batch 短测
 
 日期：2026-11-13（北京时间）。基于 `c684aae` 的[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。
 
-**两机都还有扩大工作集的空间；下一轮只比较更大的 microbatch，不继续增大 dense chunk，也不新增六组训练。** H20 需要先明确有效 batch 8 的训练含义，L20 可以保持有效 batch 4。已经提供可生成、可直接执行的 `--suite memory` 短测入口。本文没有新的 GPU 测量结果。
+**本轮取消人为显存上限，一次运行预先列出的多档 batch，再统一比较吞吐与显存。** H20 只使用 E5，L20 只使用 E3；默认分别 7 档和 5 档，不需要每测一档就人工回传、再生成下一档。入口是 `benchmark_geometry_overlap.py --suite batch-scan`。
 
-完整训练与协调器保持停止。只有用户选定最终代码和训练设置后才启动完整训练；这里的脚本只运行指定短测，不恢复旧任务或安排额外备份。
+本文的多档 batch 结果尚未在 GPU 上测得；本轮提供实现、配置生成和 CPU/CI 检查，当前环境没有两台训练机及真实数据的执行通道。已完成的几何重叠收益保留为历史证据。完整训练与协调器继续停止，扫描不会启动六组完整训练或恢复旧任务。
 
-## 1. 最新结果说明了什么
+## 1. 已测结果与继续增大 batch 的依据
 
-| 已测设置 | 有效帧/s | 更新中位数 | allocated / reserved 峰值 GiB | future 等待中位数 |
+| 已测设置 | 有效帧/s | 相对各自串行基线 | allocated / reserved 峰值 GiB | future 等待中位数 |
 |---|---:|---:|---:|---:|
-| H20/E5，B2A2，depth2 | 1.842032 | 2.1626 s | 45.28 / 83.11 | 0.2645 s |
-| L20/E3，B1A4，depth2 | 2.841787 | 1.3808 s | 11.72 / 22.94 | 0.0739 s |
+| H20/E5，B2A2，depth2 | 1.842032 | +19.90% | 45.28 / 83.11 | 0.2645 s |
+| L20/E3，B1A4，depth2 | 2.841787 | +33.82% | 11.72 / 22.94 | 0.0739 s |
 
-相对各自串行基线，吞吐分别提高19.90%与33.82%。这是已经取得的收益，不再要求重做串行/流水线比较。上述future等待是主线程等待CPU结果的时间，不是精确GPU空闲时间；按中位数比较，大约相当于更新耗时的12%与5%。因此继续优化应关注更大的GPU工作批次及接触头效率，不能假定再隐藏一次几何等待还能获得同样的幅度。
+这里 B 是一次 GPU 前向的 microbatch，A 是每次参数更新的梯度累积次数，`B × A` 为有效 batch。`depth2` 允许同一次更新内两份 microbatch 的图驻留，使 CPU 几何工作与 GPU 计算重叠；`depth1` 是串行方案。
 
-显存容量可支持更大的在途激活，但不保证吞吐随占用增长。当前checkpoint_dense已经关闭，64k→128k dense chunk又只测出0.50%收益，不重复这两项。
+CPU/GPU 重叠已经带来净收益，因此值得重新测量更大的 GPU 批次。H20 当前活跃分配峰值约45 GiB、L20约12 GiB，都还有扩大工作集的可能。future等待是主线程等待CPU结果的区间，不是精确GPU空闲时间；不能把所有未来收益都归因于继续消除CPU等待。
 
-## 2. H20 不能只把 depth2 改成 depth4
+容量估算只用于选择候选：按目前活跃分配粗略线性推算，H20 B4/depth2 可能接近90 GiB，B6/depth2接近135 GiB；L20 B3/depth2可能接近35 GiB。真实峰值还受稀疏卷积工作区、反向暂存和分配器影响，所以这些不是实测值，也不保证能放下。**不能将 reserved83.11 GiB 直接乘以 batch 倍数来判断 OOM。**
 
-当前H20是B2A2：两份microbatch、每份两帧，depth2已经包含这次更新的全部任务。更深的队列不会产生第三份任务；跨optimizer更新提前编码会使用旧参数，本实现不这样做。
+## 2. 取消的是分配器上限，不要求提前占满显存
 
-如果保持有效batch4：
+新生成的从头训练配置默认使用：
 
-- B2A2/depth2已有最多四帧图同时驻留。
-- B4A1只有一份任务，无法使用当前跨microbatch几何重叠。
+```json
+{
+  "runtime": {
+    "gpu_memory_limit_gib": null
+  }
+}
+```
 
-要实质增加H20的在途工作集，下一档是 **B4A2/depth2、有效batch8**，最多八帧图同时驻留。L20则可从B1A4/depth2的最多两帧增加到 **B2A2/depth2** 的最多四帧，仍保持有效batch4。
+`null` 表示不施加项目的进程显存配额；运行时不会再按原先 H20 112 GiB、L20 36 GiB 的值限制分配器。可使用该 GPU 实际可用的显存，由真实工作集按需申请，不预先制造无用张量占满显存。
 
-按当前allocated粗略线性估算，H20下一档的活跃工作集可能接近90 GiB，L20接近23 GiB。这个估算只用于选择下一档；spconv工作区、反向暂存和分配器会改变真实峰值，**不能把reserved83.11乘二并据此判定OOM，也不能保证下一档一定能放下。** 本轮默认沿用112/36 GiB配置上限，实测决定。
+CLI 也支持显式 `--no-gpu-memory-limit`。如果后续需要有限额运行，仍可传 `--gpu-memory-limit-gib 128` 等具体值；两者互斥。已有历史配置里的有限数值不被批量改写，新的扫描配置会明确记录自己的无限额设置。
 
-## 3. 只测两个代表实验，H20 对照保持相同有效 batch
+每个候选在独立训练进程中运行，结束后进程释放其 CUDA 分配，再启动下一档。不是在一个进程中不断增大 batch，也不会让前一档的缓存或失败状态累积到下一档。
 
-| 主机 / 实验 | 对照 | 更大microbatch候选 | 共同有效batch | depth | 理论最多在途帧 |
-|---|---|---|---:|---:|---|
-| H20 / E5 | **B2A4** | **B4A2** | **8** | 2 | 4 → 8 |
-| L20 / E3 | **B1A4** | **B2A2** | **4** | 2 | 2 → 4 |
+## 3. 默认矩阵：H20 七档、L20 五档
 
-H20额外显存的收益应在同样的有效batch8下比较，所以对照是B2A4，而不是直接拿有效batch4的B2A2当同条件对照。两者每八帧都只做一次AdamW，避免将“optimizer更新频率减半”当作“更大的GPU microbatch更快”。已测B2A2/有效batch4的1.842032帧/s仍可作为当前方案的历史参考，但不是同窗口配对结果。
+### H20 / E5：共同有效 batch 24
 
-两机各只有这两个设置，没有新增实验类型。共同固定：
+| 设置 | Microbatch | 累积次数 | 流水线深度 | 理论最多同时驻留帧数 | 用途 |
+|---|---:|---:|---:|---:|---|
+| B1A24 / depth2 | 1 | 24 | 2 | 2 | 小批次对照 |
+| B2A12 / depth2 | 2 | 12 | 2 | 4 | 对应已测 microbatch2 的新同条件对照 |
+| B3A8 / depth2 | 3 | 8 | 2 | 6 | 填补2与4之间的档位 |
+| B4A6 / depth2 | 4 | 6 | 2 | 8 | 较大批次 |
+| B6A4 / depth2 | 6 | 4 | 2 | 12 | 接近整卡容量的候选 |
+| B8A3 / depth2 | 8 | 3 | 2 | 16 | 探测更大批次及真实容量边界 |
+| B8A3 / depth1 | 8 | 3 | 1 | 8 | 用单份大批次图比较容量与重叠的取舍 |
 
-- dense chunk65,536、pose chunk32。
-- geometry8、CPU affinity16、Torch8、workers4。
-- depth2、FP16、FP32 geometry、原有segment/共享体素头适用规则。
-- frozen数据、20mm半径、2mm体素、512候选，seed42。
-- allocator上限：H20 112 GiB、L20 36 GiB。
+### L20 / E3：共同有效 batch 12
 
-本轮不同时改pose chunk，以便直接回答更大的microbatch是否值得。pose128已有CLI入口，只有更大batch没有净收益且需要改GPU接触头时才另选这一项，不自动执行。
+| 设置 | Microbatch | 累积次数 | 流水线深度 | 理论最多同时驻留帧数 | 用途 |
+|---|---:|---:|---:|---:|---|
+| B1A12 / depth2 | 1 | 12 | 2 | 2 | 小批次对照 |
+| B2A6 / depth2 | 2 | 6 | 2 | 4 | 较大批次 |
+| B3A4 / depth2 | 3 | 4 | 2 | 6 | 接近整卡容量的候选 |
+| B4A3 / depth2 | 4 | 3 | 2 | 8 | 探测更大批次及真实容量边界 |
+| B4A3 / depth1 | 4 | 3 | 1 | 4 | 用单份大批次图比较容量与重叠的取舍 |
 
-## 4. H20 有效 batch 8 的训练含义与实现
+加入3和6这些中间档，是为了避免只测2、4、8时直接从显存富余跨到OOM。最后一档depth1也是有目的的候选：较大microbatch可能无法同时保留两份图，但能保留一份；需要实测GPU批次收益是否足以抵消失去几何重叠的代价。
 
-**有效batch8是新的训练设置，不是仅改变浮点归约顺序。** 与现有有效batch4相比，它降低每样本的optimizer更新频率；microbatch2→4也改变训练期BatchNorm分组。当前只确认性能，不据短窗口loss判断收敛优劣，也不因此增加六组训练或额外完整验证。
+这里没有增加更深的流水线。现有实现只支持depth1/2；队列内仍有两份图时，增大microbatch已经能提高驻留工作量。也不同时扫描pose chunk、dense chunk、CPU线程或worker数。共同固定dense chunk65,536、pose chunk32、geometry8、affinity16、Torch8、workers4，以及原FP16/FP32 geometry和适用的模型优化。
 
-配置生成器新增显式`--effective-batch-size`，仍保留230,400个有效样本及按样本定义的warmup/验证间隔：
+## 4. 为什么每台机器固定有效 batch
 
-| 预算 | 有效batch4 | 有效batch8 |
-|---|---:|---:|
-| 总有效样本 | 230,400 | 230,400 |
-| 成功更新数 | 57,600 | 28,800 |
-| warmup有效样本 | 11,520 | 11,520 |
-| warmup更新数 | 2,880 | 1,440 |
-| 验证间隔有效样本 | 23,040 | 23,040 |
-| 验证间隔更新数 | 5,760 | 2,880 |
-| 验证节点数量 | 10 | 10 |
+H20的microbatch1、2、3、4、6、8都整除24，并且至少保留两份microbatch；L20的1、2、3、4都整除12，也满足这个条件。这样每台机器内部所有候选都具有相同的optimizer更新频率，不会将“每样本更新次数减少”误认为“更大的GPU批次更快”。
 
-实现只在显式改变有效batch时，从正式v3样本预算重新派生四个步数字段：`training.max_optimizer_steps`、`training.validate_every_optimizer_steps`、`scheduler.warmup_optimizer_steps`、`scheduler.total_optimizer_steps`。学习率峰值、Adam参数、weight decay、clip和loss不自动缩放。新的profile ID和资源输出包含有效batch，避免配置混淆。
+**24和12是这次容量/吞吐扫描的共同条件，不是已经选定的正式训练设置。** 历史H20 B2A2/有效4的1.842032帧/s、L20 B1A4/有效4的2.841787帧/s只作历史参考；本轮排名以同机、同有效batch的新对照为准。microbatch改变也会改变BN分组和损失的数值行为，短测用于性能选择，不用于判断收敛效果。
 
-默认不传该参数时保持原有效batch。不能将新effective8配置直接恢复进原effective4 checkpoint；短测均独立初始化。本轮也不自动修改其他五组的最终训练配方。如果最终采用不同有效batch，后续实验解释应记录这项训练差异，不能把全部效果差异都归给模型结构；这不增加当前性能测试的组数。
+配置生成器从原v3样本预算派生更新步数，仍保留230,400个总有效样本、11,520个warmup样本和23,040个样本的验证间隔：
 
-## 5. 比较窗口按样本对齐
+| 预算 | 历史有效batch4 | H20扫描有效batch24 | L20扫描有效batch12 |
+|---|---:|---:|---:|
+| 总成功更新数 | 57,600 | 9,600 | 19,200 |
+| warmup更新数 | 2,880 | 480 | 960 |
+| 验证间隔更新数 | 5,760 | 960 | 1,920 |
 
-每设置都使用 **40个有效样本预热 + 80个有效样本计时**，共120个有效样本，执行真实forward、loss、backward和AdamW。
+学习率峰值、Adam参数、weight decay、clip和loss不自动缩放。扫描会提前停止，不运行上述完整预算或完整验证；也不会修改其他实验的最终配置。
 
-| 套件 / 主机 | 成功步边界 | 预热更新 | 计时更新 | 计时有效帧 |
+## 5. 每档48帧预热、240帧计时
+
+所有默认候选各处理 **48个有效样本预热 + 240个有效样本计时 = 288个有效样本**，执行真实forward、loss、backward与AdamW。
+
+| 主机 | 成功步计时边界 | 预热更新数 | 计时更新数 | 计时有效样本 |
 |---|---|---:|---:|---:|
-| memory / H20，两个设置均有效batch8 | step5结束 → step15结束 | 5 | 10 | 80 |
-| memory / L20，两个设置均有效batch4 | step10结束 → step30结束 | 10 | 20 | 80 |
+| H20，有效batch24 | step2结束 → step12结束 | 2 | 10 | 240 |
+| L20，有效batch12 | step4结束 → step24结束 | 4 | 20 | 240 |
 
-H20五次预热更新已经包含40帧；B4A2对应10份真实B4 microbatch。第一次比较不额外安排重复轮次。吞吐统一为`80 / 窗口wall`，保留窗口内skip、loader和日志间隙；不包含启动或末尾保存/退出。
+H20两次预热更新实际已经包含48帧；在最大microbatch8时也有六次microbatch前反向，并完成optimizer状态初始化。比较统一用帧/s，不能直接比较不同有效batch的秒/更新。窗口包含AMP跳步、数据等待和日志间隙，排除启动与末尾保存/退出。288样本也低于400样本的定期checkpoint节点。
 
-报告保留每个设置的microbatch、accumulation、有效batch、具体计时边界、有效帧/s、更新median/p95、allocated/reserved、future等待、loader等待和成功/skip。旧默认`overlap`套件的10→30含义保持不变。
+若所有候选都完成，H20共处理2,016个有效样本，L20共1,440个；其中进入计时的分别为1,680和1,200。发生OOM的档位会提前结束，不伪造其完整窗口或吞吐。
 
-## 6. 直接运行
+## 6. 一次运行，自动记录OOM并继续
 
-在独立的新代码checkout中，沿用已有训练Python环境并按[构建入口](FROM_SCRATCH_PERFORMANCE.md#61-构建与生成)构建现有CPU扩展。为两机选择各自实际分配的GPU/16个逻辑CPU；脚本不自动分配设备。
+`--run`按计划顺序执行全部候选；每档都有独立目录、配置、console日志、训练日志和退出记录。识别到CUDA显存不足时：
+
+1. 将该档标为OOM，保存原始报错与已有记录。
+2. 让失败进程退出，释放该进程的GPU资源。
+3. 继续计划中的下一档，包括最后的depth1大批次候选。
+
+不会因某个depth2档OOM就跳过后续depth1，也不会修改上限或偷偷缩小batch重试。非OOM错误仍停止扫描并保留已完成汇总，因为路径、数据或实现错误不能当作容量结果。
+
+最终`summary.json`/`summary.md`汇总所有候选，包括完成、OOM及未执行项。吞吐排名仅使用完整有效窗口且正常退出的候选；失败档位的部分日志或报错数字不能当作完整峰值。汇总保留batch、累积次数、有效batch、depth、帧/s、更新median/p95、allocated/reserved、几何future等待、loader等待和成功/skip。
+
+## 7. 运行命令
+
+使用包含本次修改的新代码checkout和已有训练Python环境；按[构建入口](FROM_SCRATCH_PERFORMANCE.md#61-构建与生成)构建CPU扩展。为每台机器设置其实际分配的GPU和CPU，脚本继承这些选择。
 
 ```bash
 export PYTHONPATH="$PWD"
@@ -92,38 +116,30 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 taskset --cpu-list "$TRAIN_CPUS" python scripts/benchmark_geometry_overlap.py \
-  --suite memory --hardware H20 \
-  --out-dir "$BENCH_ROOT/H20-E5-memory" \
+  --suite batch-scan --hardware H20 \
+  --no-gpu-memory-limit \
+  --out-dir "$BENCH_ROOT/H20-E5-batch-scan" \
   --source-root "$DATA_ROOT/input_raw" \
   --label-root "$DATA_ROOT/output" \
   --backbone-root "$BACKBONE_ROOT" \
   --run
 ```
 
-L20改为`--hardware L20`与独立的`L20-E3-memory`目录。省略`--run`只生成配置和命令；结束后得到`plan.json`、两份配置和原始训练日志，以及`summary.json`/`summary.md`。没有第31步恢复或完整验证。
+L20改为`--hardware L20`与独立的`L20-E3-batch-scan`目录，一次运行其五个设置。两台机器分别启动各自命令即可，无需在每档之间人工确认。省略`--run`只生成计划，不启动GPU进程。
 
-如果H20实际因112 GiB配置上限而OOM，且该卡资源安排允许，可以显式使用`--gpu-memory-limit-gib 128`生成新的测试配置。它对该次两个设置使用同一上限；不自动提高上限或搜索batch。不因reserved接近上限就提前认定OOM。
+其他入口：
 
-单独生成较大H20配置：
+- `--batch-sizes 2 3 4 6 8 --effective-batch-size 24`：自定义扫描的microbatch列表与共同有效batch；microbatch必须整除有效batch，depth2需要累积次数至少2。默认会再加最大microbatch的depth1候选。
+- `--overlap-only`：只保留depth2候选，去掉最后的depth1容量比较。
+- `--summarize-existing`：读取同一输出目录的计划与日志重新汇总，不启动训练。
+- `--suite overlap`仍是原串行/重叠两项比较，`--suite memory`仍是上一轮两档比较。它们的原始40+80样本计时含义保留；本轮使用新的`batch-scan`即可。
 
-```bash
-python scripts/prepare_from_scratch.py \
-  --base-config configs/runtime_profiles/cd009-v3/H20-E5.json \
-  --hardware-preset H20 \
-  --microbatch-size 4 --effective-batch-size 8 --geometry-pipeline-depth 2 \
-  --dense-chunk-size 65536 --pose-chunk-size 32 \
-  --out-dir "$CONFIG_ROOT/H20-E5-B4A2" \
-  --run-dir "$RUN_ROOT/H20-E5-B4A2" \
-  --source-root "$DATA_ROOT/input_raw" --label-root "$DATA_ROOT/output" \
-  --backbone-root "$BACKBONE_ROOT"
-```
+## 8. 看什么结果，如何做最后选择
 
-H20对照把microbatch改为2，仍显式effective8，得到B2A4。L20候选用L20/E3来源、microbatch2、effective4，并显式geometry8/affinity16。
+**优先选择帧/s最高且能完成的设置，而不是显存占用最高的设置。** 同时对照三类结果：
 
-## 7. 怎样选择结果
+- 大microbatch/depth2更快：增加GPU工作量与几何重叠共同有效。
+- 大microbatch/depth2 OOM，但最后的depth1更快：更大的单份图有价值，保留两份图的容量代价需要取舍。
+- 显存明显增加，吞吐不变或下降：容量不是当前速度限制，继续检查GPU接触头/反向阶段，而不是再扩batch。
 
-- **更大batch占用增加、帧/s也明显提高：** 该档有实际价值，记录为该机的最终版本候选；H20仍要明确选择有效batch8这一训练设置。
-- **占用增加但帧/s不变或下降：** 保留较小microbatch；显存容量没有转化为GPU效率。无需为了“用满”继续试更大的档位。
-- **显存不足：** 这是该配置/上限下的实际容量限制，保留较小档；H20可按上面的显式上限选项处理一次正常容量调整，不做自动OOM扫描。
-
-如果更大microbatch失败，已有`pose_chunk_size=128`是下一项具体GPU优化：减少每个区域的小分块与重复可微gather调用，而不是继续增dense chunk。它不会占用几十GiB新显存，却可能减少工作开销；是否实施由本轮结果决定。当前不追加CUDA trace、恢复审计、六组消融或完整训练。
+几何future等待和loader等待可用于判断等待是否重新暴露；它们不能代替CUDA kernel级结论。如果最终需要优化接触头，已有`pose_chunk_size=128`是下一项具体候选，但本轮不增加pose/chunk交叉扫描。也不追加历史checkpoint/AMP/RNG一致性审计、第31步恢复、六组消融或完整训练。
