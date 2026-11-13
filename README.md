@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。**最新实际 checkpoint 与日志已确认 P2 为本轮来源，H20/E5 的 P3 64k 组合、L20/E0/E1/E3 的 P3 16k 组合已接续，并各记录首 25 次正常更新。** L20 原 64k 候选未通过原梯度门槛，当前保留 16k。完整演进见 [性能优化全程](docs/PERFORMANCE_HISTORY.md)，配置和历史身份见 [当前预训练](docs/CD009_PRETRAINING.md)，实际记录见 [P3 配对与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。这些是已发布窗口，不是实时监控。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。**最新实际 checkpoint 与日志已确认 P2 为本轮来源，H20/E5 的 P3 64k 组合、L20/E0/E1/E3 的 P3 16k 组合已接续，并各记录首 25 次正常更新。** 随后 E4 在 L20 GPU4 使用 16k 组合首次启动，完成原预算内首 100 次成功更新、正常暂停和恢复，见 [E4 启动记录](docs/performance/E4_GPU4_STARTUP.md)。L20 原 64k 候选未通过原梯度门槛，当前保留 16k。完整演进见 [性能优化全程](docs/PERFORMANCE_HISTORY.md)，配置和历史身份见 [当前预训练](docs/CD009_PRETRAINING.md)，实际记录见 [P3 配对与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。这些是已发布窗口，不是实时监控。
 
 ## Done（已完成）
 
@@ -25,7 +25,8 @@
 - [x] [H20/E2 历史启动记录](docs/performance/H20_E2_STARTUP.md) 已归档；E2 不启用接触分组。其既有 FP16 投影溢出仍是独立未解决问题，不能由启动记录推定当前恢复。
 - [x] [P3 原生接触几何及 split 分块](docs/PERFORMANCE_PHASE3.md) 已整合、修复原生几何正负零字节差异并完成实际接续：H20/E5 使用 [64k 配置](configs/performance/cd009-p3-integrated.json)，L20/E0/E1/E3 使用 [16k 配置](configs/performance/cd009-p3-l20-16k.json)。各首 25 次正常更新的中位数分别为 **5.7462、1.8446、1.7423、3.2120 秒/更新**；E0/E1 无接触分组，改善主要出现在反向。实际运行代码为 `f4f7f0d`，详见 [配对、失败取舍与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。
 - [x] [优化全程总览](docs/PERFORMANCE_HISTORY.md)：整理初始 profile、P1/P2/P3 的实现、实测、未采用路线和当前状态，并同步各运行指南。局部 CPU 原型、零更新短测和自然训练窗口分开呈现，不相乘为累计加速承诺。
-- [x] supervisor 支持显式登记的 L20 GPU4 和独立 `control_repo`，管理代码可与固定 trainer checkout 分开。仍是单卡单组实验，不是多卡 DDP，也不代表新增卡上的实验已完成。
+- [x] supervisor 支持显式登记的 L20 GPU4 和独立 `control_repo`，管理代码可与固定 trainer checkout 分开。仍是单卡单组实验，不是多卡 DDP。
+- [x] [E4 / L20 GPU4 启动](docs/performance/E4_GPU4_STARTUP.md)：使用固定 `f4f7f0d` trainer 与 16k + split + native，原预算内首 100 次成功更新、正常暂停 checkpoint 和最终备份通过，恢复首步 101 的采样连续性通过；首 100 步中位数为 4.4400 秒/更新。读取时观察到 107 步、当时持久化为 100 步；这是启动与恢复记录，完整训练仍在进行。
 
 ## TODO（待完成）
 

@@ -1,10 +1,10 @@
 # CD-009 预训练性能优化全程：从串行执行到当前 P3
 
-**梳理日期：2026-11-13，全文时间按北京时间（UTC+8）表达。** 本文核对 `cd009/full-pretraining` 分支截至 [`d03dfaa37db07e3f6dc5e847d16c8ff68a7d682c`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/d03dfaa37db07e3f6dc5e847d16c8ff68a7d682c) 的代码、配置与已发布实测记录，说明每项优化的原问题、实现、取舍、证据和当前应用状态。它是一份回顾，不增加测试矩阵或训练前置任务。
+**梳理日期：2026-11-13，全文时间按北京时间（UTC+8）表达。** 本文核对 `cd009/full-pretraining` 分支截至 [`cf206ab8a65d6f6ada067769bc47950272ef87b7`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/cf206ab8a65d6f6ada067769bc47950272ef87b7) 的代码、配置与已发布实测记录，说明每项优化的原问题、实现、取舍、证据和当前应用状态。初次总览基于 `d03dfaa`，本次补充后续 E4 启动记录。它是一份回顾，不增加测试矩阵或训练前置任务。
 
 ## 1. 先确认我们现在到了哪里
 
-**目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 保持 64k dense chunk，L20/E0、E1、E3 保持 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
+**目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
 
 最新 [P3 实际记录](performance/P3_INTEGRATED_RESULTS.md) 已确认：本轮源 checkpoint 来自 P2；H20/E5 的 64k 组合和 L20/E3 的 16k 组合通过原四帧配对；H20/E5、L20/E0/E1/E3 各自完成迁移并记录了首 25 次正常更新。L20 原 64k 候选未通过原梯度门槛，保留失败结果，当前采用 16k。E0/E1 没有接触分组，它们的提速不能归给接触查询。
 
@@ -23,7 +23,9 @@
 
 配置分别为 [H20 64k sidecar](../configs/performance/cd009-p3-integrated.json) 和 [L20 16k sidecar](../configs/performance/cd009-p3-l20-16k.json)。sidecar 是独立的性能执行配置；原硬件 profile、模型参数和训练预算仍沿用。
 
-这里必须区分两种代码身份：**本文查阅的仓库是 `d03dfaa`，上述正常训练窗口实际执行的版本是 `f4f7f0d`**，worktree 摘要为 `0d44b123…`。后来的配置、文档和 supervisor 提交不能替换实际运行身份。最新报告的后续状态观察截止 **11 月 13 日 14:03**：E0 到达原计划的第 17,280 步验证，E1/E3/E5 继续训练；这不是本文生成时的实时监控，也不是六组训练完成。
+后续 [E4 / L20 GPU4 记录](performance/E4_GPU4_STARTUP.md) 确认 E4 使用同一 16k + split + native 组合首次启动，原预算内首 100 次成功更新、正常暂停 checkpoint、最终备份及恢复首步 101 的采样连续性通过。E4 首 100 步中位数为 4.4400 秒/更新；它是新实验的启动窗口，没有对应旧 P2 窗口，不加入上面四组迁移配对或后文的 25 步提速百分比。
+
+这里必须区分两种代码身份：**本文查阅的仓库是 `cf206ab`，上述正常训练窗口实际执行的版本是 `f4f7f0d`**，worktree 摘要为 `0d44b123…`。后来的配置、文档和 supervisor 提交不能替换实际运行身份。P3 报告中的后续状态观察截至 **11 月 13 日 14:03**：E0 到达原计划的第 17,280 步验证，E1/E3/E5 继续训练；更晚的 E4 启动与恢复记录见上方链接。这些都不是本文生成时的实时监控，也不是六组训练完成。
 
 ## 2. 优化目标与一直保留的训练定义
 
@@ -365,7 +367,7 @@ L20/E3 第 7,559 步的 16k→64k 组合共有 148 项失败，包含前述正�
 
 项目一直采用**单卡跑单组实验，多张卡并行推进不同实验**。`d03dfaa` 新增显式登记的 L20 GPU4 使用能力，以及独立 `control_repo`：协调器/worker 管理代码可以更新，trainer 仍从冻结运行仓库启动。每个 trainer 仍只见一个 GPU UUID，在进程内使用 `cuda:0`。
 
-这一项改善的是实验调度和运行维护，并非 DDP，也不减少单组的每次更新时间。该提交说明新增卡可以按注册和分配使用，不证明 E4 已经启动或完成。代码见 [run_supervisor.py](../suction20/run_supervisor.py)，提交见 [`d03dfaa`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/d03dfaa37db07e3f6dc5e847d16c8ff68a7d682c)。
+这一项改善的是实验调度和运行维护，并非 DDP，也不减少单组的每次更新时间。随后 [`cf206ab`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/cf206ab8a65d6f6ada067769bc47950272ef87b7) 补充了 [E4 实际启动与恢复记录](performance/E4_GPU4_STARTUP.md)：首 100 步正常暂停和最终备份通过，恢复首步 101 连续；读取时观察到 107 步，当时持久化仍为 100。E4 训练继续，尚未完成全程。设备注册与控制器分离代码见 [run_supervisor.py](../suction20/run_supervisor.py) 和 [`d03dfaa`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/d03dfaa37db07e3f6dc5e847d16c8ff68a7d682c)。
 
 ## 13. 所有路线的最终归类
 
@@ -379,8 +381,8 @@ L20/E3 第 7,559 步的 16k→64k 组合共有 148 项失败，包含前述正�
 | 有序双 worker 预取 | 已应用 | 与训练重叠；按消费状态恢复 |
 | 全点 20 mm cell 原生 grid | 已应用 | 查询索引变化，不是点云下采样 |
 | Backbone 坐标快路径 | 已应用 | 同存储正常路径省去重复映射 |
-| 两线程原生接触查询 | E3/E5 已有应用窗口 | E0/E1 不使用此路径；E4 没有本轮应用窗口 |
-| `split` 输入分块 | H20/E5、L20/E0/E1/E3 已应用 | 不改变当前块大小与帧组批 |
+| 两线程原生接触查询 | E3/E5 已有迁移窗口，E4 已有首 100 步启动记录 | E0/E1 不使用此路径；E4 无旧 P2 对照窗口 |
+| `split` 输入分块 | H20/E5、L20/E0/E1/E3/E4 已应用 | 不改变当前块大小与帧组批；E4 从首次启动即采用 |
 | 保留学习状态的版本迁移 | 已用于 P1/P2/P3 接续 | 原预算、优化器、AMP 与采样进度继续 |
 | 批量 KD-tree 查询 / SciPy workers4 | 测过、未选 | 当时比逐候选共享查询慢 |
 | Python 候选线程池 | 原型评估，未选为当前主路径 | 局部约 1.19×，后续采用完整原生融合 |
@@ -399,7 +401,7 @@ H20 实例广播的 CPU 原型曾把 9 次 IndexBackward 组织为 1 次，但�
 
 按已有证据，H20/E5 后续值得关注的仍是实例广播反向，L20/E0/E1 则出现新的数据等待；E3 已同时受益于两条路径。这里只记录瓶颈移动，不因此自动增加完整 batch/CPU/worker 矩阵，也不重跑已完成的配对和正常窗口。
 
-六组完整训练、既定验证、目标域少量数据微调和最终效果比较仍在原实验计划中。E2 的 FP16 投影溢出是已有独立问题，本轮性能回顾没有宣称修复；E4 与新增 GPU4 的实际运行结果也没有包含在上述 P3 窗口。性能改进与模型效果结论应分别完成。[最新运行记录](performance/P3_INTEGRATED_RESULTS.md)
+六组完整训练、既定验证、目标域少量数据微调和最终效果比较仍在原实验计划中。E2 的 FP16 投影溢出是已有独立问题，本轮性能回顾没有宣称修复；E4 已完成原预算内首 100 步启动及恢复，仍在继续训练，其记录与上述四组 25 步迁移窗口分别保存。性能改进与模型效果结论应分别完成。[P3 运行记录](performance/P3_INTEGRATED_RESULTS.md) · [E4 启动与恢复](performance/E4_GPU4_STARTUP.md)
 
 ## 15. 代码与证据索引
 
@@ -415,6 +417,7 @@ H20 实例广播的 CPU 原型曾把 9 次 IndexBackward 组织为 1 次，但�
 | P3 算法与接续命令 | [PERFORMANCE_PHASE3.md](PERFORMANCE_PHASE3.md) · [MODEL_USAGE.md](MODEL_USAGE.md) |
 | P3 CPU 原型 | [P3_CPU_RESULTS.json](performance/P3_CPU_RESULTS.json) · [P3_SPLIT_CPU_RESULTS.json](performance/P3_SPLIT_CPU_RESULTS.json) |
 | 当前配置为何是 H20 64k / L20 16k | [P3_INTEGRATED_RESULTS.md](performance/P3_INTEGRATED_RESULTS.md) |
+| E4 / L20 GPU4 的首 100 步及正常恢复 | [E4_GPU4_STARTUP.md](performance/E4_GPU4_STARTUP.md) |
 | 数据与体素实现 | [datasets.py](../suction20/datasets.py) · [batching.py](../suction20/batching.py) · [prefetch.py](../suction20/prefetch.py) |
 | 几何、索引与分块实现 | [fps_cpu.c](../models/csrc/fps_cpu.c) · [spatial_index_cpu.cpp](../models/csrc/spatial_index_cpu.cpp) · [heads.py](../models/heads.py) |
 
