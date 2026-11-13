@@ -2,7 +2,7 @@
 
 日期：2026-11-13（北京时间）。依据最新[完整显存/batch扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)，该报告对应测试源码 `a07659a`、结果提交 `d6a9328`。
 
-**本页方案已执行。** [九档实测](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均完成：H20 B4A2/zone128较同机有效batch8原路径提高17.79%，L20 B1A8/zone128提高29.40%，六组新正式训练已启动。用户随后要求补齐未测的完整batch组合，新入口为[batch/累积补测](BATCH_ACCUMULATION_SUPPLEMENT.md)的`--suite batch-combo`，每机六档全部固定zone128。以下保留当时`final`的有效batch8方案，不把它视为已测试B4A6/zone128，也不重复正式启动命令。
+**本页方案及后续补测均已执行。** [九档实测](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)记录了当时有效batch8的接触头收益；后续固定zone128的[十二档batch/累积结果](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)也已完成。当前正式选择**H20 B4A12 / 有效batch48、L20 B1A12 / 有效batch12，六组全部从头训练**，配置、预算和启动命令见[最终预训练配方](SELECTED_PRETRAINING_RECIPE.md)。下文保留当时`final`的有效batch8方案及历史判断，不作为当前配方或新一轮测试要求。
 
 ## 1. 扫描已经回答的问题
 

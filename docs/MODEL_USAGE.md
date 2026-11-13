@@ -46,11 +46,11 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 正式公开数据预训练
 
-`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。[最新发布记录](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)确认九档测试已完成、六组新CD-010训练已启动并产生成功更新；H20/E5为B4A2/zone128，L20接触组为B1A8/zone128。后续[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)独立执行，不自动替换正式配置或重复启动任务，旧CD-009不恢复。
+`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。[十二档补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已全部完成。当前确认采用 **H20/E5 B4A12/有效batch48、L20/E0–E4 B1A12/有效batch12**；用户明确要求六组全部从头训练。使用[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)在新root生成并启动，不接续旧有效batch8任务，也不继承短测模型。
 
-每组独立seed42初始化，90/10场景划分，230,400有效样本、名义40轮；正式有效batch8对应28,800次成功更新，warmup1,440次，验证间隔2,880次，共10节点。跳步另计，短测样本与checkpoint不接入正式预算。峰值学习率保持原值，完整训练实际进度以训练机日志为准。
+每组独立seed42初始化，90/10场景划分，230,400有效样本、名义40轮。H20有效batch48对应4,800次成功更新、warmup240、每480更新验证；L20有效batch12对应19,200次成功更新、warmup960、每1,920更新验证。两者均10个原定验证节点，峰值学习率保持原值。旧任务进度和短测样本不计入新预算，实际启动与进度以训练机日志为准。
 
-本次使用[最终测试并开训入口](FINAL_OPTIMIZATION_AND_TRAINING.md)直接调用`train_pretrain.py`，不恢复旧协调器。现有supervisor和[公共模板](implementation/examples/cd009-supervisor.json)保留为管理接口说明；本次不增加恢复审计、全机检查或测试后验收。
+本次直接运行`finalize_pretraining.py --benchmark-dir 已完成的batch-combo目录 --training-root 新目录 --launch`，读取已有补测结果并调用`train_pretrain.py`。先结束占用相应GPU的旧任务，再启动新任务；不重新执行性能矩阵、不做续训转换。现有supervisor模板保留为历史管理接口。
 
 ## CD-010 独立从头训练
 
@@ -60,15 +60,15 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 [CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)、[12档原接触头batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)及[9档最终接触头比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已完成。最终比较使用`--suite final`、有效batch8，按预定3%工程阈值选中zone128，并已启动六组新训练。不要重复执行带`--start-training`的旧启动命令。
 
-按用户随后提出的补测要求，新增`benchmark_geometry_overlap.py --suite batch-combo --hardware H20|L20 --out-dir NEW --run`：每机六档，全部固定zone128，包含H20 B4A6和L20 B1A12；有效batch8/12/16/24/48按48帧预热、240帧计时换算更新边界。结果同时给出全局和同有效batch排行。本入口不接受`--start-training`，独立测试checkout及GPU安排见[补测说明](BATCH_ACCUMULATION_SUPPLEMENT.md)。
+后续`benchmark_geometry_overlap.py --suite batch-combo`每机六档也已完成，包含B4A6/zone128和B1A12/zone128；该入口继续只负责短测，不接受`--start-training`。现在用独立`finalize_pretraining.py`读取其已完成结果，按每机最高吞吐选择新正式配置。原`final`套件的有效batch8与3%规则仅用于历史兼容，不限制当前选择。
 
 新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头。`--contact-feature-gather-mode chunk|zone`选择分块内索引或按区域一次索引；通用生成器默认`chunk`，现有正式接触组和新增组合补测均显式使用已获益的zone128。
 
 精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
 
-最终入口生成正式train/performance配置，并可通过`--resource-map`使用指定GPU/CPU映射；L20/E0/E1/E2用B1/depth1，E3/E4用B1/depth2，H20/E5用所选B2或B4/depth2。E0/E1为6 workers，其余4，E2保持BF16 dense/FP32 sparse，E4沿用E3所选接触头而不新增测试。直接启动的trainer继续原生checkpoint、日志与原定验证，不附加备份daemon。
+配置导出与启动入口支持`--resource-map`指定GPU/CPU映射；L20/E0/E1/E2用B1A12/depth1，E3/E4用B1A12/depth2，H20/E5用B4A12/depth2。接触组zone128、geometry8；全部dense64k、无人工显存上限。E0/E1为6 workers，其余4，E2保持BF16 dense/FP32 sparse；E4沿用E3接触执行设置，不把E3的吞吐涨幅当成E4实测。原生checkpoint、日志与原定验证照常运行。
 
-训练和恢复使用原生成的两个配置；独立评价/推理使用新run的 `resolved_config.json`。管理器支持 `selection_status="from_scratch"` 与v4 sidecar，使用独立的CD-010控制配置和账本即可。新运行不执行旧checkpoint四帧AMP/RNG对齐；原预算内的正常日志窗口提供实际吞吐判断。
+新训练使用本次生成的train/performance两个配置；独立评价/推理使用新run的 `resolved_config.json`。启动器直接运行各实验trainer，新模型和优化器从零初始化。原预算内的正常日志窗口提供实际吞吐判断。
 
 下方P1/P2/P3迁移说明适用于原CD-009运行；其中voxel heads关闭、L20 16k和原生2线程等限制不适用于上述独立从头训练。
 

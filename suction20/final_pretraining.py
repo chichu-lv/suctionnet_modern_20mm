@@ -14,11 +14,12 @@ import subprocess
 import sys
 
 from .from_scratch import from_scratch_config
+from .pretrain_budget import resolve_budget
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MIN_OPTIMIZATION_GAIN = .03
-EFFECTIVE_BATCH = 8
+LEGACY_FINAL_EFFECTIVE_BATCH = 8
 HOST_EXPERIMENTS = {'H20': ('E5',), 'L20': ('E0', 'E1', 'E2', 'E3', 'E4')}
 DEFAULT_RESOURCES = {
     'E0': {'gpu': '1', 'cpus': '8-15'},
@@ -34,14 +35,16 @@ _SETTING_FIELDS = ('name', 'role', 'microbatch_size', 'gradient_accumulation_ste
 
 
 def select_final_setting(plan, summary):
-    """Use completed baselines; adopt new head execution only at >=3% throughput.
+    """Select a completed candidate for a new, independently initialized run.
 
-    The 3% threshold is an engineering adoption rule, not a significance test.
-    Failed optimization candidates do not prevent choosing a working baseline.
+    The historical final suite keeps its effective-batch8/3% rule. The later
+    batch-combo suite chooses the highest measured throughput across its tested
+    effective batches, with no extra adoption threshold or repeat comparison.
     """
     hardware = plan.get('hardware')
-    if plan.get('suite') != 'final' or hardware not in HOST_EXPERIMENTS:
-        raise ValueError('Final selection requires a final-suite H20 or L20 plan')
+    suite = plan.get('suite')
+    if suite not in ('final', 'batch-combo') or hardware not in HOST_EXPERIMENTS:
+        raise ValueError('Fresh training selection requires a final or batch-combo H20/L20 plan')
     if summary.get('hardware', hardware) != hardware:
         raise ValueError('Summary hardware differs from its plan')
     variants = {item['name']: item for item in plan['variants']}
@@ -52,10 +55,32 @@ def select_final_setting(plan, summary):
                 or not math.isfinite(fps) or fps <= 0):
             continue
         variant = variants[result['name']]
-        if variant.get('effective_batch_size') != EFFECTIVE_BATCH:
+        if suite == 'final' and variant.get('effective_batch_size') != LEGACY_FINAL_EFFECTIVE_BATCH:
             raise ValueError('Final performance candidates must use effective batch8')
         completed.append({**{key: variant[key] for key in _SETTING_FIELDS},
                           'frames_per_second': float(fps)})
+    if suite == 'batch-combo':
+        if not completed:
+            raise ValueError('No completed batch-combo candidate is available')
+        selected = max(completed, key=lambda item: item['frames_per_second'])
+        baseline = next((item for item in completed if item['role'] == 'current_baseline'), None)
+        optimized = [item for item in completed if item['role'] == 'candidate']
+        best_optimization = max(optimized, key=lambda item: item['frames_per_second']) if optimized else None
+        gain = (100 * (selected['frames_per_second'] / baseline['frames_per_second'] - 1)
+                if baseline else None)
+        optimization_gain = (100 * (best_optimization['frames_per_second'] / baseline['frames_per_second'] - 1)
+                             if baseline and best_optimization else None)
+        return {
+            'hardware': hardware, 'source_benchmark_suite': suite,
+            'selection_policy': 'current_completed_max',
+            'selected_variant': selected['name'], 'selected': selected,
+            **{key: selected[key] for key in _SETTING_FIELDS if key not in ('name', 'role')},
+            'baseline': baseline, 'best_optimization': best_optimization,
+            'threshold_percent': None, 'optimization_gain_percent': optimization_gain,
+            'selected_gain_percent': gain,
+            'reason': 'highest measured frames/s among completed batch-combo candidates',
+            'decision_scope': 'Use the selected host-specific batch for a fresh start, with no new performance test.',
+        }
     baselines = [item for item in completed if item['role'] == 'baseline']
     if not baselines:
         raise ValueError('No completed baseline is available; resolve the actual trainer failure before launch')
@@ -68,7 +93,9 @@ def select_final_setting(plan, summary):
              baseline['frames_per_second'] * (1 + MIN_OPTIMIZATION_GAIN))
     selected = best_optimization if adopt else baseline
     return {
-        'hardware': hardware, 'selected_variant': selected['name'], 'selected': selected,
+        'hardware': hardware, 'source_benchmark_suite': suite,
+        'selection_policy': 'legacy_final_three_percent',
+        'selected_variant': selected['name'], 'selected': selected,
         **{key: selected[key] for key in _SETTING_FIELDS if key not in ('name', 'role')},
         'baseline': baseline, 'best_optimization': best_optimization,
         'threshold_percent': MIN_OPTIMIZATION_GAIN * 100,
@@ -130,6 +157,7 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
     """
     selection = select_final_setting(plan, summary)
     hardware = selection['hardware']
+    effective_batch = selection['effective_batch_size']
     experiments = HOST_EXPERIMENTS[hardware]
     resources = _resources(experiments, resource_map)
     chosen = next(item for item in plan['variants'] if item['name'] == selection['selected_variant'])
@@ -152,11 +180,12 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
     for experiment in experiments:
         resource = resources[experiment]
         contact = experiment in ('E3', 'E4', 'E5')
-        microbatch = selection['microbatch_size'] if experiment == 'E5' else 1
+        microbatch = selection['microbatch_size'] if contact else 1
         base = json.loads((ROOT / 'configs/runtime_profiles/cd009-v3' / f'{hardware}-{experiment}.json').read_text())
         config, performance = from_scratch_config(
-            base, hardware_preset=hardware, effective_batch_size=EFFECTIVE_BATCH,
-            microbatch_size=microbatch, geometry_pipeline_depth=2 if contact else 1,
+            base, hardware_preset=hardware, effective_batch_size=effective_batch,
+            microbatch_size=microbatch,
+            geometry_pipeline_depth=selection['geometry_pipeline_depth'] if contact else 1,
             precision='bf16' if experiment == 'E2' else 'fp16',
             dense_chunk_size=65536, pose_chunk_size=selection['pose_chunk_size'] if contact else 32,
             contact_feature_gather_mode=selection['contact_feature_gather_mode'] if contact else 'chunk',
@@ -168,11 +197,13 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
         for field in ('source_root', 'label_root'):
             config['data'][field] = candidate['data'][field]
         config['model']['backbone_root'] = candidate['model']['backbone_root']
+        budget = resolve_budget(config)
         profile = config['runtime_profile']
         profile['profile_id'] = profile['profile_id'].replace('cd010-fresh-', 'cd010-final-', 1)
         profile['selection_status'] = 'selected'
         profile['selection_basis'] = (
-            f'Final effective-batch8 recipe; {hardware} contact execution selected by last '
+            f'Fresh start, effective-batch{effective_batch}; source_suite={plan["suite"]}, '
+            f'selection_policy={selection["selection_policy"]}. {hardware} contact execution selected by '
             f'{plan["experiment"]} performance comparison ({selection["selected_variant"]}). '
             'Other experiment definitions and sample budgets retained; no per-experiment speed claim.')
         directory = config_root / experiment
@@ -193,8 +224,12 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
             'run_dir': str(run_dir), 'console_log': str(log_path),
             'command': command, 'environment': environment,
             'shell_command': shlex.join(['env', *(f'{key}={value}' for key, value in environment.items()), *command]),
-            'microbatch_size': microbatch, 'gradient_accumulation_steps': EFFECTIVE_BATCH // microbatch,
-            'effective_batch_size': EFFECTIVE_BATCH, 'geometry_pipeline_depth': 2 if contact else 1,
+            'microbatch_size': microbatch, 'gradient_accumulation_steps': effective_batch // microbatch,
+            'effective_batch_size': effective_batch,
+            'geometry_pipeline_depth': config['training']['geometry_pipeline_depth'],
+            'target_optimizer_updates': budget['target_updates'],
+            'warmup_optimizer_updates': budget['warmup_updates'],
+            'validation_interval_updates': budget['validation_interval_updates'],
             'pose_chunk_size': config['model']['pose_chunk_size'],
             'contact_feature_gather_mode': performance['contact_feature_gather_mode'],
             'precision': config['training']['precision'], 'process_spawned': False,
@@ -207,12 +242,16 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
     report = {
         'schema_version': 'suction20.final_pretraining.v1',
         'hardware': hardware, 'training_root': str(output), 'selection': selection,
+        'training_mode': 'from_scratch', 'source_benchmark_suite': plan['suite'],
         'selection_path': str(selection_path), 'manifest_path': str(manifest_path),
         'status': 'prepared; no training launched', 'launch_requested': bool(launch),
         'working_directory': str(ROOT), 'experiments': records,
-        'effective_batch_size': EFFECTIVE_BATCH, 'target_effective_samples_per_experiment': 230400,
-        'target_optimizer_updates_per_experiment': 28800, 'warmup_optimizer_updates': 1440,
-        'validation_interval_updates': 2880, 'validation_nodes': 10,
+        'effective_batch_size': effective_batch,
+        'target_effective_samples_per_experiment': budget['target_samples'],
+        'target_optimizer_updates_per_experiment': budget['target_updates'],
+        'warmup_optimizer_updates': budget['warmup_updates'],
+        'validation_interval_updates': budget['validation_interval_updates'],
+        'validation_nodes': len(budget['validation_steps']),
         'supervisor_entries': supervisor_entries,
         'process_observation': 'PID/process_spawned reports process creation only, not verified optimizer updates.',
         'service_scope': 'Direct trainers run existing logs/checkpoints/validation. No coordinator, backup daemon, or old run is started.',

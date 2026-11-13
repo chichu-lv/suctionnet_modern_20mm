@@ -4,9 +4,9 @@
 
 ## 1. 先确认我们现在到了哪里
 
-**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)。资源、几何重叠、原接触头12档batch扫描及[最终9档接触头比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已完成；最后一轮选择H20 B4A2/zone128、L20 B1A8/zone128，并已启动六组新正式训练。其结论限定有效batch8。按用户后续要求新增[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)，补齐B4A6/zone128、B1A12/zone128并比较同有效batch24的不同microbatch；补测尚无GPU结果，不自动替换正在运行的正式配置。下文保存CD-009历史，不把不同阶段提速比例相乘。
+**当前采用决定**见[最终预训练配方](SELECTED_PRETRAINING_RECIPE.md)：后续[十二档batch/累积补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已完成，正式选择**H20 B4A12 / 有效batch48、L20 B1A12 / 有效batch12，六组全部从头训练**。此前有效batch8属于上一轮部署记录；新任务按选定配方在新目录启动，不接续旧checkpoint。实现入口见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)。下文保存CD-009当时的部署与实测，不把历史配置当作当前配方，也不把不同阶段提速比例相乘。
 
-**目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
+**以下CD-009历史部署实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
 
 最新 [P3 实际记录](performance/P3_INTEGRATED_RESULTS.md) 已确认：本轮源 checkpoint 来自 P2；H20/E5 的 64k 组合和 L20/E3 的 16k 组合通过原四帧配对；H20/E5、L20/E0/E1/E3 各自完成迁移并记录了首 25 次正常更新。L20 原 64k 候选未通过原梯度门槛，保留失败结果，当前采用 16k。E0/E1 没有接触分组，它们的提速不能归给接触查询。
 

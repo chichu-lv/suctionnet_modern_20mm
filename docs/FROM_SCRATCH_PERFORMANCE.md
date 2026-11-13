@@ -1,14 +1,14 @@
 # CD-010：从头预训练的性能实现与使用方案
 
-更新：2026-11-13，北京时间。[九档最终接触头测试](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已完成，H20/E5的B4A2/zone128为2.450753帧/s，L20/E3的B1A8/zone128为3.622360帧/s；新六组正式训练已启动。此前资源、几何重叠和原接触头batch扫描均有实测。用户随后要求补齐[batch/累积组合](BATCH_ACCUMULATION_SUPPLEMENT.md)：每机六档，显式包含B4A6/zone128与B1A12/zone128，补测尚无GPU结果，不自动替换正式配置。
+更新：2026-11-13，北京时间。[十二档batch/累积补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已全部完成。当前[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)为 **H20/E5 B4A12、有效batch48；L20 B1A12、有效batch12**，接触组zone128/depth2，代表模型吞吐2.887176与3.700548帧/s。按用户最新指令，六组使用新root和新初始化从头训练，不接续旧任务，不再补测。原有效batch8部署及此前各阶段实测保留为历史记录。
 
 **结论：从头训练可以启用共享体素头、重新选择 dense chunk、改变广播梯度归约和几何精度，不再把旧 checkpoint 的四帧 AMP 梯度/RNG 对齐作为准入条件。已实现配置生成器、两级分段广播反向、FP32 原生几何、可调线程与 worker、静态缓存、显式精度、融合 AdamW、按更新读回 loss，以及可选的局部编译。** CUDA 全点接触查询/FPS 和 GPU 数据增强本轮没有实现，理由与后续接口见第 8 节。
 
-生成器当前默认 H20 **64k dense、8 个几何线程、16 个逻辑核 affinity**，L20 **64k dense、4 个几何线程、8 个逻辑核 affinity**，均为Torch线程8、worker4、FP16、FP32几何、segment广播；E0/E1/E3自动开启共享体素头。H20/E5的128k实测仅比64k快0.50%，因此默认已改回64k。H20/E5可显式选择已测更快的`--microbatch-size 2`；L20/E3可显式使用已测更快的geometry8/affinity16。新组合自身的吞吐不由默认值推定。
+通用生成器默认 H20 **64k dense、8 个几何线程、16 个逻辑核 affinity**，L20 **64k dense、4 个几何线程、8 个逻辑核 affinity**，均为Torch线程8、worker4、FP16、FP32几何、segment广播；E0/E1/E3自动开启共享体素头。H20/E5的128k实测仅比64k快0.50%，因此默认已改回64k。当前正式入口`finalize_pretraining.py`会依据已完成结果覆盖通用默认值：H20 B4A12、L20 B1A12，接触组均geometry8/affinity16/zone128/depth2，E0/E1 workers6，E2保持BF16 dense/FP32 sparse。
 
 BF16已实现为显式选项：当前spconv 2.3.6下密集层使用BF16、稀疏骨干使用FP32，不能直接称为更快的全模型BF16。E2可优先使用这个选项处理已有的FP16投影溢出。
 
-最新[运行状态](performance/CD010_RUN_STATUS.md)记录新的六组CD-010直接trainer已启动，旧任务及旧协调器停止。`final`测试与正式启动流程已完成，不能重复执行以重启六组；新补测使用`--suite batch-combo`和独立测试checkout。已有数据、标签和冻结物理定义继续复用。
+最新[已发布运行快照](performance/CD010_RUN_STATUS.md)仍是补测后按旧有效batch8恢复的任务；新的采用决定与实际启动分开记录。执行本次新训练时，结束旧任务后用`finalize_pretraining.py`读取已完成batch-combo结果，在新root从step0启动，已有数据、标签和冻结物理定义继续复用。
 
 ## 1. 先校正原方案的依据
 
@@ -57,7 +57,7 @@ flowchart TB
 | E4 | 有 | 有 | 关闭 | 开启 | 开启 |
 | E5 | 有 | 有 | 关闭 | 开启 | 开启 |
 
-E5继续带原辅助头。B表示microbatch，A表示梯度累积，B×A为有效batch。当前正式六组统一有效batch8；已完成的最终矩阵选择H20 B4A2与L20 B1A8的zone128。这个结论不覆盖B4A6/zone128；后续补测明确比较更长累积窗口以及有效batch24下的不同B/A组合。
+E5继续带原辅助头。B表示microbatch，A表示梯度累积，B×A为有效batch。完成后续补测后，当前正式选择为H20 B4A12/E48、L20 B1A12/E12；不再强制两机统一有效batch。六组使用相同有效样本预算，参数更新频率按硬件配方不同，效果比较应同时报告这一差异。
 
 ### H20 / L20 分开选择资源
 
@@ -328,7 +328,7 @@ H20配置中的`hosts.H20.gpus[GPU].cpus`须包含实际为该任务分配的16�
 
 初次实现的本地C/C++扩展构建成功，完整[GitHub CI](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43390906646)为 **381 passed / 1 skipped**，包括本地沙箱不支持的Unix socket预取测试。1项既有跳过需要真实release路径。主机preset/CPU解耦补充使用现有配置与supervisor正常路径检查。这些是CPU小模型/接线检查，不构成真实spconv CUDA/BF16/Inductor/fused AdamW的硬件性能证明。本环境无H20/L20、CUDA编译器或真实冻结数据，因此没有执行正式训练或产生新速度数字。
 
-### 已完成的资源选择、batch扫描与最后一轮比较
+### 历史：资源选择、原接触头batch扫描与有效batch8比较
 
 资源选择见[原实测](performance/CD010_FROM_SCRATCH_RESULTS.md)，几何重叠见[后续实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。最新[无显存上限的12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已全部尝试，9档完成、3档OOM，不再重复该矩阵。
 
@@ -345,7 +345,9 @@ H20 B6/B8双图、L20 B4双图发生OOM；各机最大batch的单图设置能运
 
 两机固定dense64k、geometry8、affinity16、Torch8、4 workers，无人工显存上限。每档48帧预热、240帧计时，统一step6→36。该轮结束后直接调用原trainer启动正式训练，无收益也开训，不增加新的batch/worker/allocator/trace扫描、恢复检查或开训前完整验证。
 
-正式六组均有效batch8、230,400有效样本、28,800次成功更新；warmup1,440次更新，验证间隔2,880次更新，共10节点。H20/E5采用所选B2或B4/depth2；L20 E0/E1/E2用B1/depth1，E3/E4用B1/depth2。E2保留BF16 dense/FP32 sparse，E0/E1使用6 workers，其余4。L20/E4沿用E3选出的接触头，不新增E4性能测试。峰值学习率不变。
+当时启动的六组均有效batch8、230,400有效样本、28,800次成功更新；warmup1,440次更新，验证间隔2,880次更新，共10节点。H20/E5选中B4A2/depth2；L20 E0/E1/E2用B1A8/depth1，E3/E4用B1A8/depth2。E2保留BF16 dense/FP32 sparse，E0/E1使用6 workers，其余4。L20/E4沿用E3选出的接触头，没有新增E4性能测试。
+
+后续[十二档batch/累积补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已完成，当前按用户要求改为全部从头训练：H20 B4A12/有效batch48、L20 B1A12/有效batch12。仍各230,400有效样本，分别对应4,800/19,200次更新、240/960次warmup与480/1,920次验证间隔；均保留10节点，峰值学习率不变。直接使用[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)的新启动命令，不重跑以上历史矩阵。
 
 ## 8. 未实现的方向：不再作为本次开训前工作
 
@@ -381,4 +383,4 @@ H20 B6/B8双图、L20 B4双图发生OOM；各机最大batch的单图设置能运
 | [spatial_index_cpu.cpp](../models/csrc/spatial_index_cpu.cpp) / [fps_cpu.c](../models/csrc/fps_cpu.c) | FP32原生几何与可调候选并行 |
 | [datasets.py](../suction20/datasets.py) / [full_data.py](../suction20/full_data.py) / [runner.py](../suction20/runner.py) | 缓存配置下传与场景重复读取去除 |
 
-这份交付是可运行的新执行路径及其配置/说明。CD-010资源、几何重叠、原接触头batch扫描和[zone128最终比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已有真实结果；后续[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)尚待执行。E2新精度下的完整训练表现、CUDA几何和GPU增强均没有被记为已完成。
+这份交付是可运行的新执行路径及其配置/说明。CD-010资源、几何重叠、原接触头batch扫描、zone128比较和[十二档组合补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)均已有真实结果；当前按[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)全部从头训练。新配方实际启动、完整预训练和E2新精度下的最终效果仍需运行记录，不把配置交付当成训练完成。

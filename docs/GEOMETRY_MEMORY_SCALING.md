@@ -2,11 +2,11 @@
 
 日期：2026-11-13（北京时间）。基于 `c684aae` 的[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。
 
-**实测更新（2026-11-13）：** 原接触头默认12档已全部尝试，9档完成、3档OOM；H20/E5最快B4A6/depth2为2.259727帧/s，L20/E3保留B1A12/depth2的3.038967帧/s，详见[完整扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。随后[9档zone/pose比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已完成，并以有效batch8启动六组新正式训练。用户后续要求补齐[batch/累积组合](BATCH_ACCUMULATION_SUPPLEMENT.md)，新`batch-combo`每机六档，固定zone128并明确包含B4A6、B1A12；不是重复本页原chunk32矩阵。以下保留原扫描设计和运行入口。
+**实测更新（2026-11-13）：** 原接触头默认12档已全部尝试，9档完成、3档OOM，详见[完整扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)；后续[9档zone/pose比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)及固定zone128的[十二档batch/累积补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)也已完成。当前正式选择**H20 B4A12 / 有效batch48、L20 B1A12 / 有效batch12，六组全部从头训练**，配置、预算与启动入口见[最终预训练配方](SELECTED_PRETRAINING_RECIPE.md)。原有效batch8属于上一轮部署，下文仅保留原chunk32扫描设计和历史运行入口，不要求重跑。
 
 **本轮取消人为显存上限，一次运行预先列出的多档 batch，再统一比较吞吐与显存。** H20 只使用 E5，L20 只使用 E3；默认分别 7 档和 5 档，不需要每测一档就人工回传、再生成下一档。入口是 `benchmark_geometry_overlap.py --suite batch-scan`。
 
-多档batch的GPU实测已经完成，结果和失败档位以上方报告为准。扫描实现与CPU/CI检查属于实现记录，不替代硬件结果。当时完整训练与协调器仍停止，原扫描没有启动六组训练；后续启动状态以上方最新报告为准。
+多档batch的GPU实测已经完成，结果和失败档位以上方报告为准。扫描实现与CPU/CI检查属于实现记录，不替代硬件结果。当时完整训练与协调器仍停止，原扫描没有启动六组训练；当前采用配方与新任务启动方式以上方选定配方文档为准。
 
 ## 1. 已测结果与继续增大 batch 的依据
 

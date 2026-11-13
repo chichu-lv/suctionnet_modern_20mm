@@ -2,7 +2,7 @@
 
 日期：2026-11-13（北京时间）。适用于独立从头训练的 CD-010 v4 路径。
 
-**实测更新（2026-11-13）：** 本文四个30步测试已完成，H20/E5吞吐+19.90%、L20/E3 +33.82%，详见[实测报告](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。后续原接触头12档batch扫描和[9档最终比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)也已完成，六组正式训练已启动。按用户后续要求新增[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)，使用已获益的zone128及depth2，每机六档，补齐B4A6等组合，不重做串行对照。以下保存原实现与历史测试方案。
+**实测更新（2026-11-13）：** 本文四个30步测试已完成，H20/E5吞吐+19.90%、L20/E3 +33.82%，详见[实测报告](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。后续batch扫描、接触头比较及固定zone128/depth2的[十二档batch/累积补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)均已完成。当前正式选择**H20 B4A12 / 有效batch48、L20 B1A12 / 有效batch12，六组全部从头训练**，采用决定和启动方式见[最终预训练配方](SELECTED_PRETRAINING_RECIPE.md)。下文保存原实现与当时的测试方案，不要求重复串行对照或重新补测。
 
 **结论：剩余的 CPU/GPU 串行依赖可以通过调度重构缓解，本次已经实现同一次参数更新内的两份 microbatch 流水线。** 它把空闲显存用于保留两份尚未完成反向的中间结果，让 CPU 几何与另一份样本的 GPU 工作重叠。下面两组硬件对照已完成，净吞吐收益以上方实测为准，不把CPU功能测试算作GPU提速证据。
 

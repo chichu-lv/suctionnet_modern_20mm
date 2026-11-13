@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13，北京时间）：** [九档接触头测试及正式启动](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已记录：H20/E5采用B4A2/zone128，2.450753帧/s；L20/E3采用B1A8/zone128，3.622360帧/s，分别较同机有效batch8原路径提高17.79%和29.40%。六组新训练已从头启动并产生成功更新，完整训练尚未完成。按最新要求新增[batch与累积次数组合补测](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：两机各六档，明确包含H20 B4A6和L20 B1A12与zone128的组合，同时比较有效batch24下的microbatch。补测独立运行、仅生成结果，不自动替换正在运行的正式配置；十二档已全部完成：[补测结果](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)中H20 B4A6提升12.03%、B4A12提升17.60%，L20 B1A12提升4.54%，均相对本轮同机现行配置；正式任务仍使用有效batch8。以上是已发布记录，不是实时监控。
+**当前正式采用配置（2026-11-13，北京时间）：** [十二档补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)全部完成，确认 **H20/E5：B4A12、有效batch48、zone128、depth2**；**L20：B1A12、有效batch12**，接触组使用zone128/depth2。两台代表模型实测2.887176与3.700548帧/s，较同轮旧配置分别提高17.60%和4.54%。按用户最新指令，六组都在新目录从step0重新训练，不接续旧checkpoint，不再补测。配置、预算和启动命令见[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)。最新已发布运行快照仍是补测后按有效batch8恢复的旧任务；本次提交确认新配方与启动实现，尚无新任务的实际启动记录。
 
 ## Done（已完成）
 
@@ -34,10 +34,11 @@
 - [x] [接触头可选实现](docs/CONTACT_HEAD_OPTIMIZATION.md)：v4 `contact_feature_gather_mode="zone"`按区域一次gather，原`chunk`路径保留。[最终执行入口](docs/FINAL_OPTIMIZATION_AND_TRAINING.md)使用`--suite final`，H20五档、L20四档均为有效batch8；`--run --start-training --training-root`在短测后自动选择并启动各机正式任务，新头未达3%收益则采用最快原路径。
 - [x] [九档接触头实测与六组启动](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)：全部完成，两机均选zone128，正式训练采用有效batch8；该结果只覆盖本轮有效batch8条件，没有测试B4A6/zone128。
 - [x] [batch/累积组合补测入口](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：`--suite batch-combo`一次执行本机六档，固定zone128与depth2，保留整体及同有效batch的吞吐排名和样本预算换算。[十二档真实补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已全部完成，暂用训练卡的E5/E3已按原配置恢复。
+- [x] [选定正式配方及从头启动](docs/SELECTED_PRETRAINING_RECIPE.md)：`finalize_pretraining.py`支持读取已完成的batch-combo结果，选择各机最快完整候选，生成H20有效batch48、L20有效batch12的六组新配置；不再锁定有效batch8，预算从配置派生，旧final入口保留历史兼容。
 
 ## TODO（待完成）
 
-- [ ] 完成已经启动的六组正式预训练：各230,400有效样本，当前有效batch8对应28,800次成功更新；warmup1,440次、每2,880次更新一次原定验证，共10个节点。
+- [ ] 按[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)在新目录从头启动并完成六组预训练，各230,400有效样本。H20/E5为4,800更新、warmup240、每480更新验证；L20各组为19,200更新、warmup960、每1,920更新验证，均保留原定10节点。旧训练进度和短测模型不计入新预算。
 - [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
 - [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
@@ -55,9 +56,9 @@
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
-| 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
+| 公开预训练原始规格与历史配置 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
-| 独立从头训练与性能结果 | [九档结果与已启动训练](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md) · [batch/累积补测](docs/BATCH_ACCUMULATION_SUPPLEMENT.md) · [接触头改动](docs/CONTACT_HEAD_OPTIMIZATION.md) |
+| 当前正式训练配方与性能结果 | [选定配置并从头启动](docs/SELECTED_PRETRAINING_RECIPE.md) · [十二档补测结果](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md) · [接触头改动](docs/CONTACT_HEAD_OPTIMIZATION.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

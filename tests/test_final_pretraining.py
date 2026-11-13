@@ -6,6 +6,7 @@ import pytest
 
 from suction20.final_pretraining import ROOT, finalize_pretraining, select_final_setting
 from suction20.from_scratch import from_scratch_config
+from scripts.benchmark_geometry_overlap import prepare_plan
 
 
 def candidate_plan(tmp_path, hardware='H20'):
@@ -33,6 +34,14 @@ def candidate_plan(tmp_path, hardware='H20'):
     return plan, summary
 
 
+def measured_combo_plan(tmp_path, hardware='H20'):
+    plan = prepare_plan(hardware, tmp_path / 'benchmark', suite='batch-combo',
+                        source_root='/real/input', label_root='/real/labels',
+                        backbone_root='/real/backbone')
+    public_results = json.loads((ROOT / 'docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.json').read_text())
+    return plan, public_results['hosts'][hardware]
+
+
 def test_final_selection_uses_fastest_baseline_and_three_percent_rule(tmp_path):
     plan, summary = candidate_plan(tmp_path)
     selected = select_final_setting(plan, summary)
@@ -49,21 +58,45 @@ def test_final_selection_uses_fastest_baseline_and_three_percent_rule(tmp_path):
     assert select_final_setting(plan, summary)['selected_variant'] == 'second_baseline'
 
 
-@pytest.mark.parametrize('hardware,expected_experiments', [('H20', ['E5']), ('L20', ['E0', 'E1', 'E2', 'E3', 'E4'])])
-def test_final_export_preserves_sample_budget_and_builds_host_recipe(hardware, expected_experiments, tmp_path):
-    plan, summary = candidate_plan(tmp_path, hardware)
+@pytest.mark.parametrize('hardware,suite,expected_experiments,effective,selected_variant', [
+    ('H20', 'final', ['E5'], 8, 'optimized'),
+    ('L20', 'final', ['E0', 'E1', 'E2', 'E3', 'E4'], 8, 'optimized'),
+    ('H20', 'batch-combo', ['E5'], 48, 'b4_a12_e48_zone128'),
+    ('L20', 'batch-combo', ['E0', 'E1', 'E2', 'E3', 'E4'], 12, 'b1_a12_e12_zone128'),
+])
+def test_final_export_preserves_sample_budget_and_builds_host_recipe(
+        hardware, suite, expected_experiments, effective, selected_variant, tmp_path):
+    plan, summary = (measured_combo_plan(tmp_path, hardware) if suite == 'batch-combo'
+                     else candidate_plan(tmp_path, hardware))
     report = finalize_pretraining(plan, summary, tmp_path / 'formal', python='/train/python')
     assert report['status'] == 'prepared; no training launched'
+    assert report['training_mode'] == 'from_scratch'
+    assert report['selection']['selected_variant'] == selected_variant
+    if suite == 'batch-combo':
+        assert report['selection']['selection_policy'] == 'current_completed_max'
+        assert report['selection']['threshold_percent'] is None
+        baseline_fps = summary['results'][0]['frames_per_second']
+        assert report['selection']['baseline']['frames_per_second'] == baseline_fps
+        assert report['selection']['selected_gain_percent'] == pytest.approx(
+            (summary['ranking'][0]['frames_per_second'] / baseline_fps - 1) * 100)
+    assert report['effective_batch_size'] == effective
+    assert report['target_optimizer_updates_per_experiment'] == 230400 // effective
+    assert report['warmup_optimizer_updates'] == 11520 // effective
+    assert report['validation_interval_updates'] == 23040 // effective
+    assert report['validation_nodes'] == 10
     assert [item['experiment'] for item in report['experiments']] == expected_experiments
     assert Path(report['selection_path']).is_file() and Path(report['manifest_path']).is_file()
     for record in report['experiments']:
         config = json.loads(Path(record['train_config']).read_text())
         performance = json.loads(Path(record['performance_config']).read_text())
-        assert config['training']['effective_batch_size'] == 8
+        assert config['training']['effective_batch_size'] == effective
         assert config['training']['target_effective_samples'] == 230400
-        assert config['training']['max_optimizer_steps'] == 28800
-        assert config['scheduler']['warmup_optimizer_steps'] == 1440
-        assert config['training']['validate_every_optimizer_steps'] == 2880
+        assert config['training']['max_optimizer_steps'] == record['target_optimizer_updates'] == 230400 // effective
+        assert config['scheduler']['warmup_optimizer_steps'] == record['warmup_optimizer_updates'] == 11520 // effective
+        assert config['training']['validate_every_optimizer_steps'] == record['validation_interval_updates'] == 23040 // effective
+        assert config['training']['microbatch_size'] == (4 if hardware == 'H20' else 1)
+        assert config['training']['gradient_accumulation_steps'] == effective // config['training']['microbatch_size']
+        assert config['seed'] == 42
         assert config['optimizer']['lr_peak'] == .001
         assert config['runtime']['gpu_memory_limit_gib'] is None
         assert config['data']['source_root'] == '/real/input'
@@ -79,16 +112,19 @@ def test_final_export_preserves_sample_budget_and_builds_host_recipe(hardware, e
 
 
 def test_launch_saves_manifest_before_spawn_and_reports_only_pids(tmp_path, monkeypatch):
-    plan, summary = candidate_plan(tmp_path)
+    plan, summary = measured_combo_plan(tmp_path)
     training_root = tmp_path / 'formal'
     calls = []
 
     def fake_popen(command, **kwargs):
         before = json.loads((training_root / 'manifests/H20.json').read_text())
         assert before['status'] == 'prepared; no training launched'
+        assert before['effective_batch_size'] == 48
+        assert before['target_optimizer_updates_per_experiment'] == 4800
         assert all(Path(item['train_config']).is_file() for item in before['experiments'])
         assert kwargs['env']['CUDA_VISIBLE_DEVICES'] == '7'
         assert kwargs['start_new_session'] is True
+        assert '--resume' not in command and '--init-checkpoint' not in command
         calls.append(command)
         return SimpleNamespace(pid=4321)
 
