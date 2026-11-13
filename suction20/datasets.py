@@ -254,7 +254,8 @@ class PublicSuction20Dataset:
                         poses=np.load(base / 'camera_poses.npy', allow_pickle=False), records=None)
         cached = self._cached(self._scenes, (scene, camera), load, self.scene_cache_size)
         if need_records and cached['records'] is None:
-            cached['records'] = scene_frame0(self.dataset_root, scene, camera)
+            cached['records'] = scene_frame0(self.dataset_root, scene, camera,
+                                             table=cached['table'], camera_poses=cached['poses'])
         return cached['table'], cached['poses'], cached['records']
 
     def _seal(self, object_id):

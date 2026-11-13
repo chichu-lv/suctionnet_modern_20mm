@@ -606,6 +606,25 @@ def test_selected_profile_binds_decreased_formal_budget_and_hardware(config, coo
         coordinator.assign('E3', 'L20', 0)
 
 
+def test_from_scratch_profile_passes_v4_sidecar_to_trainer(config, coordinator):
+    from suction20.from_scratch import from_scratch_config
+    path, _ = selected_v3(config, effective=4)
+    source = Path(__file__).parents[1] / 'configs/runtime_profiles/cd009-v3/H20-E5.json'
+    fresh, performance = from_scratch_config(json.loads(source.read_text()))
+    s.atomic_json(path, fresh)
+    sidecar = path.with_name('fresh-performance.json')
+    s.atomic_json(sidecar, performance)
+    config['profiles']['H20']['E5']['config_sha256'] = s.digest(path)
+    config['performance_configs'] = {'H20': {'E5': {
+        'config_path': str(sidecar), 'config_sha256': s.digest(sidecar)}}}
+    assignment = coordinator.assign('E5', 'H20', 0)
+    command = s.trainer_command(config, assignment)
+    assert assignment['runtime_profile']['selection_status'] == 'from_scratch'
+    assert assignment['budget']['target_updates'] == 57600
+    assert command[command.index('--performance-config') + 1] == str(sidecar)
+    assert '--init-checkpoint' not in command
+
+
 def test_changed_profile_or_budget_rejected(config, coordinator):
     path, raw = selected_v3(config)
     assignment = coordinator.assign('E5', 'H20', 0)

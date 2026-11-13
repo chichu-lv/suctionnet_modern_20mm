@@ -7,9 +7,9 @@ from torch import nn
 from .backbones.spconv_resunet14 import SpconvResUNet14
 from .candidate_sampler import CandidateSampler
 from .geometry_ops import make_fps_backend
-from .heads import AxisHead, chunk_apply, mlp
+from .heads import AxisHead, chunk_apply, compile_dense_modules, mlp
 from .contact_grouping import ContactGrouping, ZONE_LIMITS, ZONE_NAMES
-from .instance_fusion import InstanceFusion, instance_blocks
+from .instance_fusion import InstanceFusion, instance_blocks, segment_broadcast
 
 
 EXPERIMENTS = {
@@ -24,7 +24,12 @@ class Suction20Net(nn.Module):
         super().__init__()
         performance = dict(performance or {})
         self.no_instance_voxel_heads = bool(performance.get('no_instance_voxel_heads', False))
-        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'))
+        geometry_precision = performance.get('geometry_precision', 'float64')
+        geometry_threads = performance.get('geometry_threads', 2)
+        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'), precision=geometry_precision)
+        self.instance_broadcast_mode = performance.get('instance_broadcast_mode', 'indexed')
+        if self.instance_broadcast_mode not in ('indexed', 'segment'):
+            raise ValueError('instance_broadcast_mode must be indexed or segment')
         self.model_config = dict(model_config)
         self.frozen_config = dict(frozen_config)
         self.experiment = model_config.get('experiment', 'E1')
@@ -75,12 +80,21 @@ class Suction20Net(nn.Module):
             'dense_chunk_override_source': 'profile' if chunk_override is None else 'performance_sidecar',
             'chunk_input_mode': self.chunk_input_mode,
         }
+        # v1-v3 execution records retain their original four-field contract.
+        # Fresh-training sidecars explicitly declare the additional choices.
+        fresh_execution = {'instance_broadcast_mode': self.instance_broadcast_mode,
+                           'geometry_threads': geometry_threads,
+                           'geometry_precision': geometry_precision,
+                           'compile_dense_heads': bool(performance.get('compile_dense_heads', False))}
+        self.execution_settings.update({key: value for key, value in fresh_execution.items()
+                                        if key in performance})
         self.checkpoint_dense = bool(model_config.get('checkpoint_dense', True))
         if self.chunk_size <= 0 or self.sampler.num_seeds <= 0:
             raise ValueError('dense_chunk_size and seed_count must be positive')
         # Optional modules are instantiated after the common E1 modules, keeping
         # every E1 state-dict name and its initialization sequence unchanged.
-        self.instance_module = InstanceFusion() if self.use_instance_fusion else None
+        self.instance_module = (InstanceFusion(group_points=self.instance_broadcast_mode == 'segment')
+                                if self.use_instance_fusion else None)
         self.contact_grouping = (ContactGrouping(frozen_config,
                                   chunk_size=model_config.get('pose_chunk_size', 32),
                                   checkpointed=self.checkpoint_dense, fps_fn=fps_fn,
@@ -88,6 +102,8 @@ class Suction20Net(nn.Module):
                                   query_workers=performance.get('query_workers', 1),
                                   spatial_index=performance.get('spatial_index'),
                                   contact_query_backend=performance.get('contact_query_backend', 'numpy'),
+                                  geometry_threads=geometry_threads,
+                                  geometry_precision=geometry_precision,
                                   chunk_input_mode=self.chunk_input_mode,
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
@@ -97,6 +113,18 @@ class Suction20Net(nn.Module):
             self.collision_head = mlp((451, 128, 1), output=True)
         self.last_grouping_timings = {}
         self.epoch = 0
+        if performance.get('compile_dense_heads', False):
+            names = ['fusion', 'axis_head.net', 'q0_head', 'pose_fusion', 'q_head']
+            if self.instance_module is not None:
+                names.append('instance_module.pool_projection')
+            if self.contact_grouping is not None:
+                names.extend(('contact_grouping.local_projection', 'contact_grouping.point_mlp'))
+                names.extend(f'contact_grouping.zone_projections.{zone}' for zone in ZONE_NAMES)
+            if self.use_aux_heads:
+                names.extend(('seal_head', 'wrench_head', 'collision_head'))
+            if self.task_success_head is not None:
+                names.append('task_success_head')
+            compile_dense_modules(self, names)
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
@@ -124,10 +152,22 @@ class Suction20Net(nn.Module):
             stats = self.instance_module(local, batch_input['xyz_cam_m'], batch_input['batch_index'],
                                          batch_input['instance_id_input'],
                                          checkpointed=self.checkpoint_dense and self.training)
-            def fuse(feature, g, xyz, slots):
-                blocks = instance_blocks(stats, xyz, slots)
-                return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
-            fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'], stats['point_instance_index'])
+            if self.instance_broadcast_mode == 'segment':
+                # One differentiable broadcast feeds all dense chunks. Only
+                # instance features are shared: relative coordinates remain
+                # per raw point, including points in the same network voxel.
+                point_features = segment_broadcast(stats['instance_features'],
+                    stats['point_instance_index'], stats['_instance_layout'])
+                def fuse(feature, g, xyz, slots, instance_feature):
+                    blocks = instance_blocks(stats, xyz, slots, point_features=instance_feature)
+                    return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
+                fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'],
+                                     stats['point_instance_index'], point_features)
+            else:
+                def fuse(feature, g, xyz, slots):
+                    blocks = instance_blocks(stats, xyz, slots)
+                    return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
+                fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'], stats['point_instance_index'])
         else:
             def fuse(feature, g):
                 zero = feature.new_zeros((len(feature), 134))

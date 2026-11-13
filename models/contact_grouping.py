@@ -25,7 +25,8 @@ ZONE_LIMITS = {'core': 32, 'lip': 64, 'cup': 32, 'mount': 32, 'approach': 32}
 class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
                  query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None,
-                 contact_query_backend='numpy', chunk_input_mode='slice'):
+                 contact_query_backend='numpy', chunk_input_mode='slice',
+                 geometry_threads=2, geometry_precision='float64'):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -48,6 +49,18 @@ class ContactGrouping(nn.Module):
         self.chunk_input_mode = chunk_input_mode
         self.fps_fn = fps_fn
         self.spatial_index_config = dict(spatial_index or {})
+        if geometry_precision not in ('float32', 'float64'):
+            raise ValueError('geometry_precision must be float32 or float64')
+        if type(geometry_threads) is not int or not 1 <= geometry_threads <= 256:
+            raise ValueError('geometry_threads must be an integer in 1..256')
+        if geometry_precision == 'float32' and (
+                self.spatial_index_config.get('backend') != 'uniform_grid_cpu' or
+                contact_query_backend != 'native_cpu'):
+            raise ValueError('float32 contact geometry requires the native CPU grid path')
+        self.geometry_precision = geometry_precision
+        self.geometry_threads = geometry_threads
+        if geometry_precision != 'float64':
+            self.spatial_index_config['precision'] = geometry_precision
         if contact_query_backend not in ('numpy', 'native_cpu'):
             raise ValueError('Unsupported contact query backend')
         self.contact_query_backend = contact_query_backend
@@ -178,8 +191,9 @@ class ContactGrouping(nn.Module):
     def query(self, index, points, normals, instances, batch, valid, *, random_roll=False):
         """Four-ball queries, via the P2 NumPy path or fused native CPU path."""
         started = time.perf_counter()
-        points = points.detach().float().cpu().numpy().astype(np.float64)
-        normals = normals.detach().float().cpu().numpy().astype(np.float64)
+        dtype = np.float32 if self.geometry_precision == 'float32' else np.float64
+        points = np.ascontiguousarray(points.detach().float().cpu().numpy(), dtype=dtype)
+        normals = np.ascontiguousarray(normals.detach().float().cpu().numpy(), dtype=dtype)
         instances = instances.detach().cpu().numpy()
         batch = batch.detach().cpu().numpy()
         valid = valid.detach().cpu().numpy()
@@ -218,7 +232,8 @@ class ContactGrouping(nn.Module):
             result['lip_sector_counts'] = sectors
             stats.update(native_contact_query(index, points, axes, tangent_u, tangent_v,
                          instances, batch, selected, self.segments, self.self_ignore,
-                         result, detailed=detailed))
+                         result, detailed=detailed, workers=self.geometry_threads,
+                         precision=self.geometry_precision))
             self.last_query_timings = stats
             return result
 

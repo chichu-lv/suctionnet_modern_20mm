@@ -166,13 +166,31 @@ def decay_groups(model: nn.Module, parameters=None, *, weight_decay=1e-4, lr=Non
     return groups
 
 
+def make_optimizer(model, config, device):
+    """Keep AdamW and its parameter groups; fused execution is an opt-in."""
+    options = dict(lr=config.get("lr_peak", .001),
+                   betas=tuple(config.get("betas", (.9, .999))),
+                   eps=config.get("eps", 1e-8))
+    if "fused" in config:
+        if type(config["fused"]) is not bool:
+            raise ValueError("optimizer.fused must be a boolean")
+        options["fused"] = config["fused"] and torch.device(device).type == "cuda"
+    return torch.optim.AdamW(decay_groups(model, weight_decay=config.get("weight_decay", 1e-4)),
+                             **options)
+
+
 def optimizer_update(optimizer, scaler, parameters, max_norm=10.) -> tuple[bool, float]:
+    if not scaler.is_enabled():
+        norm = torch.nn.utils.clip_grad_norm_(list(parameters), max_norm)
+        value = float(norm)
+        updated = math.isfinite(value)
+        if updated:
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        return updated, value
     scaler.unscale_(optimizer)
     norm = torch.nn.utils.clip_grad_norm_(list(parameters), max_norm)
     old_scale = scaler.get_scale()
-    if not scaler.is_enabled() and not torch.isfinite(norm):
-        optimizer.zero_grad(set_to_none=True)
-        return False, float(norm)
     scaler.step(optimizer)
     scaler.update()
     updated = scaler.get_scale() >= old_scale
@@ -277,8 +295,8 @@ def load_checkpoint(path, model, *, optimizer=None, scaler=None, schedule=None,
 def source_supervision_counts(prediction, packed):
     """Per-term denominators for logging, using CPU targets and tiny seed copies.
 
-    Call after the trainer's existing loss scalar reads have waited for backward.
-    No RNG, CUDA kernels, or explicit CUDA synchronization are introduced here.
+    Small seed tensors are copied to CPU; this may synchronize pending CUDA work.
+    It does not consume RNG or change loss reduction.
     These counts describe existing loss reduction; they do not renormalize it.
     """
     inputs, targets = packed['inputs'], packed['targets']

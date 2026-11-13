@@ -27,12 +27,14 @@
 - [x] [优化全程总览](docs/PERFORMANCE_HISTORY.md)：整理初始 profile、P1/P2/P3 的实现、实测、未采用路线和当前状态，并同步各运行指南。局部 CPU 原型、零更新短测和自然训练窗口分开呈现，不相乘为累计加速承诺。
 - [x] supervisor 支持显式登记的 L20 GPU4 和独立 `control_repo`，管理代码可与固定 trainer checkout 分开。仍是单卡单组实验，不是多卡 DDP。
 - [x] [E4 / L20 GPU4 启动](docs/performance/E4_GPU4_STARTUP.md)：使用固定 `f4f7f0d` trainer 与 16k + split + native，原预算内首 100 次成功更新、正常暂停 checkpoint 和最终备份通过，恢复首步 101 的采样连续性通过；首 100 步中位数为 4.4400 秒/更新。读取时观察到 107 步、当时持久化为 100 步；这是启动与恢复记录，完整训练仍在进行。
+- [x] [CD-010 从头训练性能实现](docs/FROM_SCRATCH_PERFORMANCE.md)：独立 v4 配置生成器、64k + split、E0/E1/E3 共享体素头、两级分段实例广播反向、FP32 原生几何与可调线程、4 worker及90/88静态缓存、显式精度、融合AdamW与每更新loss读回。BF16为可选“密集BF16/稀疏FP32”路径，局部MLP编译默认关闭；CPU正常路径检查已完成。该实现没有启动新训练或切换现有CD-009运行，H20/L20吞吐尚未测量。
 
 ## TODO（待完成）
 
 - [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
 - [ ] 继续已有 P3 运行及原计划验证；H20/E5、L20/E0/E1/E3 的配对/迁移和首窗口已完成，不因文档更新重复执行。其他运行按 [实际配置和接续说明](docs/PERFORMANCE_PHASE3.md) 处理，L20 64k 继续延后。H20 实例广播反向、E0/E1 新出现的数据等待是后续关注点，不自动扩展 batch/CPU/worker/cap 矩阵。
 - [ ] 处理 E2 已有 FP16 投影溢出，并完成其后续训练；本轮性能记录没有解决该问题。
+- [ ] 独立从头训练采用 [CD-010新配置](docs/FROM_SCRATCH_PERFORMANCE.md#6-新配置与运行命令) 时，在原预算内读取一次正常运行窗口，确认segment、FP32几何及数据流水线的实际收益；E2可显式选择BF16路径，但尚无其真实训练恢复结论。CUDA接触查询/FPS及GPU增强仍未实现，不作为已交付CPU/GPU密集路径的前置条件。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -50,6 +52,7 @@
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
+| 独立从头训练的优化 | [CD-010实现、精度取舍、配置生成与运行](docs/FROM_SCRATCH_PERFORMANCE.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

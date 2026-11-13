@@ -14,11 +14,12 @@ import numpy as np
 import torch
 
 from suction20.performance import attach_performance, build_runtime_identity
+from suction20.precision import resolve_precision, UpdateLossAccumulator
 from suction20.pretrain_budget import CONTRACT_VERSION, resolve_budget, resolve_config, sampling_epoch, validate_resume_progress
 from suction20.datasets import collate_public, frame_key, split_scene_ids
 from suction20.losses import source_losses
 from suction20.runner import add_runtime_arguments, make_model, make_source_dataset, override_paths, require_device
-from suction20.training import (FrameSchedule, content_digest, decay_groups, learning_rate,
+from suction20.training import (FrameSchedule, content_digest, make_optimizer, learning_rate,
                                load_checkpoint, load_config, move_to_device, select_training_gpu_inputs, optimizer_update,
                                save_checkpoint, seed_everything, validate_resume_config, worktree_digest,
                                capture_rng, restore_rng, semantic_config, code_revision, source_supervision_counts)
@@ -55,8 +56,11 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     budget = resolve_budget(config)
     effective_batch = budget["effective_batch_size"]
     profile = config.get("runtime_profile")
+    performance = config.get("runtime", {}).get("performance")
+    fresh_execution = bool(performance and performance.get("schema_version") == "suction20.performance.v4")
     if budget["contract_version"] == CONTRACT_VERSION:
-        if not isinstance(profile, dict) or profile.get("training_version") != "v3" or profile.get("selection_status") != "selected" or not profile.get("profile_id") or profile["profile_id"] == "pending":
+        allowed_status = ("selected", "from_scratch") if fresh_execution else ("selected",)
+        if not isinstance(profile, dict) or profile.get("training_version") != "v3" or profile.get("selection_status") not in allowed_status or not profile.get("profile_id") or profile["profile_id"] == "pending":
             raise ValueError("Formal v3 requires a selected hardware runtime_profile")
     progress.update(budget=budget, contract_version=budget["contract_version"], runtime_profile=profile,
                     effective_samples_completed=0, target_effective_samples=budget["target_samples"],
@@ -66,6 +70,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         raise ValueError("Run already has a checkpoint; resume it or choose a new run directory")
     if resume and init_checkpoint:
         raise ValueError("Resume and initialization are mutually exclusive")
+    if fresh_execution and init_checkpoint:
+        raise ValueError("From-scratch performance requires new initialization, not init_checkpoint")
     if pause_at_step is not None and pause_at_step < 1:
         raise ValueError("pause_at_step must be positive")
     seed_everything(config.get("seed", 42))
@@ -88,11 +94,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                              frame_keys=config["data"].get("smoke_frame_keys"))
     model = make_model(config, dataset.data_cfg, device)
     opt_cfg = config.get("optimizer", {})
-    optimizer = torch.optim.AdamW(decay_groups(model, weight_decay=opt_cfg.get("weight_decay", 1e-4)),
-                                  lr=opt_cfg.get("lr_peak", .001), betas=tuple(opt_cfg.get("betas", (.9, .999))),
-                                  eps=opt_cfg.get("eps", 1e-8))
-    amp = bool(train_cfg.get("amp", True) and device.type == "cuda")
-    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    optimizer = make_optimizer(model, opt_cfg, device)
+    precision = resolve_precision(config, device)
+    scaler = precision.make_scaler()
     label_root = Path(config["data"].get("label_root", "."))
     frozen_path = label_root / "config_frozen.json"
     if frozen_path.exists():
@@ -108,7 +112,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     identity = build_runtime_identity(config, dataset.data_cfg, code_revision_value=code_revision(),
                                       worktree_sha256=worktree_digest())
     math_settings = identity["math_settings"]
-    performance = config.get("runtime", {}).get("performance")
     migration_receipt = None
     progress.update(performance_identity=identity.get("performance"), performance_settings=performance)
     step, best, previous = 0, None, None
@@ -142,7 +145,10 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                  "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                  "gpu_uuid": normalize_gpu_uuid(torch.cuda.get_device_properties(device).uuid) if device.type == "cuda" else None,
                  "math_settings": math_settings, "runtime": config.get("runtime", {}),
-                 "model_execution": getattr(model, "execution_settings", {})}
+                 "model_execution": getattr(model, "execution_settings", {}),
+                 "precision": precision.as_dict(),
+                 "optimizer_execution": {"name": "AdamW", "fused_requested": opt_cfg.get("fused", False),
+                                          "fused_effective": bool(optimizer.defaults.get("fused"))}}
     if migration_receipt:
         execution["performance_diagnostic_window"] = {
             "start_step": migration_receipt["global_step"],
@@ -355,6 +361,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             for group in optimizer.param_groups:
                 group["lr"] = lr
             totals, consumed, frame_stats, frame_details = {}, [], [], []
+            loss_accumulator = UpdateLossAccumulator(accumulation) if fresh_execution else None
             data_seconds, collate_seconds, loader_wait_s = 0., 0., 0.
             production_timing = {}
             timing = {name: 0. for name in ("data", "collate", "h2d_host", "forward_host", "loss_host", "backward_host", "optimizer_host", "diagnostics_host")}
@@ -413,7 +420,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 targets = move_to_device(packed["targets"], device, non_blocking=bool(performance))
                 timing["h2d_host"] += time.perf_counter() - timer
                 timer = time.perf_counter()
-                with torch.autocast(device_type=device.type, enabled=amp):
+                with precision.autocast():
                     prediction = model(inputs, sampler_mode="train", targets=targets, **cpu_kwargs)
                 timing["forward_host"] += time.perf_counter() - timer
                 seed_counts = prediction["seed_valid"].sum(dim=-1).detach().cpu().tolist()
@@ -432,12 +439,15 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                                      beta=config.get("loss", {}).get("smooth_l1_beta", .05),
                                      weights=config.get("loss", {}).get("weights"))
                 timing["loss_host"] += time.perf_counter() - timer
-                if not torch.isfinite(loss["total"]):
+                if loss_accumulator is None and not torch.isfinite(loss["total"]):
                     raise FloatingPointError("Non-finite training loss; no optimizer update performed")
                 timer = time.perf_counter()
                 scaler.scale(loss["total"] / accumulation).backward()
-                for name, value in loss.items():
-                    totals[name] = totals.get(name, 0.) + float(value.detach()) / accumulation
+                if loss_accumulator is not None:
+                    loss_accumulator.add(loss)
+                else:
+                    for name, value in loss.items():
+                        totals[name] = totals.get(name, 0.) + float(value.detach()) / accumulation
                 timing["backward_host"] += time.perf_counter() - timer
                 timer = time.perf_counter()
                 if "seed_point_index" in prediction and "quality_valid" in packed["targets"]:
@@ -448,6 +458,13 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 if loader_iter is not None:
                     consumed_count = consume_tickets(schedule, tickets, consumed_count)
                 del samples, packed, prediction, loss, inputs, targets, cpu_kwargs, upload
+            if loss_accumulator is not None:
+                timer = time.perf_counter()
+                totals = loss_accumulator.result()
+                timing["diagnostics_host"] += time.perf_counter() - timer
+                if not np.isfinite(totals["total"]):
+                    optimizer.zero_grad(set_to_none=True)
+                    raise FloatingPointError("Non-finite training loss; no optimizer update performed")
             timer = time.perf_counter()
             updated, grad_norm = optimizer_update(optimizer, scaler, parameters, opt_cfg.get("grad_clip_norm", 10.))
             timing["optimizer_host"] += time.perf_counter() - timer
@@ -476,6 +493,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                        memory_scope="CUDA peaks reset at each accumulation attempt; RSS is process lifetime maximum",
                        grad_norm_scope="unscaled pre-clipping total gradient norm",
                        amp_scale_before=amp_scale_before, amp_scale_after=scaler.get_scale(),
+                       precision=precision.as_dict(), loss_readback="per_update" if fresh_execution else "per_microbatch",
                        skip_reason=None if updated else "nonfinite_gradients",
                        grad_norm=grad_norm if np.isfinite(grad_norm) else None, gradients_finite=bool(np.isfinite(grad_norm)), lr=lr,
                        parameter_probe_delta=float((probe.detach() - before).norm()), frames=consumed,

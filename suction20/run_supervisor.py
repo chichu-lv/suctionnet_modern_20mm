@@ -381,7 +381,13 @@ def selected_profile(config, experiment, host):
     profile = resolved.get("runtime_profile", {})
     if budget["contract_version"] != CONTRACT_VERSION or not budget["formal"]:
         raise Refused("selected profile requires formal v3 sample budget")
-    if (profile.get("selection_status") != "selected" or profile.get("training_version") != "v3" or
+    status = profile.get("selection_status")
+    if status == "from_scratch":
+        from suction20.performance import SCHEMA_VERSION_V4
+        performance = selected_performance(config, experiment, host).get("performance_settings", {})
+        if performance.get("schema_version") != SCHEMA_VERSION_V4:
+            raise Refused("from-scratch profile requires a v4 performance sidecar")
+    if (status not in ("selected", "from_scratch") or profile.get("training_version") != "v3" or
             profile.get("profile_id") in (None, "", "pending") or
             profile.get("host") != host or profile.get("experiment") != experiment):
         raise Refused("selected profile host/experiment/version mismatch")
@@ -1114,6 +1120,8 @@ def run_worker(config, host, assignment):
                                    OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1",
                                    PYTHONDONTWRITEBYTECODE="1")
                 environment.pop("PYTHONPATH", None)
+                if assignment.get("performance_settings", {}).get("schema_version") == "suction20.performance.v4":
+                    environment["PYTHONPATH"] = str(Path(config["root"]) / "repo")
                 assert_idle(gpu_snapshot(), assignment["gpu_index"], assignment["gpu_uuid"])
                 with (control / "trainer.stdout.log").open("ab") as output:
                     child = subprocess.Popen(["taskset", "--cpu-list", ",".join(map(str, assignment["cpus"]))] + command,

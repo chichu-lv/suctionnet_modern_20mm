@@ -52,6 +52,16 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 正式多机运行从下方 [supervisor 入口](#cd-009-persistent-multi-host-pretraining) 和 [公共模板](implementation/examples/cd009-supervisor.json) 开始，登记精确 config SHA256，填写本地数据/主干路径、机器身份和授权 GPU。私有控制配置不提交到仓库。冻结运行代码后通过 host evidence、首个 100 步暂停/恢复和稳定性门槛逐级启动；不要跳过 supervisor 的单一 owner 和验证/备份协调。
 
+## CD-010 独立从头训练
+
+从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的 `train.json`、v4 `performance.json` 和运行命令，默认64k + split、4 worker、FP32原生几何4线程、segment实例广播，以及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
+
+精度默认FP16。`--precision bf16` 显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，所以该选择不能预先认定更快。融合AdamW默认开启，局部MLP编译通过 `--compile-dense-heads` 选择。现有训练没有自动应用这些设置。
+
+训练和恢复使用原生成的两个配置；独立评价/推理使用新run的 `resolved_config.json`。管理器支持 `selection_status="from_scratch"` 与v4 sidecar，使用独立的CD-010控制配置和账本即可。新运行不执行旧checkpoint四帧AMP/RNG对齐；原预算内的正常日志窗口提供实际吞吐判断。
+
+下方P1/P2/P3迁移说明适用于原CD-009运行；其中voxel heads关闭、L20 16k和原生2线程等限制不适用于上述独立从头训练。
+
 ## 性能实现构建与既有运行迁移
 
 **2026-11-13 当前记录：H20/E5 使用 64k + split + native，L20/E0、E1、E3 使用 16k + split 的目标配置，均已迁移续训并取得首 25 次正常更新窗口。** H20/E5 与 L20/E3 的真实四帧配对已通过；E0/E1 不使用接触分组。L20 原 64k 组合未通过原梯度门槛，已延后。[P3 操作说明](PERFORMANCE_PHASE3.md) 分别使用 `configs/performance/cd009-p3-integrated.json`（H20）和 `configs/performance/cd009-p3-l20-16k.json`（L20）；旧 `cd009-p3.json` 保留作几何版本记录。
@@ -209,6 +219,10 @@ dense模式换用 `finetune_dense_proxy.yaml`。默认总计1000步：前200步�
 these six runs. H20 owns the local assignment ledger; L20 only executes explicit
 assignments. It does not start TODO2 evaluation. V3 requires a measured, selected
 configuration for each host/experiment; the supervisor never changes it on OOM.
+The independent [CD-010 fresh-start path](FROM_SCRATCH_PERFORMANCE.md) also accepts
+an explicitly generated `from_scratch` profile paired with a v4 performance
+sidecar. It uses a new run/ledger namespace and does not inherit a measured-speed
+claim from the source profile.
 The example [supervisor config](implementation/examples/cd009-supervisor.json)
 contains placeholders for every GPU UUID, host identity and transport alias. Fill
 actual UUIDs, `/etc/machine-id` values and hostnames locally before use. Container machine IDs can be

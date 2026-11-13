@@ -8,6 +8,7 @@ import torch
 from .datasets import collate_public
 from .runner import make_source_dataset
 from .training import EXPERIMENTS, content_digest, move_to_device
+from .precision import resolve_precision
 
 
 def checkpoint_inference_config(config, state):
@@ -49,6 +50,9 @@ def checkpoint_inference_config(config, state):
     resolved = copy.deepcopy(config)
     resolved["experiment"] = experiment
     resolved["model"] = {**saved, **{k: v for k, v in requested.items() if k in runtime}}
+    saved_precision = state.get("training_config", {}).get("training", {}).get("precision")
+    if saved_precision is not None:
+        resolved.setdefault("training", {}).setdefault("precision", saved_precision)
     return resolved
 
 
@@ -75,7 +79,8 @@ def predict_sample(model, sample, config, device, *, include_dense=False):
     packed = collate_public([observation], config["model"].get("voxel_size_m", .002))
     inputs = move_to_device(packed["inputs"], device)
     model.eval()
-    output = model(inputs, sampler_mode="inference")
+    with resolve_precision(config, device, inference=True).autocast():
+        output = model(inputs, sampler_mode="inference")
     valid = output["seed_valid"][0].bool()
     index = output["seed_point_index"][0][valid]
     def array(value):

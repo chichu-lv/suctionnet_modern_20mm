@@ -55,6 +55,22 @@ def dataset(fixture, **kwargs):
     return PublicSuction20Dataset(fixture[0], fixture[1], [(0, 0)], **kwargs)
 
 
+def test_scene_records_reuse_loaded_calibration(source_fixture, monkeypatch):
+    original_load = np.load
+    names = []
+
+    def counted(path, *args, **kwargs):
+        names.append(str(path))
+        return original_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(np, 'load', counted)
+    ds = dataset(source_fixture, scene_cache_size=90, object_cache_size=88)
+    ds.get_sample(0, 7)
+    ds.get_sample(0, 8)
+    assert sum(name.endswith('cam0_wrt_table.npy') for name in names) == 1
+    assert sum(name.endswith('camera_poses.npy') for name in names) == 1
+
+
 def test_legacy_axis_identity_zero_unknown_and_frozen_config(source_fixture):
     ds = dataset(source_fixture)
     sample = ds[0]

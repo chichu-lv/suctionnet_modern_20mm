@@ -144,7 +144,8 @@ def add_pca_extras(seal: dict, dense_points: np.ndarray, cfg: dict) -> dict:
             "seal_custom": custom}
 
 
-def scene_frame0(dataset_root: Path, scene_id: int, camera: str) -> list[dict]:
+def scene_frame0(dataset_root: Path, scene_id: int, camera: str, *,
+                 table=None, camera_poses=None) -> list[dict]:
     """Camera-0 metadata -> table/world poses, ordered as source .mat instances.
     This order is asserted against object_id_list, matching official arr_i order.
     """
@@ -162,7 +163,13 @@ def scene_frame0(dataset_root: Path, scene_id: int, camera: str) -> list[dict]:
         listed = [int(t) for t in list_file.read_text().split()]
         if listed != cls.tolist():
             raise ValueError(f"scene {scene_id}: object_id_list and meta cls_indexes order differ; cannot align arr_i safely")
-    T_world_cam0 = np.load(cam / "cam0_wrt_table.npy") @ np.load(cam / "camera_poses.npy")[0]
+    # The training adapter already loaded these small, static arrays. Reuse them
+    # on the first records-cache miss as well as on later scene-cache hits.
+    if table is None:
+        table = np.load(cam / "cam0_wrt_table.npy")
+    if camera_poses is None:
+        camera_poses = np.load(cam / "camera_poses.npy")
+    T_world_cam0 = table @ camera_poses[0]
     result = []
     for i, obj_id in enumerate(cls):
         T = np.eye(4)

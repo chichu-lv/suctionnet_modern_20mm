@@ -1,4 +1,5 @@
-// Exact FP64 all-point CSR grid. CPython buffer protocol; no NumPy C ABI.
+// All-point CSR grid with legacy FP64 and explicit fresh-training FP32 paths.
+// CPython buffer protocol; no NumPy C ABI or fixed-size neighborhood truncation.
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #ifndef GRID_SOURCE_SHA256
@@ -30,7 +32,10 @@ static const char *CAPSULE_NAME = "suction20.cpu_grid.v1";
 
 struct Grid {
     Py_buffer xyz_view{};  // Pins the exporter, even after Python index deletion.
-    const double *xyz = nullptr;
+    bool float32 = false;
+    template <typename Scalar> const Scalar *coordinates() const {
+        return static_cast<const Scalar *>(xyz_view.buf);
+    }
     Row start = 0, stop = 0, low[3]{}, dims[3]{};
     double cell = .02;
     std::vector<Row> offsets, rows;
@@ -49,13 +54,15 @@ static Row coordinate(double value, double cell) {
     return static_cast<Row>(k);
 }
 
+template <typename Scalar>
 static void build(Grid &g) {
+    const auto *xyz = g.coordinates<Scalar>();
     if (g.start == g.stop) return;
     Row high[3];
     for (int d=0; d<3; ++d)
-        g.low[d] = high[d] = coordinate(g.xyz[3*g.start+d], g.cell);
+        g.low[d] = high[d] = coordinate(xyz[3*g.start+d], g.cell);
     for (Row i=g.start+1; i<g.stop; ++i) for (int d=0; d<3; ++d) {
-        const Row k = coordinate(g.xyz[3*i+d], g.cell);
+        const Row k = coordinate(xyz[3*i+d], g.cell);
         g.low[d] = std::min(g.low[d], k);
         high[d] = std::max(high[d], k);
     }
@@ -70,9 +77,9 @@ static void build(Grid &g) {
     g.offsets.assign(static_cast<std::size_t>(cells)+1, 0);
     std::vector<Row> cell_of(static_cast<std::size_t>(g.stop-g.start));
     for (Row i=g.start; i<g.stop; ++i) {
-        const Row k = g.cell_id(coordinate(g.xyz[3*i], g.cell),
-                               coordinate(g.xyz[3*i+1], g.cell),
-                               coordinate(g.xyz[3*i+2], g.cell));
+        const Row k = g.cell_id(coordinate(xyz[3*i], g.cell),
+                               coordinate(xyz[3*i+1], g.cell),
+                               coordinate(xyz[3*i+2], g.cell));
         cell_of[i-g.start] = k;
         ++g.offsets[k+1];
     }
@@ -94,7 +101,8 @@ static void destroy_grid(PyObject *capsule) {
     delete static_cast<Grid *>(PyCapsule_GetPointer(capsule, CAPSULE_NAME));
 }
 
-static PyObject *create(PyObject *, PyObject *args) {
+template <typename Scalar>
+static PyObject *create_typed(PyObject *args) {
     PyObject *object;
     Py_ssize_t start, stop;
     double cell;
@@ -105,21 +113,26 @@ static PyObject *create(PyObject *, PyObject *args) {
     if (PyObject_GetBuffer(object, &g->xyz_view, PyBUF_FORMAT | PyBUF_ND | PyBUF_C_CONTIGUOUS) < 0)
         return nullptr;
     const auto &v = g->xyz_view;
-    if (v.ndim != 2 || v.shape[1] != 3 || v.itemsize != sizeof(double) || !v.format ||
-        (std::strcmp(v.format, "d") && std::strcmp(v.format, "@d") && std::strcmp(v.format, "=d")) ||
-        reinterpret_cast<std::uintptr_t>(v.buf) % alignof(double)) {
-        PyErr_SetString(PyExc_ValueError, "xyz must be aligned C-contiguous native float64 [P,3]");
+    const bool is_float32 = std::is_same<Scalar, float>::value;
+    const char *format = v.format ? v.format : "";
+    if (*format == '@' || *format == '=') ++format;
+    if (v.ndim != 2 || v.shape[1] != 3 || v.itemsize != sizeof(Scalar) ||
+        std::strcmp(format, is_float32 ? "f" : "d") ||
+        reinterpret_cast<std::uintptr_t>(v.buf) % alignof(Scalar)) {
+        PyErr_SetString(PyExc_ValueError, is_float32 ?
+            "xyz must be aligned C-contiguous native float32 [P,3]" :
+            "xyz must be aligned C-contiguous native float64 [P,3]");
         return nullptr;
     }
     if (start < 0 || stop < start || stop > v.shape[0] || !std::isfinite(cell) || cell <= 0) {
         PyErr_SetString(PyExc_ValueError, "invalid grid frame range or cell size");
         return nullptr;
     }
-    g->xyz = static_cast<const double *>(v.buf);
+    g->float32 = is_float32;
     g->start = start; g->stop = stop; g->cell = cell;
     std::exception_ptr error;
     Py_BEGIN_ALLOW_THREADS
-    try { build(*g); } catch (...) { error = std::current_exception(); }
+    try { build<Scalar>(*g); } catch (...) { error = std::current_exception(); }
     Py_END_ALLOW_THREADS
     if (error) { translate_exception(error); return nullptr; }
     PyObject *result = PyCapsule_New(g.get(), CAPSULE_NAME, destroy_grid);
@@ -127,36 +140,49 @@ static PyObject *create(PyObject *, PyObject *args) {
     return result;
 }
 
-static void query_into(const Grid &g, const double *center, double radius,
+static PyObject *create(PyObject *, PyObject *args) { return create_typed<double>(args); }
+static PyObject *create_float32(PyObject *, PyObject *args) { return create_typed<float>(args); }
+
+template <typename Scalar>
+static void query_into(const Grid &g, const Scalar *center, Scalar radius,
                        std::vector<Row> &output) {
+    const auto *xyz = g.coordinates<Scalar>();
     output.clear();  // A contact worker reuses its own capacity, never another worker's.
     if (g.start == g.stop) return;
     Row lo[3], hi[3];
     for (int d=0; d<3; ++d) {
-        // Clip in FP64 before conversion, including balls outside the frame.
-        const double lower = std::floor((center[d]-radius)/g.cell);
-        const double upper = std::floor((center[d]+radius)/g.cell);
+        // Keep the cell range conservative when FP32 addition rounds at a
+        // cell wall. This only selects cells; the radius predicate below is
+        // unchanged. Legacy FP64 uses its original bounds.
+        double lower_coord = center[d]-radius, upper_coord = center[d]+radius;
+        if (std::is_same<Scalar, float>::value) {
+            lower_coord = std::nextafter(center[d]-radius, -std::numeric_limits<Scalar>::infinity());
+            upper_coord = std::nextafter(center[d]+radius, std::numeric_limits<Scalar>::infinity());
+        }
+        const double lower = std::floor(lower_coord/g.cell);
+        const double upper = std::floor(upper_coord/g.cell);
         const Row top = g.low[d]+g.dims[d]-1;
         if (lower > static_cast<double>(top) || upper < static_cast<double>(g.low[d])) return;
         lo[d] = lower <= static_cast<double>(g.low[d]) ? g.low[d] : static_cast<Row>(lower);
         hi[d] = upper >= static_cast<double>(top) ? top : static_cast<Row>(upper);
     }
-    const double radius2 = radius*radius;
+    const Scalar radius2 = radius*radius;
     for (Row x=lo[0]; x<=hi[0]; ++x) for (Row y=lo[1]; y<=hi[1]; ++y)
         for (Row z=lo[2]; z<=hi[2]; ++z) {
             const Row k = g.cell_id(x, y, z);
             for (Row j=g.offsets[k]; j<g.offsets[k+1]; ++j) {
                 const Row row = g.rows[j];
-                const double dx = g.xyz[3*row]-center[0];
-                const double dy = g.xyz[3*row+1]-center[1];
-                const double dz = g.xyz[3*row+2]-center[2];
+                const Scalar dx = xyz[3*row]-center[0];
+                const Scalar dy = xyz[3*row+1]-center[1];
+                const Scalar dz = xyz[3*row+2]-center[2];
                 if ((dx*dx+dy*dy)+dz*dz <= radius2) output.push_back(row);
             }
         }
     std::sort(output.begin(), output.end());
 }
 
-static std::vector<Row> query(const Grid &g, const double *center, double radius) {
+template <typename Scalar>
+static std::vector<Row> query(const Grid &g, const Scalar *center, Scalar radius) {
     std::vector<Row> output;
     query_into(g, center, radius, output);
     return output;
@@ -177,7 +203,13 @@ static PyObject *ball(PyObject *, PyObject *args) {
     std::vector<Row> output;
     std::exception_ptr error;
     Py_BEGIN_ALLOW_THREADS
-    try { output = query(*g, center, radius+1e-8); }
+    try {
+        if (g->float32) {
+            const float c[] = {static_cast<float>(center[0]), static_cast<float>(center[1]),
+                               static_cast<float>(center[2])};
+            output = query(*g, c, static_cast<float>(radius+1e-8));
+        } else output = query(*g, center, radius+1e-8);
+    }
     catch (...) { error = std::current_exception(); }
     Py_END_ALLOW_THREADS
     if (error) { translate_exception(error); return nullptr; }
@@ -256,15 +288,16 @@ struct BufferPins {
     }
 };
 
+template <typename Scalar>
 struct ContactInputs {
-    const double *points = nullptr, *axes = nullptr, *u = nullptr, *v = nullptr;
-    const double *centers = nullptr, *radii = nullptr, *segments = nullptr;
+    const Scalar *points = nullptr, *axes = nullptr, *u = nullptr, *v = nullptr;
+    const Scalar *centers = nullptr, *radii = nullptr, *segments = nullptr;
     const Row *instances = nullptr, *batch = nullptr, *selected = nullptr;
     const Row *scene_instance = nullptr;
     const float *scene_normals = nullptr;
     const unsigned char *scene_normal_valid = nullptr;
     Py_ssize_t count = 0, selected_count = 0, scene_count = 0;
-    double self_ignore = 0.;
+    Scalar self_ignore = 0.;
 };
 
 struct ZoneOutput {
@@ -291,40 +324,44 @@ static double elapsed(const Clock::time_point &start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
+template <typename Scalar>
 struct ContactPoint {
     Row row;
-    double x, y, z, rho;
+    Scalar x, y, z, rho;
     bool same;
 };
 
+template <typename Scalar>
 struct Region {
-    std::vector<ContactPoint> points;
+    std::vector<ContactPoint<Scalar>> points;
     std::vector<std::size_t> selected;
     std::size_t first = 0;
-    double nearest = std::numeric_limits<double>::infinity();
+    Scalar nearest = std::numeric_limits<Scalar>::infinity();
     void clear() {
         points.clear(); selected.clear(); first = 0;
-        nearest = std::numeric_limits<double>::infinity();
+        nearest = std::numeric_limits<Scalar>::infinity();
     }
-    void append(const ContactPoint &point, double z_mid) {
-        const double dz = point.z - z_mid;
-        const double distance = (point.x*point.x + point.y*point.y) + dz*dz;
+    void append(const ContactPoint<Scalar> &point, Scalar z_mid) {
+        const Scalar dz = point.z - z_mid;
+        const Scalar distance = (point.x*point.x + point.y*point.y) + dz*dz;
         // Sorted raw rows and strict < reproduce np.argmin's first tie.
         if (distance < nearest) { nearest = distance; first = points.size(); }
         points.push_back(point);
     }
 };
 
+template <typename Scalar>
 struct ContactScratch {
     std::array<std::vector<Row>, 4> balls;
-    std::array<Region, 5> regions;
-    std::vector<double> fps_xyz, fps_distance;
+    std::array<Region<Scalar>, 5> regions;
+    std::vector<Scalar> fps_xyz, fps_distance;
 };
 
 // Arithmetic order matches the existing compiled FPS. Geometry uses the
 // original camera XYZ, not the locally projected/normalized descriptor.
-static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
-                          ContactScratch &scratch, ContactStats &stats) {
+template <typename Scalar>
+static void select_region(Region<Scalar> &region, Py_ssize_t limit, const Scalar *xyz,
+                          ContactScratch<Scalar> &scratch, ContactStats &stats) {
     const auto size = region.points.size();
     const auto count = std::min(size, static_cast<std::size_t>(limit));
     region.selected.resize(count);
@@ -335,7 +372,7 @@ static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
     ++stats.fps_calls;
     stats.fps_input_points += static_cast<Row>(size);
     scratch.fps_xyz.resize(3*size);
-    scratch.fps_distance.assign(size, std::numeric_limits<double>::infinity());
+    scratch.fps_distance.assign(size, std::numeric_limits<Scalar>::infinity());
     for (std::size_t j=0; j<size; ++j) {
         const auto *point = xyz + 3*region.points[j].row;
         std::copy_n(point, 3, scratch.fps_xyz.data()+3*j);
@@ -346,14 +383,14 @@ static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
     for (std::size_t i=0; i<count; ++i) {
         region.selected[i] = current;
         distance[current] = -1.;
-        double best = -2.;
+        Scalar best = -2.;
         std::size_t next = 0;
         for (std::size_t j=0; j<size; ++j) {
             if (distance[j] >= 0.) {
-                const double dx = points[3*j] - points[3*current];
-                const double dy = points[3*j+1] - points[3*current+1];
-                const double dz = points[3*j+2] - points[3*current+2];
-                const double candidate = (dx*dx + dy*dy) + dz*dz;
+                const Scalar dx = points[3*j] - points[3*current];
+                const Scalar dy = points[3*j+1] - points[3*current+1];
+                const Scalar dz = points[3*j+2] - points[3*current+2];
+                const Scalar candidate = (dx*dx + dy*dy) + dz*dz;
                 if (candidate < distance[j]) distance[j] = candidate;
             }
             if (distance[j] > best) { best = distance[j]; next = j; }
@@ -362,40 +399,43 @@ static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
     }
 }
 
-static double reference_dot3(double ax, double ay, double az,
-                             double bx, double by, double bz) {
+template <typename Scalar>
+static Scalar reference_dot3(Scalar ax, Scalar ay, Scalar az,
+                             Scalar bx, Scalar by, Scalar bz) {
     // NumPy's contraction starts with positive zero. Starting at the first
     // product instead preserves negative zero when all products are -0 (for
     // example an exact anchor projected onto an all-negative axis). Preserve
     // the existing nonzero operation order and disabled FMA contraction.
-    double result = 0.;
+    Scalar result = 0.;
     result += ax*bx;
     result += ay*by;
     result += az*bz;
     return result;
 }
 
-static ContactPoint project_point(const Grid &grid, Row row, Row q,
-                                  const ContactInputs &in) {
+template <typename Scalar>
+static ContactPoint<Scalar> project_point(const Grid &grid, Row row, Row q,
+                                  const ContactInputs<Scalar> &in) {
     const auto *center = in.points + 3*q;
     const auto *u = in.u + 3*q, *v = in.v + 3*q, *n = in.axes + 3*q;
-    const auto *point = grid.xyz + 3*row;
-    const double dx = point[0]-center[0], dy = point[1]-center[1], dz = point[2]-center[2];
-    ContactPoint out{row, reference_dot3(dx, dy, dz, u[0], u[1], u[2]),
-                         reference_dot3(dx, dy, dz, v[0], v[1], v[2]),
-                         reference_dot3(dx, dy, dz, n[0], n[1], n[2]), 0.,
+    const auto *point = grid.coordinates<Scalar>() + 3*row;
+    const Scalar dx = point[0]-center[0], dy = point[1]-center[1], dz = point[2]-center[2];
+    ContactPoint<Scalar> out{row, reference_dot3<Scalar>(dx, dy, dz, u[0], u[1], u[2]),
+                         reference_dot3<Scalar>(dx, dy, dz, v[0], v[1], v[2]),
+                         reference_dot3<Scalar>(dx, dy, dz, n[0], n[1], n[2]), 0.,
                          in.scene_instance[row] == in.instances[q]};
     out.rho = std::hypot(out.x, out.y);
     return out;
 }
 
-static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
-                            ContactOutputs &out, ContactScratch &scratch,
+template <typename Scalar>
+static void process_contact(Row q, const Grid &grid, const ContactInputs<Scalar> &in,
+                            ContactOutputs &out, ContactScratch<Scalar> &scratch,
                             ContactStats &stats, bool detailed) {
     auto timer = detailed ? Clock::now() : Clock::time_point{};
     for (int ball_index=0; ball_index<4; ++ball_index) {
         query_into(grid, in.centers + 12*q + 3*ball_index,
-                   in.radii[ball_index]+1e-8, scratch.balls[ball_index]);
+                   static_cast<Scalar>(in.radii[ball_index]+1e-8), scratch.balls[ball_index]);
         stats.ball_returned_points += static_cast<Row>(scratch.balls[ball_index].size());
     }
     if (detailed) { stats.ball_seconds += elapsed(timer); timer = Clock::now(); }
@@ -408,9 +448,9 @@ static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
         const auto point = project_point(grid, row, q, in);
         if (point.same && std::abs(point.z) <= .008) {
             if (point.rho <= .018) {
-                scratch.regions[0].append(point, 0.);
+                scratch.regions[0].append(point, Scalar(0));
             } else if (point.rho <= .022) {
-                scratch.regions[1].append(point, 0.);
+                scratch.regions[1].append(point, Scalar(0));
                 const auto sector = static_cast<Row>(
                     std::floor((std::atan2(point.y, point.x)+pi)*sector_scale)) % 8;
                 ++sector_counts[sector];
@@ -419,8 +459,8 @@ static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
     }
     for (int zone=2; zone<5; ++zone) {
         const auto *segment = in.segments + 3*(zone-2);
-        const double lower = segment[0], upper = segment[1], radius = segment[2];
-        const double middle = (lower+upper)/2.;
+        const Scalar lower = segment[0], upper = segment[1], radius = segment[2];
+        const Scalar middle = (lower+upper)/2.;
         for (const auto row : scratch.balls[zone-1]) {
             const auto point = project_point(grid, row, q, in);
             const bool above_lower = zone == 2 ? point.z >= lower : point.z > lower;
@@ -434,12 +474,12 @@ static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
     for (int sector=0; sector<8; ++sector) out.sectors[8*q+sector] = sector_counts[sector];
     if (detailed) { stats.region_seconds += elapsed(timer); timer = Clock::now(); }
     for (int zone=0; zone<5; ++zone)
-        select_region(scratch.regions[zone], out.zones[zone].limit, grid.xyz, scratch, stats);
+        select_region(scratch.regions[zone], out.zones[zone].limit, grid.coordinates<Scalar>(), scratch, stats);
     if (detailed) { stats.fps_seconds += elapsed(timer); timer = Clock::now(); }
     const auto *normal = in.axes + 3*q;
     for (int zone=0; zone<5; ++zone) {
-        const double radius = zone < 2 ? .022 : in.segments[3*(zone-2)+2];
-        const double height = zone < 2 ? .008 : std::max(
+        const Scalar radius = zone < 2 ? .022 : in.segments[3*(zone-2)+2];
+        const Scalar height = zone < 2 ? .008 : std::max(
             std::abs(in.segments[3*(zone-2)]), std::abs(in.segments[3*(zone-2)+1]));
         const auto &region = scratch.regions[zone];
         auto &output = out.zones[zone];
@@ -449,10 +489,10 @@ static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
             output.indices[position] = point.row;
             output.mask[position] = 1;
             const bool normal_valid = in.scene_normal_valid[point.row] != 0;
-            double normal_dot = 0.;
+            Scalar normal_dot = 0.;
             if (normal_valid) {
                 const auto *observed = in.scene_normals + 3*point.row;
-                normal_dot = reference_dot3(observed[0], observed[1], observed[2],
+                normal_dot = reference_dot3<Scalar>(observed[0], observed[1], observed[2],
                                            normal[0], normal[1], normal[2]);
             }
             auto *geometry = output.geometry + 7*position;
@@ -484,38 +524,33 @@ static bool put_seconds(PyObject *dict, const char *key, double value) {
     return status == 0;
 }
 
-static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
-    PyObject *grid_objects, *input_dict, *output_dict;
-    int workers, detailed;
-    static const char *keywords[] = {"grids", "inputs_dict", "outputs_dict",
-                                     "workers", "detailed", nullptr};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOip:contact_query",
-                                    const_cast<char **>(keywords), &grid_objects,
-                                    &input_dict, &output_dict, &workers, &detailed))
-        return nullptr;
+template <typename Scalar>
+static PyObject *contact_query_typed(PyObject *grid_objects, PyObject *input_dict,
+                                     PyObject *output_dict, int workers, int detailed) {
     if (!PyDict_Check(input_dict) || !PyDict_Check(output_dict) ||
-        !PyList_Check(grid_objects) || (workers != 1 && workers != 2)) {
+        !PyList_Check(grid_objects) || workers < 1 || workers > 256) {
         PyErr_SetString(PyExc_ValueError,
-                        "contact_query requires grid list, input/output dicts, and one or two workers");
+                        "contact_query requires grid list, input/output dicts, and 1..256 workers");
         return nullptr;
     }
     try {
         BufferPins pins;
-        ContactInputs in;
+        ContactInputs<Scalar> in;
+        constexpr auto scalar_type = std::is_same<Scalar, float>::value ? BufferType::F32 : BufferType::F64;
         ContactOutputs out;
-        const Py_buffer *view = pins.get(input_dict, "points", BufferType::F64, {-1, 3});
+        const Py_buffer *view = pins.get(input_dict, "points", scalar_type, {-1, 3});
         if (!view) return nullptr;
-        in.count = view->shape[0]; in.points = static_cast<const double *>(view->buf);
+        in.count = view->shape[0]; in.points = static_cast<const Scalar *>(view->buf);
 #define INPUT_BUFFER(member, key, type, cast_type, ...) \
         view = pins.get(input_dict, key, type, {__VA_ARGS__}); \
         if (!view) return nullptr; \
         in.member = static_cast<const cast_type *>(view->buf)
-        INPUT_BUFFER(axes, "axes", BufferType::F64, double, in.count, 3);
-        INPUT_BUFFER(u, "tangent_u", BufferType::F64, double, in.count, 3);
-        INPUT_BUFFER(v, "tangent_v", BufferType::F64, double, in.count, 3);
-        INPUT_BUFFER(centers, "centers", BufferType::F64, double, in.count, 4, 3);
-        INPUT_BUFFER(radii, "radii", BufferType::F64, double, 4);
-        INPUT_BUFFER(segments, "segments", BufferType::F64, double, 3, 3);
+        INPUT_BUFFER(axes, "axes", scalar_type, Scalar, in.count, 3);
+        INPUT_BUFFER(u, "tangent_u", scalar_type, Scalar, in.count, 3);
+        INPUT_BUFFER(v, "tangent_v", scalar_type, Scalar, in.count, 3);
+        INPUT_BUFFER(centers, "centers", scalar_type, Scalar, in.count, 4, 3);
+        INPUT_BUFFER(radii, "radii", scalar_type, Scalar, 4);
+        INPUT_BUFFER(segments, "segments", scalar_type, Scalar, 3, 3);
         INPUT_BUFFER(instances, "instances", BufferType::I64, Row, in.count);
         INPUT_BUFFER(batch, "batch", BufferType::I64, Row, in.count);
         INPUT_BUFFER(selected, "selected", BufferType::I64, Row, -1);
@@ -579,6 +614,8 @@ static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
             PyObject *capsule = PyList_GET_ITEM(grid_objects, frame);
             auto *grid = static_cast<Grid *>(PyCapsule_GetPointer(capsule, CAPSULE_NAME));
             if (!grid) return nullptr;
+            if (grid->float32 != std::is_same<Scalar, float>::value)
+                throw std::invalid_argument("contact-query precision must match the grid");
             if (grid->xyz_view.shape[0] != in.scene_count)
                 throw std::invalid_argument("grid XYZ and scene point fields have different lengths");
             grids.push_back(grid);
@@ -611,7 +648,7 @@ static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
         Py_BEGIN_ALLOW_THREADS
         auto run_worker = [&](int worker) {
             try {
-                ContactScratch scratch;
+                ContactScratch<Scalar> scratch;
                 const auto worker_started = detailed ? Clock::now() : Clock::time_point{};
                 for (Py_ssize_t i=worker; i<in.selected_count; i+=active_workers) {
                     const auto q = in.selected[i];
@@ -667,11 +704,38 @@ static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
     }
 }
 
+// Legacy five-argument call stays FP64. FP32 is explicitly requested by its
+// input descriptor and must use a grid constructed from FP32 coordinates.
+static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
+    PyObject *grids, *inputs, *outputs;
+    int workers, detailed;
+    static const char *keywords[] = {"grids", "inputs_dict", "outputs_dict",
+                                     "workers", "detailed", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOip:contact_query",
+                                    const_cast<char **>(keywords), &grids, &inputs,
+                                    &outputs, &workers, &detailed)) return nullptr;
+    const char *precision = "float64";
+    if (PyDict_Check(inputs)) {
+        PyObject *value = PyDict_GetItemString(inputs, "geometry_precision");
+        if (value) {
+            precision = PyUnicode_AsUTF8(value);
+            if (!precision) return nullptr;
+        }
+    }
+    if (std::strcmp(precision, "float32") == 0)
+        return contact_query_typed<float>(grids, inputs, outputs, workers, detailed);
+    if (std::strcmp(precision, "float64") == 0)
+        return contact_query_typed<double>(grids, inputs, outputs, workers, detailed);
+    PyErr_SetString(PyExc_ValueError, "geometry_precision must be float32 or float64");
+    return nullptr;
+}
+
 static PyMethodDef methods[] = {
-    {"create", create, METH_VARARGS, "Build grid(xyz64, start, stop, cell_size_m)."},
+    {"create", create, METH_VARARGS, "Build legacy FP64 grid(xyz64, start, stop, cell_size_m)."},
+    {"create_float32", create_float32, METH_VARARGS, "Build fresh-training FP32 all-point grid."},
     {"ball", ball, METH_VARARGS, "Owned native int64 bytes for ball(grid, x, y, z, radius)."},
     {"contact_query", reinterpret_cast<PyCFunction>(contact_query), METH_VARARGS | METH_KEYWORDS,
-     "Fill exact full-point contact outputs using one or two native candidate workers."},
+     "Fill full-point contact outputs using configurable native candidate workers."},
     {nullptr, nullptr, 0, nullptr}
 };
 static PyModuleDef module = {PyModuleDef_HEAD_INIT, "_spatial_index_cpu", nullptr, -1, methods};
@@ -680,6 +744,7 @@ PyMODINIT_FUNC PyInit__spatial_index_cpu() {
     if (!m) return nullptr;
     if (PyModule_AddIntConstant(m, "GRID_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "CONTACT_ABI_VERSION", 1) < 0 ||
+        PyModule_AddIntConstant(m, "GEOMETRY_FLOAT32_VERSION", 1) < 0 ||
         PyModule_AddStringConstant(m, "SOURCE_SHA256", GRID_SOURCE_SHA256) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", GRID_COMPILE_FLAGS) < 0 ||
         PyModule_AddStringConstant(m, "LINK_FLAGS", GRID_LINK_FLAGS) < 0 ||

@@ -17,6 +17,17 @@ def mlp(widths, *, output=False):
     return nn.Sequential(*layers)
 
 
+def compile_dense_modules(module, names):
+    """Compile only named dense MLPs in place, retaining state-dict names.
+
+    Default Inductor mode allows variable tail chunks without forcing CUDA
+    graph capture across the surrounding geometry and per-instance loops.
+    Compilation is lazy and remains an explicit from-scratch performance opt-in.
+    """
+    for name in names:
+        module.get_submodule(name).compile(dynamic=True, mode='default')
+
+
 def chunk_apply(fn, *tensors, chunk_size=16384, checkpointed=False, input_mode='slice'):
     """Bound transient dense activations without dropping observation points."""
     if len(tensors[0]) == 0:
