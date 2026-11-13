@@ -74,6 +74,7 @@ class Suction20Net(nn.Module):
                                   query_chunk_size=performance.get('query_chunk_size'),
                                   query_workers=performance.get('query_workers', 1),
                                   spatial_index=performance.get('spatial_index'),
+                                  contact_query_backend=performance.get('contact_query_backend', 'numpy'),
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
         if self.use_aux_heads:

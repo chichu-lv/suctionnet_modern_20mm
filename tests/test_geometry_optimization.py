@@ -22,6 +22,44 @@ def compiled_fps():
     return make_fps_backend('compiled')
 
 
+@pytest.fixture
+def native_contact():
+    module = pytest.importorskip('models._spatial_index_cpu', reason='optional native grid/contact extension not built')
+    assert module.CONTACT_ABI_VERSION == 1
+    assert callable(module.contact_query)
+    return module
+
+
+def two_frame_contact_scene():
+    """A dense surface and normal obstacles, repeated in two packed frames."""
+    rng = np.random.default_rng(7)
+    contact = np.column_stack((rng.uniform(-.022, .022, (800, 2)), rng.uniform(-.004, .004, 800)))
+    obstacles = rng.uniform([-.025, -.025, .01], [.025, .025, .14], (240, 3))
+    xyz = np.concatenate((contact, obstacles))
+    inputs = scene(np.concatenate((xyz, xyz)), ([1]*800 + [2]*240)*2,
+                   [0]*len(xyz) + [1]*len(xyz))
+    inputs['point_offsets'] = torch.tensor([0, len(xyz), 2*len(xyz)])
+    observed = rng.normal([0., 0., 1.], [.08, .08, .02], (2*len(xyz), 3))
+    observed /= np.linalg.norm(observed, axis=1, keepdims=True)
+    inputs['normal_obs'] = torch.tensor(observed, dtype=torch.float32)
+    inputs['normal_obs_valid'][::11] = False
+    inputs['normal_obs'][~inputs['normal_obs_valid']] = 0
+    args = (torch.tensor([[0., 0., 0.], [.002, 0., 0.], [0., .002, 0.]]*2),
+            torch.tensor([[.08, -.04, 1.], [0., 0., 1.], [-.06, .05, 1.],
+                          [.03, .07, 1.], [0., 0., 1.], [.08, -.04, 1.]]),
+            torch.ones(6, dtype=torch.long), torch.tensor([0, 1, 0, 1, 0, 1]),
+            torch.tensor([True, True, True, True, True, False]))
+    return inputs, args
+
+
+def assert_query_equal(expected, actual):
+    for name in ZONE_NAMES:
+        for field in ('indices', 'mask', 'geometry', 'counts'):
+            np.testing.assert_array_equal(actual[name][field], expected[name][field],
+                                          err_msg=f'{name}.{field}')
+    np.testing.assert_array_equal(actual['lip_sector_counts'], expected['lip_sector_counts'])
+
+
 def test_compiled_fps_matches_reference_order_and_records_build(compiled_fps):
     rng = np.random.default_rng(42)
     xyz = rng.normal(size=(300, 3)).astype(np.float32)
@@ -70,7 +108,37 @@ def test_bounded_four_ball_queries_match_reference_and_rng(compiled_fps):
         assert all(group.last_query_timings[key] >= 0 for key in ('ball_query_s', 'region_filter_s', 'fps_s', 'descriptor_pack_s'))
 
 
-def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled_fps):
+def test_native_contact_matches_p2_queries_and_rng(compiled_fps, native_contact):
+    inputs, args = two_frame_contact_scene()
+    geometry = CpuGeometry.from_inputs(inputs)
+    index = SpatialIndex.from_cpu_geometry(geometry, backend='uniform_grid_cpu', cell_size_m=.02)
+    common = dict(fps_fn=compiled_fps, query_chunk_size=None, query_workers=1,
+                  detailed_cpu_timing=True,
+                  spatial_index={'backend': 'uniform_grid_cpu', 'cell_size_m': .02})
+    p2 = ContactGrouping(FROZEN, **common)
+    native = ContactGrouping(FROZEN, contact_query_backend='native_cpu', **common)
+    torch.manual_seed(9)
+    before = torch.get_rng_state()
+    expected = p2.query(index, *args, random_roll=True)
+    after = torch.get_rng_state()
+    torch.set_rng_state(before)
+    actual = native.query(index, *args, random_roll=True)
+    assert torch.equal(torch.get_rng_state(), after)
+    assert_query_equal(expected, actual)
+    assert 'native_query_wall_s' in native.last_query_timings
+    assert native.last_query_timings['fps_calls'] > 0
+    # The sixth pose is padding, but still participates in the one roll draw.
+    assert not actual['lip_sector_counts'][-1].any()
+    for name in ZONE_NAMES:
+        assert not actual[name]['mask'][-1].any()
+        assert actual[name]['counts'][-1] == 0
+    # Exercise both sides of observation-normal validity in packed descriptors.
+    selected_validity = np.concatenate([actual[name]['geometry'][actual[name]['mask']][:, 6]
+                                        for name in ZONE_NAMES])
+    assert np.any(selected_validity == 0) and np.any(selected_validity == 1)
+
+
+def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled_fps, native_contact):
     torch.manual_seed(42)
     cfg = {'experiment': 'E5', 'seed_count': 6, 'dense_chunk_size': 5, 'pose_chunk_size': 2,
            'checkpoint_dense': False}
@@ -79,6 +147,12 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
                             performance={'fps_backend': 'compiled', 'query_chunk_size': 2,
                                          'query_workers': 1, 'detailed_cpu_timing': True}).train()
     optimized.load_state_dict(copy.deepcopy(reference.state_dict()))
+    native = Suction20Net(cfg, FROZEN, TinyTestBackbone(),
+                         performance={'fps_backend': 'compiled', 'query_chunk_size': None,
+                                      'query_workers': 1, 'detailed_cpu_timing': True,
+                                      'contact_query_backend': 'native_cpu',
+                                      'spatial_index': {'backend': 'uniform_grid_cpu', 'cell_size_m': .02}}).train()
+    native.load_state_dict(copy.deepcopy(reference.state_dict()))
     # Reference retains pre-optimization scalar query and duplicate local geometry.
     reference.contact_grouping.query = reference.contact_grouping.query_reference
     inputs = model_inputs()
@@ -88,7 +162,7 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
     sampler_targets = SamplerTargetsCPU.from_targets(targets)
     rng = torch.get_rng_state()
     outputs, gradients, rngs = [], [], []
-    for model in (reference, optimized):
+    for model in (reference, optimized, native):
         torch.set_rng_state(rng)
         context = {} if model is reference else dict(cpu_geometry=geometry, sampler_targets_cpu=sampler_targets)
         # CPU targets remain outside encode_scene and are sufficient for sampling.
@@ -97,14 +171,16 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
         outputs.append(output)
         gradients.append({n: None if p.grad is None else p.grad.clone() for n, p in model.named_parameters()})
         rngs.append(torch.get_rng_state())
-    assert torch.equal(rngs[0], rngs[1])
-    assert reference.state_dict().keys() == optimized.state_dict().keys()
-    for key in outputs[0]:
-        torch.testing.assert_close(outputs[0][key], outputs[1][key], rtol=0, atol=0)
-    for name, grad in gradients[0].items():
-        if grad is None:
-            assert gradients[1][name] is None
-        else:
-            torch.testing.assert_close(grad, gradients[1][name], rtol=1e-6, atol=1e-7)
+    for i, model in enumerate((optimized, native), start=1):
+        assert torch.equal(rngs[0], rngs[i])
+        assert reference.state_dict().keys() == model.state_dict().keys()
+        for key in outputs[0]:
+            torch.testing.assert_close(outputs[0][key], outputs[i][key], rtol=0, atol=0)
+        for name, grad in gradients[0].items():
+            if grad is None:
+                assert gradients[i][name] is None
+            else:
+                torch.testing.assert_close(grad, gradients[i][name], rtol=1e-6, atol=1e-7)
     assert optimized.last_grouping_timings['q0_d2h_host_s'] >= 0
     assert optimized.last_grouping_timings['sampler_cpu_s'] >= 0
+    assert 'native_query_wall_s' in native.last_grouping_timings

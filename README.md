@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-12）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。实际部署代码身份、六份固定配置和策略见 [当前预训练](docs/CD009_PRETRAINING.md)，历史验证范围和数值见 [验证记录](docs/MODEL_VALIDATION.md)。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。实际部署代码身份、固定配置和策略见 [当前预训练](docs/CD009_PRETRAINING.md)，历史验证范围和数值见 [验证记录](docs/MODEL_VALIDATION.md)。
 
 ## Done（已完成）
 
@@ -21,12 +21,14 @@
 - [x] 基于 CD-009 当前代码的 [详细性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md)：精确 CPU 几何、读取与体素、后台预取、既有 checkpoint 续接及实现清单；已实现精确 C FPS、CPU 几何复用、按需读取与体素整理、有序预取和显式 checkpoint 迁移，本轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 已在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
 - [x] P1 后 [11 组 batch/CPU 对照](docs/performance/P1_BATCH_CPU_RESULTS.json)：保留 B1A4、8 个逻辑核、2 个数据 worker；正常训练暴露的数据等待仅约 1–2 ms/update。公开记录对应 2026-11-12 的历史窗口，不代表实时进度。
 - [x] [P2 提速实施](docs/PERFORMANCE_PHASE2.md)：全点 CPU 网格与坐标快路径已通过原容差四帧真实验收，并保持学习状态迁移到 H20/E5、L20/E0/E3。voxel heads 复用真实 AMP 梯度未通过，部署关闭；预算与硬件 profiles 不变。源码 CI 通过，实测耗时、资源及限制见 [P2 真实结果](docs/performance/P2_REAL_RESULTS.json)。
-- [x] [P2 后 H20 batch size 可行性分析](docs/H20_BATCHSIZE_ANALYSIS.md)：区分显存容量、实际吞吐、固定 chunk、CPU 几何和逐实例扫描代价；P2 尚未重新测 B2/B4，历史 P1 结果不作为永久限制。
+- [x] [P2 后 H20 batch size 可行性分析](docs/H20_BATCHSIZE_ANALYSIS.md)：区分显存容量、实际吞吐、固定 chunk、CPU 几何和逐实例扫描代价；P2 的 E5 尚未重新测 B2/B4，历史 P1 结果不作为永久限制。
+- [x] [H20/E2 的 P2 配置与启动](docs/performance/H20_E2_STARTUP.md)：独立 B1/B2 短测后保留 B1A4，已有预算内 100 步保存与恢复记录；E2 不启用接触分组。
+- [x] [P3 原生接触几何](docs/PERFORMANCE_PHASE3.md)：融合四球查询、五区筛选、FPS 和描述量打包，固定两个原生候选线程；保留 P2 参考路径，新增 P3 sidecar 和 P2→P3 续训接线。同 84 万点/512 候选的本地 CPU query 为 **0.902→0.295 s（3.06×）**，全部几何结果与 RNG 相同；[原始记录](docs/performance/P3_CPU_RESULTS.json)及文档区分本地验证与尚未完成的训练机部署。
 
 ## TODO（待完成）
 
 - [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
-- [ ] 根据 [P2 剩余热点](docs/PERFORMANCE_PHASE2.md#123-资源与剩余瓶颈) 继续缩短几何处理；按 [H20 batch 分析](docs/H20_BATCHSIZE_ANALYSIS.md) 小范围对比 P2 的 B1A4 与 B2A2，依据实际吞吐决定是否更新 profile。voxel heads 保持部署关闭，不重复 batch/CPU/worker 大矩阵。
+- [ ] 按 [P3 接续说明](docs/PERFORMANCE_PHASE3.md#7-在现有训练上接续) 复用同四帧配对与现有迁移工具，在接触模型的原预算内窗口记录真实训练提速。voxel heads 保持关闭，不重复 batch/CPU/worker 大矩阵；batch 可行性保留在独立分析中。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -43,7 +45,7 @@
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
-| 缩短现有预训练耗时 | [P2 当前方案与真实反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) · [P1 已完成记录](docs/PERFORMANCE_OPTIMIZATION.md) |
+| 缩短现有预训练耗时 | [P3 原生几何与接续](docs/PERFORMANCE_PHASE3.md) · [P2 已部署反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

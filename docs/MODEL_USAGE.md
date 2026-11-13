@@ -54,6 +54,8 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
+**P3 几何代码已提供：** [构建、同四帧配对与 P2→P3 接续](PERFORMANCE_PHASE3.md) 使用独立 `configs/performance/cd009-p3.json`。当前公开部署证据仍对应下述 P2；P3 的本地 CPU 结果不表示训练机已完成切换。
+
 当前 P2 的全点 CPU 网格及坐标快路径已通过原容差四帧真实配对并部署到 E5/E0/E3；voxel heads 因真实 AMP 梯度未通过而关闭。三组在1030/2462/1058步保持学习状态迁移。历史 P1 和失败证据保留；[P2 实施报告](PERFORMANCE_PHASE2.md) 区分数值验收、普通训练耗时与资源观测。
 
 ### 本机扩展与独立性能配置

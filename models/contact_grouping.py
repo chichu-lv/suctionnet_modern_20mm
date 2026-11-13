@@ -14,6 +14,7 @@ import torch
 from torch import nn
 
 from .candidate_sampler import fps_indices
+from .contact_ops import native_contact_query
 from .heads import chunk_apply, mlp
 from .spatial_index import SpatialIndex
 
@@ -23,7 +24,8 @@ ZONE_LIMITS = {'core': 32, 'lip': 64, 'cup': 32, 'mount': 32, 'approach': 32}
 
 class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
-                 query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None):
+                 query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None,
+                 contact_query_backend='numpy'):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -45,6 +47,9 @@ class ContactGrouping(nn.Module):
         self.checkpointed = checkpointed
         self.fps_fn = fps_fn
         self.spatial_index_config = dict(spatial_index or {})
+        if contact_query_backend not in ('numpy', 'native_cpu'):
+            raise ValueError('Unsupported contact query backend')
+        self.contact_query_backend = contact_query_backend
         self.query_chunk_size = query_chunk_size
         self.query_workers = query_workers
         self.detailed_cpu_timing = detailed_cpu_timing
@@ -170,7 +175,7 @@ class ContactGrouping(nn.Module):
 
     @torch.no_grad()
     def query(self, index, points, normals, instances, batch, valid, *, random_roll=False):
-        """Exact four-ball queries with bounded lists and shared core/lip geometry."""
+        """Four-ball queries, via the P2 NumPy path or fused native CPU path."""
         started = time.perf_counter()
         points = points.detach().float().cpu().numpy().astype(np.float64)
         normals = normals.detach().float().cpu().numpy().astype(np.float64)
@@ -190,10 +195,11 @@ class ContactGrouping(nn.Module):
         selected = np.flatnonzero(valid)
         axes, tangent_u, tangent_v = (np.zeros_like(points) for _ in range(3))
         detailed = self.detailed_cpu_timing
+        native_query = self.contact_query_backend == 'native_cpu'
         stats = dict(pose_d2h_host_s=transferred-started, valid_candidates=len(selected),
                      ball_calls=4*len(selected), ball_api_calls=0, ball_returned_points=0,
                      fps_calls=0, fps_input_points=0)
-        if detailed:
+        if detailed and not native_query:
             stats.update(ball_query_s=0., region_filter_s=0., fps_s=0., descriptor_pack_s=0.)
         timer = time.perf_counter() if detailed else 0.
         for q in selected:
@@ -205,7 +211,15 @@ class ContactGrouping(nn.Module):
             c, s = np.cos(rolls[q]), np.sin(rolls[q])
             axes[q], tangent_u[q], tangent_v[q] = n, c*u + s*v, -s*u + c*v
         if detailed:
-            stats['region_filter_s'] += time.perf_counter() - timer
+            stats['pose_frame_setup_s' if native_query else 'region_filter_s'] = time.perf_counter() - timer
+
+        if native_query:
+            result['lip_sector_counts'] = sectors
+            stats.update(native_contact_query(index, points, axes, tangent_u, tangent_v,
+                         instances, batch, selected, self.segments, self.self_ignore,
+                         result, detailed=detailed))
+            self.last_query_timings = stats
+            return result
 
         def chunks():
             if self.query_chunk_size is None:

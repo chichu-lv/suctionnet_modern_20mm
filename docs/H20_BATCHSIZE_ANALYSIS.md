@@ -1,5 +1,7 @@
 # P2 后 H20 的 batch size：可行性、显存与实际限制
 
+**后续进展（2026-11-13）：** [P3 原生接触几何](PERFORMANCE_PHASE3.md) 已实现并记录本地 CPU 对照。本文保留 P2 时的 batch 分析；P3 的真实训练和 batch 收益需要依据其实际运行记录判断。
+
 2026-11-12（北京时间）。依据 `cd009/full-pretraining` 的 [`60e55a2`](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/60e55a263d6dd8a0b753341fd4993848222fbde4) 和 [P2 真实反馈](performance/P2_REAL_RESULTS.json)。实际训练部署仍是本地 `e73d62e`，同树 GitHub 发布 `4e9c9f5`；本文是后续分析，没有执行新的 H20 测试或修改训练配置。
 
 ## 1. 结论

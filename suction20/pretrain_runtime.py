@@ -85,7 +85,8 @@ def verify_performance_migration(run_dir, reference, identity, *, _visited=None)
     receipt = read_json(receipt_path)
     if receipt.get('schema_version') != 'suction20.performance-migration.v1' or receipt.get('target_identity') != identity:
         raise ValueError('Performance migration target identity mismatch')
-    from .performance import approved_migration_source, load_performance_config, SCHEMA_VERSION_V2
+    from .performance import (approved_migration_source, load_performance_config,
+                              SCHEMA_VERSION_V2, SCHEMA_VERSION_V3)
     source = receipt['source_identity']
     source_kind = approved_migration_source(source)
     changed = sorted(key for key in set(source) | set(identity) if source.get(key) != identity.get(key))
@@ -105,6 +106,8 @@ def verify_performance_migration(run_dir, reference, identity, *, _visited=None)
         raise ValueError('Performance migration sidecar schema mismatch')
     if source_kind == 'p1' and settings['schema_version'] != SCHEMA_VERSION_V2:
         raise ValueError('Approved P1 source requires a v2 performance target')
+    if source_kind == 'p2' and settings['schema_version'] != SCHEMA_VERSION_V3:
+        raise ValueError('Approved P2 source requires a v3 performance target')
     manifest = read_json(receipt_path.parent / 'source-manifest.json')
     current = manifest['current']
     if (current['sha256'] != receipt['files']['source.pt']['sha256'] or
@@ -112,10 +115,12 @@ def verify_performance_migration(run_dir, reference, identity, *, _visited=None)
             current.get('pending_validation') is not None or current.get('analysis', {}).get('identity') != source):
         raise ValueError('Performance migration source manifest mismatch')
     previous = current.get('analysis', {}).get('performance_migration')
-    if source_kind == 'p1':
-        if not previous:
+    if source_kind in ('p1', 'p2'):
+        if source_kind == 'p1' and not previous:
             raise ValueError('P1 source requires its prior performance migration receipt')
-        verify_performance_migration(root, previous, source, _visited=visited)
+        # Fresh P2 runs terminate the archive chain here; migrated runs keep it.
+        if previous:
+            verify_performance_migration(root, previous, source, _visited=visited)
     elif previous:
         raise ValueError('Original performance source must not already have a migration')
     return receipt

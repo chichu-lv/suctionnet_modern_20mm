@@ -112,7 +112,8 @@ def test_grid_factory_and_all_contact_regions_match_kdtree_with_roll_rng():
 def test_grid_build_identity_records_source_binary_compiler_and_exact_flags():
     identity = spatial_index_backend_identity()
     assert identity['backend'] == 'uniform_grid_cpu' and identity['abi_version'] == 1
-    assert identity['compile_flags'] == ['-O3', '-fno-fast-math', '-ffp-contract=off']
+    assert identity['compile_flags'] == ['-O3', '-fno-fast-math', '-ffp-contract=off', '-pthread']
+    assert identity['link_flags'] == ['-pthread']
     assert identity['source_sha256'] == hashlib.sha256(Path('models/csrc/spatial_index_cpu.cpp').read_bytes()).hexdigest()
     assert len(identity['binary_sha256']) == 64 and identity['compiler']
 

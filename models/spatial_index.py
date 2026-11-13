@@ -35,6 +35,7 @@ def spatial_index_backend_identity(name='uniform_grid_cpu'):
     return dict(backend=name, abi_version=module.GRID_ABI_VERSION,
                 python_cache_tag=sys.implementation.cache_tag,
                 compile_flags=module.COMPILE_FLAGS.split(), compiler=module.COMPILER,
+                link_flags=getattr(module, 'LINK_FLAGS', '').split(),
                 source_sha256=module.SOURCE_SHA256,
                 binary_sha256=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest())
 

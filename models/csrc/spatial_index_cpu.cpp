@@ -2,13 +2,17 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #ifndef GRID_SOURCE_SHA256
@@ -16,6 +20,9 @@
 #endif
 #ifndef GRID_COMPILE_FLAGS
 #define GRID_COMPILE_FLAGS "unknown"
+#endif
+#ifndef GRID_LINK_FLAGS
+#define GRID_LINK_FLAGS "unknown"
 #endif
 
 using Row = std::int64_t;
@@ -120,16 +127,17 @@ static PyObject *create(PyObject *, PyObject *args) {
     return result;
 }
 
-static std::vector<Row> query(const Grid &g, const double *center, double radius) {
-    std::vector<Row> output;  // Each call owns its output; CSR/XYZ are read-only.
-    if (g.start == g.stop) return output;
+static void query_into(const Grid &g, const double *center, double radius,
+                       std::vector<Row> &output) {
+    output.clear();  // A contact worker reuses its own capacity, never another worker's.
+    if (g.start == g.stop) return;
     Row lo[3], hi[3];
     for (int d=0; d<3; ++d) {
         // Clip in FP64 before conversion, including balls outside the frame.
         const double lower = std::floor((center[d]-radius)/g.cell);
         const double upper = std::floor((center[d]+radius)/g.cell);
         const Row top = g.low[d]+g.dims[d]-1;
-        if (lower > static_cast<double>(top) || upper < static_cast<double>(g.low[d])) return output;
+        if (lower > static_cast<double>(top) || upper < static_cast<double>(g.low[d])) return;
         lo[d] = lower <= static_cast<double>(g.low[d]) ? g.low[d] : static_cast<Row>(lower);
         hi[d] = upper >= static_cast<double>(top) ? top : static_cast<Row>(upper);
     }
@@ -146,6 +154,11 @@ static std::vector<Row> query(const Grid &g, const double *center, double radius
             }
         }
     std::sort(output.begin(), output.end());
+}
+
+static std::vector<Row> query(const Grid &g, const double *center, double radius) {
+    std::vector<Row> output;
+    query_into(g, center, radius, output);
     return output;
 }
 
@@ -173,9 +186,480 @@ static PyObject *ball(PyObject *, PyObject *args) {
                                     static_cast<Py_ssize_t>(output.size()*sizeof(Row)));
 }
 
+
+// Contact query uses only native pointers while the GIL is released. Buffer
+// exports and individual capsule references pin all input/output allocations.
+enum class BufferType { F64, F32, I64, Bool };
+
+struct BufferPins {
+    std::vector<Py_buffer> views;
+    std::vector<PyObject *> capsules;
+    BufferPins() { views.reserve(40); }
+    ~BufferPins() {
+        for (auto &view : views) PyBuffer_Release(&view);
+        for (auto *capsule : capsules) Py_DECREF(capsule);
+    }
+    BufferPins(const BufferPins &) = delete;
+    BufferPins &operator=(const BufferPins &) = delete;
+
+    const Py_buffer *get(PyObject *dict, const char *key, BufferType type,
+                         std::initializer_list<Py_ssize_t> shape, bool writable=false) {
+        PyObject *object = PyDict_GetItemString(dict, key);
+        if (!object) {
+            PyErr_Format(PyExc_KeyError, "contact query is missing %s", key);
+            return nullptr;
+        }
+        Py_buffer view{};
+        const int flags = PyBUF_FORMAT | PyBUF_ND | PyBUF_C_CONTIGUOUS |
+                          (writable ? PyBUF_WRITABLE : 0);
+        if (PyObject_GetBuffer(object, &view, flags) < 0) return nullptr;
+        const char *format = view.format ? view.format : "";
+        if (*format == '@' || *format == '=') ++format;
+        const char *expected = "";
+        Py_ssize_t itemsize = 0;
+        std::size_t alignment = 1;
+        bool format_ok = false;
+        switch (type) {
+            case BufferType::F64:
+                expected = "float64"; itemsize = sizeof(double); alignment = alignof(double);
+                format_ok = std::strcmp(format, "d") == 0; break;
+            case BufferType::F32:
+                expected = "float32"; itemsize = sizeof(float); alignment = alignof(float);
+                format_ok = std::strcmp(format, "f") == 0; break;
+            case BufferType::I64:
+                expected = "int64"; itemsize = sizeof(Row); alignment = alignof(Row);
+                format_ok = std::strcmp(format, "q") == 0 || std::strcmp(format, "l") == 0;
+                break;
+            case BufferType::Bool:
+                expected = "bool"; itemsize = 1;
+                format_ok = std::strcmp(format, "?") == 0; break;
+        }
+        bool shape_ok = view.ndim == static_cast<int>(shape.size());
+        if (shape_ok) {
+            int axis = 0;
+            for (const auto size : shape) {
+                if (size >= 0 && view.shape[axis] != size) shape_ok = false;
+                ++axis;
+            }
+        }
+        if (!format_ok || view.itemsize != itemsize || !shape_ok ||
+            reinterpret_cast<std::uintptr_t>(view.buf) % alignment) {
+            PyErr_Format(PyExc_ValueError,
+                         "%s must be aligned C-contiguous native %s with the contact-query shape",
+                         key, expected);
+            PyBuffer_Release(&view);
+            return nullptr;
+        }
+        try { views.push_back(view); }
+        catch (...) { PyBuffer_Release(&view); throw; }
+        return &views.back();
+    }
+};
+
+struct ContactInputs {
+    const double *points = nullptr, *axes = nullptr, *u = nullptr, *v = nullptr;
+    const double *centers = nullptr, *radii = nullptr, *segments = nullptr;
+    const Row *instances = nullptr, *batch = nullptr, *selected = nullptr;
+    const Row *scene_instance = nullptr;
+    const float *scene_normals = nullptr;
+    const unsigned char *scene_normal_valid = nullptr;
+    Py_ssize_t count = 0, selected_count = 0, scene_count = 0;
+    double self_ignore = 0.;
+};
+
+struct ZoneOutput {
+    Row *indices = nullptr, *counts = nullptr;
+    unsigned char *mask = nullptr;
+    float *geometry = nullptr;
+    Py_ssize_t limit = 0;
+};
+
+struct ContactOutputs {
+    std::array<ZoneOutput, 5> zones;
+    Row *sectors = nullptr;
+};
+
+struct ContactStats {
+    Row ball_returned_points = 0;
+    Row fps_calls = 0, fps_input_points = 0;
+    double ball_seconds = 0., region_seconds = 0., fps_seconds = 0.;
+    double pack_seconds = 0., total_seconds = 0.;
+};
+
+using Clock = std::chrono::steady_clock;
+static double elapsed(const Clock::time_point &start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+struct ContactPoint {
+    Row row;
+    double x, y, z, rho;
+    bool same;
+};
+
+struct Region {
+    std::vector<ContactPoint> points;
+    std::vector<std::size_t> selected;
+    std::size_t first = 0;
+    double nearest = std::numeric_limits<double>::infinity();
+    void clear() {
+        points.clear(); selected.clear(); first = 0;
+        nearest = std::numeric_limits<double>::infinity();
+    }
+    void append(const ContactPoint &point, double z_mid) {
+        const double dz = point.z - z_mid;
+        const double distance = (point.x*point.x + point.y*point.y) + dz*dz;
+        // Sorted raw rows and strict < reproduce np.argmin's first tie.
+        if (distance < nearest) { nearest = distance; first = points.size(); }
+        points.push_back(point);
+    }
+};
+
+struct ContactScratch {
+    std::array<std::vector<Row>, 4> balls;
+    std::array<Region, 5> regions;
+    std::vector<double> fps_xyz, fps_distance;
+};
+
+// Arithmetic order matches the existing compiled FPS. Geometry uses the
+// original camera XYZ, not the locally projected/normalized descriptor.
+static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
+                          ContactScratch &scratch, ContactStats &stats) {
+    const auto size = region.points.size();
+    const auto count = std::min(size, static_cast<std::size_t>(limit));
+    region.selected.resize(count);
+    if (size <= static_cast<std::size_t>(limit)) {
+        for (std::size_t j=0; j<count; ++j) region.selected[j] = j;
+        return;  // Contact query bypasses FPS when M <= K.
+    }
+    ++stats.fps_calls;
+    stats.fps_input_points += static_cast<Row>(size);
+    scratch.fps_xyz.resize(3*size);
+    scratch.fps_distance.assign(size, std::numeric_limits<double>::infinity());
+    for (std::size_t j=0; j<size; ++j) {
+        const auto *point = xyz + 3*region.points[j].row;
+        std::copy_n(point, 3, scratch.fps_xyz.data()+3*j);
+    }
+    const auto *points = scratch.fps_xyz.data();
+    auto *distance = scratch.fps_distance.data();
+    auto current = region.first;
+    for (std::size_t i=0; i<count; ++i) {
+        region.selected[i] = current;
+        distance[current] = -1.;
+        double best = -2.;
+        std::size_t next = 0;
+        for (std::size_t j=0; j<size; ++j) {
+            if (distance[j] >= 0.) {
+                const double dx = points[3*j] - points[3*current];
+                const double dy = points[3*j+1] - points[3*current+1];
+                const double dz = points[3*j+2] - points[3*current+2];
+                const double candidate = (dx*dx + dy*dy) + dz*dz;
+                if (candidate < distance[j]) distance[j] = candidate;
+            }
+            if (distance[j] > best) { best = distance[j]; next = j; }
+        }
+        current = next;
+    }
+}
+
+static ContactPoint project_point(const Grid &grid, Row row, Row q,
+                                  const ContactInputs &in) {
+    const auto *center = in.points + 3*q;
+    const auto *u = in.u + 3*q, *v = in.v + 3*q, *n = in.axes + 3*q;
+    const auto *point = grid.xyz + 3*row;
+    const double dx = point[0]-center[0], dy = point[1]-center[1], dz = point[2]-center[2];
+    ContactPoint out{row, (dx*u[0]+dy*u[1])+dz*u[2],
+                         (dx*v[0]+dy*v[1])+dz*v[2],
+                         (dx*n[0]+dy*n[1])+dz*n[2], 0.,
+                         in.scene_instance[row] == in.instances[q]};
+    out.rho = std::hypot(out.x, out.y);
+    return out;
+}
+
+static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
+                            ContactOutputs &out, ContactScratch &scratch,
+                            ContactStats &stats, bool detailed) {
+    auto timer = detailed ? Clock::now() : Clock::time_point{};
+    for (int ball_index=0; ball_index<4; ++ball_index) {
+        query_into(grid, in.centers + 12*q + 3*ball_index,
+                   in.radii[ball_index]+1e-8, scratch.balls[ball_index]);
+        stats.ball_returned_points += static_cast<Row>(scratch.balls[ball_index].size());
+    }
+    if (detailed) { stats.ball_seconds += elapsed(timer); timer = Clock::now(); }
+    for (auto &region : scratch.regions) region.clear();
+    Row sector_counts[8]{};
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    const double sector_scale = 8. / (2.*pi);
+    // core and lip share the covering ball and each point's local coordinates.
+    for (const auto row : scratch.balls[0]) {
+        const auto point = project_point(grid, row, q, in);
+        if (point.same && std::abs(point.z) <= .008) {
+            if (point.rho <= .018) {
+                scratch.regions[0].append(point, 0.);
+            } else if (point.rho <= .022) {
+                scratch.regions[1].append(point, 0.);
+                const auto sector = static_cast<Row>(
+                    std::floor((std::atan2(point.y, point.x)+pi)*sector_scale)) % 8;
+                ++sector_counts[sector];
+            }
+        }
+    }
+    for (int zone=2; zone<5; ++zone) {
+        const auto *segment = in.segments + 3*(zone-2);
+        const double lower = segment[0], upper = segment[1], radius = segment[2];
+        const double middle = (lower+upper)/2.;
+        for (const auto row : scratch.balls[zone-1]) {
+            const auto point = project_point(grid, row, q, in);
+            const bool above_lower = zone == 2 ? point.z >= lower : point.z > lower;
+            if (point.rho <= radius && above_lower && point.z <= upper &&
+                (!point.same || point.z > in.self_ignore))
+                scratch.regions[zone].append(point, middle);
+        }
+    }
+    for (int zone=0; zone<5; ++zone)
+        out.zones[zone].counts[q] = static_cast<Row>(scratch.regions[zone].points.size());
+    for (int sector=0; sector<8; ++sector) out.sectors[8*q+sector] = sector_counts[sector];
+    if (detailed) { stats.region_seconds += elapsed(timer); timer = Clock::now(); }
+    for (int zone=0; zone<5; ++zone)
+        select_region(scratch.regions[zone], out.zones[zone].limit, grid.xyz, scratch, stats);
+    if (detailed) { stats.fps_seconds += elapsed(timer); timer = Clock::now(); }
+    const auto *normal = in.axes + 3*q;
+    for (int zone=0; zone<5; ++zone) {
+        const double radius = zone < 2 ? .022 : in.segments[3*(zone-2)+2];
+        const double height = zone < 2 ? .008 : std::max(
+            std::abs(in.segments[3*(zone-2)]), std::abs(in.segments[3*(zone-2)+1]));
+        const auto &region = scratch.regions[zone];
+        auto &output = out.zones[zone];
+        for (std::size_t i=0; i<region.selected.size(); ++i) {
+            const auto &point = region.points[region.selected[i]];
+            const Row position = q*output.limit+static_cast<Row>(i);
+            output.indices[position] = point.row;
+            output.mask[position] = 1;
+            const bool normal_valid = in.scene_normal_valid[point.row] != 0;
+            double normal_dot = 0.;
+            if (normal_valid) {
+                const auto *observed = in.scene_normals + 3*point.row;
+                normal_dot = (static_cast<double>(observed[0])*normal[0] +
+                              static_cast<double>(observed[1])*normal[1]) +
+                              static_cast<double>(observed[2])*normal[2];
+            }
+            auto *geometry = output.geometry + 7*position;
+            geometry[0] = static_cast<float>(point.x/radius);
+            geometry[1] = static_cast<float>(point.y/radius);
+            geometry[2] = static_cast<float>(point.z/height);
+            geometry[3] = static_cast<float>(point.rho/radius);
+            geometry[4] = static_cast<float>(normal_dot);
+            geometry[5] = point.same ? 1.f : 0.f;
+            geometry[6] = normal_valid ? 1.f : 0.f;
+        }
+    }
+    if (detailed) stats.pack_seconds += elapsed(timer);
+}
+
+static bool put_row(PyObject *dict, const char *key, Row value) {
+    PyObject *item = PyLong_FromLongLong(static_cast<long long>(value));
+    if (!item) return false;
+    const int status = PyDict_SetItemString(dict, key, item);
+    Py_DECREF(item);
+    return status == 0;
+}
+
+static bool put_seconds(PyObject *dict, const char *key, double value) {
+    PyObject *item = PyFloat_FromDouble(value);
+    if (!item) return false;
+    const int status = PyDict_SetItemString(dict, key, item);
+    Py_DECREF(item);
+    return status == 0;
+}
+
+static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
+    PyObject *grid_objects, *input_dict, *output_dict;
+    int workers, detailed;
+    static const char *keywords[] = {"grids", "inputs_dict", "outputs_dict",
+                                     "workers", "detailed", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOip:contact_query",
+                                    const_cast<char **>(keywords), &grid_objects,
+                                    &input_dict, &output_dict, &workers, &detailed))
+        return nullptr;
+    if (!PyDict_Check(input_dict) || !PyDict_Check(output_dict) ||
+        !PyList_Check(grid_objects) || (workers != 1 && workers != 2)) {
+        PyErr_SetString(PyExc_ValueError,
+                        "contact_query requires grid list, input/output dicts, and one or two workers");
+        return nullptr;
+    }
+    try {
+        BufferPins pins;
+        ContactInputs in;
+        ContactOutputs out;
+        const Py_buffer *view = pins.get(input_dict, "points", BufferType::F64, {-1, 3});
+        if (!view) return nullptr;
+        in.count = view->shape[0]; in.points = static_cast<const double *>(view->buf);
+#define INPUT_BUFFER(member, key, type, cast_type, ...) \
+        view = pins.get(input_dict, key, type, {__VA_ARGS__}); \
+        if (!view) return nullptr; \
+        in.member = static_cast<const cast_type *>(view->buf)
+        INPUT_BUFFER(axes, "axes", BufferType::F64, double, in.count, 3);
+        INPUT_BUFFER(u, "tangent_u", BufferType::F64, double, in.count, 3);
+        INPUT_BUFFER(v, "tangent_v", BufferType::F64, double, in.count, 3);
+        INPUT_BUFFER(centers, "centers", BufferType::F64, double, in.count, 4, 3);
+        INPUT_BUFFER(radii, "radii", BufferType::F64, double, 4);
+        INPUT_BUFFER(segments, "segments", BufferType::F64, double, 3, 3);
+        INPUT_BUFFER(instances, "instances", BufferType::I64, Row, in.count);
+        INPUT_BUFFER(batch, "batch", BufferType::I64, Row, in.count);
+        INPUT_BUFFER(selected, "selected", BufferType::I64, Row, -1);
+        in.selected_count = view->shape[0];
+        INPUT_BUFFER(scene_instance, "scene_instance", BufferType::I64, Row, -1);
+        in.scene_count = view->shape[0];
+        INPUT_BUFFER(scene_normals, "scene_normals", BufferType::F32, float, in.scene_count, 3);
+        INPUT_BUFFER(scene_normal_valid, "scene_normal_valid", BufferType::Bool,
+                     unsigned char, in.scene_count);
+#undef INPUT_BUFFER
+        PyObject *ignore = PyDict_GetItemString(input_dict, "self_ignore");
+        if (!ignore) {
+            PyErr_SetString(PyExc_KeyError, "contact query is missing self_ignore");
+            return nullptr;
+        }
+        in.self_ignore = PyFloat_AsDouble(ignore);
+        if (PyErr_Occurred()) return nullptr;
+        if (!std::isfinite(in.self_ignore))
+            throw std::invalid_argument("self_ignore must be finite");
+        for (int k=0; k<4; ++k)
+            if (!std::isfinite(in.radii[k]) || in.radii[k] < 0.)
+                throw std::invalid_argument("contact radii must be finite and nonnegative");
+        for (int k=0; k<3; ++k) {
+            const auto *segment = in.segments+3*k;
+            if (!std::isfinite(segment[0]) || !std::isfinite(segment[1]) ||
+                !std::isfinite(segment[2]) || segment[1] < segment[0] ||
+                segment[2] <= 0. || std::max(std::abs(segment[0]), std::abs(segment[1])) <= 0.)
+                throw std::invalid_argument("invalid contact segment bounds");
+        }
+        static const char *names[] = {"core", "lip", "cup", "mount", "approach"};
+        static const Py_ssize_t limits[] = {32, 64, 32, 32, 32};
+        for (int zone=0; zone<5; ++zone) {
+            PyObject *dict = PyDict_GetItemString(output_dict, names[zone]);
+            if (!dict || !PyDict_Check(dict)) {
+                PyErr_Format(PyExc_ValueError, "contact output %s must be a dict", names[zone]);
+                return nullptr;
+            }
+            auto &output = out.zones[zone];
+            output.limit = limits[zone];
+            view = pins.get(dict, "indices", BufferType::I64, {in.count, output.limit}, true);
+            if (!view) return nullptr;
+            output.indices = static_cast<Row *>(view->buf);
+            view = pins.get(dict, "mask", BufferType::Bool, {in.count, output.limit}, true);
+            if (!view) return nullptr;
+            output.mask = static_cast<unsigned char *>(view->buf);
+            view = pins.get(dict, "geometry", BufferType::F32, {in.count, output.limit, 7}, true);
+            if (!view) return nullptr;
+            output.geometry = static_cast<float *>(view->buf);
+            view = pins.get(dict, "counts", BufferType::I64, {in.count}, true);
+            if (!view) return nullptr;
+            output.counts = static_cast<Row *>(view->buf);
+        }
+        view = pins.get(output_dict, "lip_sector_counts", BufferType::I64, {in.count, 8}, true);
+        if (!view) return nullptr;
+        out.sectors = static_cast<Row *>(view->buf);
+        const auto frames = PyList_GET_SIZE(grid_objects);
+        std::vector<Grid *> grids;
+        grids.reserve(static_cast<std::size_t>(frames));
+        pins.capsules.reserve(static_cast<std::size_t>(frames));
+        for (Py_ssize_t frame=0; frame<frames; ++frame) {
+            PyObject *capsule = PyList_GET_ITEM(grid_objects, frame);
+            auto *grid = static_cast<Grid *>(PyCapsule_GetPointer(capsule, CAPSULE_NAME));
+            if (!grid) return nullptr;
+            if (grid->xyz_view.shape[0] != in.scene_count)
+                throw std::invalid_argument("grid XYZ and scene point fields have different lengths");
+            grids.push_back(grid);
+            Py_INCREF(capsule);
+            pins.capsules.push_back(capsule);
+        }
+        Row previous = -1;
+        for (Py_ssize_t i=0; i<in.selected_count; ++i) {
+            const auto q = in.selected[i];
+            if (q <= previous || q >= in.count || in.batch[q] < 0 || in.batch[q] >= frames)
+                throw std::invalid_argument("selected must contain ascending unique valid query rows and frames");
+            previous = q;
+            for (int axis=0; axis<3; ++axis) {
+                if (!std::isfinite(in.points[3*q+axis]) || !std::isfinite(in.axes[3*q+axis]) ||
+                    !std::isfinite(in.u[3*q+axis]) || !std::isfinite(in.v[3*q+axis]))
+                    throw std::invalid_argument("selected contact geometry must be finite");
+            }
+            for (int k=0; k<12; ++k)
+                if (!std::isfinite(in.centers[12*q+k]))
+                    throw std::invalid_argument("selected contact centers must be finite");
+        }
+        const int active_workers = static_cast<int>(
+            std::min<Py_ssize_t>(workers, in.selected_count));
+        std::vector<ContactStats> stats(static_cast<std::size_t>(active_workers));
+        std::vector<std::exception_ptr> errors(static_cast<std::size_t>(active_workers));
+        std::vector<std::thread> threads;
+        threads.reserve(static_cast<std::size_t>(active_workers));
+        std::exception_ptr launch_error;
+        const auto started = Clock::now();
+        Py_BEGIN_ALLOW_THREADS
+        auto run_worker = [&](int worker) {
+            try {
+                ContactScratch scratch;
+                const auto worker_started = detailed ? Clock::now() : Clock::time_point{};
+                for (Py_ssize_t i=worker; i<in.selected_count; i+=active_workers) {
+                    const auto q = in.selected[i];
+                    process_contact(q, *grids[in.batch[q]], in, out, scratch, stats[worker], detailed);
+                }
+                if (detailed) stats[worker].total_seconds = elapsed(worker_started);
+            } catch (...) { errors[worker] = std::current_exception(); }
+        };
+        try {
+            if (active_workers == 1) run_worker(0);
+            else for (int worker=0; worker<active_workers; ++worker)
+                threads.emplace_back(run_worker, worker);
+        } catch (...) { launch_error = std::current_exception(); }
+        for (auto &thread : threads) thread.join();
+        Py_END_ALLOW_THREADS
+        const double wall = elapsed(started);
+        if (launch_error) { translate_exception(launch_error); return nullptr; }
+        for (const auto &error : errors)
+            if (error) { translate_exception(error); return nullptr; }
+        ContactStats total;
+        for (const auto &value : stats) {
+            total.ball_returned_points += value.ball_returned_points;
+            total.fps_calls += value.fps_calls;
+            total.fps_input_points += value.fps_input_points;
+            total.ball_seconds += value.ball_seconds;
+            total.region_seconds += value.region_seconds;
+            total.fps_seconds += value.fps_seconds;
+            total.pack_seconds += value.pack_seconds;
+            total.total_seconds += value.total_seconds;
+        }
+        PyObject *result = PyDict_New();
+        if (!result) return nullptr;
+        bool okay = put_seconds(result, "native_query_wall_s", wall) &&
+            put_row(result, "native_workers", active_workers) &&
+            put_row(result, "valid_candidates", in.selected_count) &&
+            put_row(result, "ball_calls", 4*in.selected_count) &&
+            put_row(result, "ball_api_calls", 0) &&
+            put_row(result, "native_contact_calls", 1) &&
+            put_row(result, "ball_returned_points", total.ball_returned_points) &&
+            put_row(result, "fps_calls", total.fps_calls) &&
+            put_row(result, "fps_input_points", total.fps_input_points);
+        if (okay && detailed)
+            okay = put_seconds(result, "native_ball_query_worker_s", total.ball_seconds) &&
+                put_seconds(result, "native_region_filter_worker_s", total.region_seconds) &&
+                put_seconds(result, "native_fps_worker_s", total.fps_seconds) &&
+                put_seconds(result, "native_descriptor_pack_worker_s", total.pack_seconds) &&
+                put_seconds(result, "native_total_worker_s", total.total_seconds);
+        if (!okay) { Py_DECREF(result); return nullptr; }
+        return result;
+    } catch (...) {
+        translate_exception(std::current_exception());
+        return nullptr;
+    }
+}
+
 static PyMethodDef methods[] = {
     {"create", create, METH_VARARGS, "Build grid(xyz64, start, stop, cell_size_m)."},
     {"ball", ball, METH_VARARGS, "Owned native int64 bytes for ball(grid, x, y, z, radius)."},
+    {"contact_query", reinterpret_cast<PyCFunction>(contact_query), METH_VARARGS | METH_KEYWORDS,
+     "Fill exact full-point contact outputs using one or two native candidate workers."},
     {nullptr, nullptr, 0, nullptr}
 };
 static PyModuleDef module = {PyModuleDef_HEAD_INIT, "_spatial_index_cpu", nullptr, -1, methods};
@@ -183,8 +667,10 @@ PyMODINIT_FUNC PyInit__spatial_index_cpu() {
     PyObject *m = PyModule_Create(&module);
     if (!m) return nullptr;
     if (PyModule_AddIntConstant(m, "GRID_ABI_VERSION", 1) < 0 ||
+        PyModule_AddIntConstant(m, "CONTACT_ABI_VERSION", 1) < 0 ||
         PyModule_AddStringConstant(m, "SOURCE_SHA256", GRID_SOURCE_SHA256) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", GRID_COMPILE_FLAGS) < 0 ||
+        PyModule_AddStringConstant(m, "LINK_FLAGS", GRID_LINK_FLAGS) < 0 ||
         PyModule_AddStringConstant(m, "COMPILER", __VERSION__) < 0) {
         Py_DECREF(m); return nullptr;
     }

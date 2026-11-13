@@ -205,6 +205,129 @@ def test_v2_schema_is_explicit_and_v1_identity_stays_unchanged(tmp_path, monkeyp
     assert new['backend_builds']['spatial_index'] == {'backend': 'uniform_grid_cpu', 'binary_sha256': 'grid-build'}
 
 
+def test_v3_sidecar_binds_native_contact_abi_without_changing_v2(monkeypatch):
+    from types import SimpleNamespace
+    from models import geometry_ops, spatial_index
+    base = Path(__file__).parents[1] / 'configs/performance'
+    p2 = load_performance_config(base / 'cd009-p2.json')
+    p3 = load_performance_config(base / 'cd009-p3.json')
+    assert runtime.file_digest(base / 'cd009-p2.json') == performance.P2_SOURCE_CONFIG_SHA256
+    assert p3 == dict(p2, schema_version=performance.SCHEMA_VERSION_V3,
+                      contact_query_backend='native_cpu')
+    reference = dict(p3, contact_query_backend='numpy')
+    assert performance.validate_performance_config(reference) == reference
+    monkeypatch.setattr(geometry_ops, 'fps_backend_identity', lambda name: {'backend': name})
+    monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity',
+                        lambda name: {'backend': name, 'binary_sha256': 'grid-build'})
+    monkeypatch.setattr(spatial_index, '_compiled_grid', lambda: SimpleNamespace(CONTACT_ABI_VERSION=1))
+    old = performance.performance_identity(attach_performance({}, base / 'cd009-p2.json'))
+    new = performance.performance_identity(attach_performance({}, base / 'cd009-p3.json'))
+    assert new['schema_version'] == performance.SCHEMA_VERSION_V3
+    assert new['backend_builds']['fps'] == old['backend_builds']['fps']
+    assert new['backend_builds']['spatial_index'] == dict(
+        old['backend_builds']['spatial_index'], contact_abi_version=1)
+
+
+@pytest.mark.parametrize('p2_start', ['fresh', 'migrated'])
+def test_p2_to_p3_preserves_normal_continuation_and_archive(tmp_path, harness, monkeypatch, p2_start):
+    from types import SimpleNamespace
+    from models import geometry_ops, spatial_index
+    from suction20 import prefetch
+    cfg, _, _ = harness
+    install_toy(monkeypatch)
+    # Exercise real config/identity/checkpoint code with a CPU toy network. Native
+    # kernel equivalence is covered separately; this test needs no compiled grid.
+    monkeypatch.setattr(geometry_ops, 'fps_backend_identity', lambda name: {'backend': name})
+    monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity',
+                        lambda name: {'backend': name, 'binary_sha256': 'grid-build'})
+    monkeypatch.setattr(spatial_index, '_compiled_grid', lambda: SimpleNamespace(CONTACT_ABI_VERSION=1))
+    make_loader = prefetch.make_ticket_loader
+    def serial_loader(*args, loader_config, **kwargs):
+        return make_loader(*args, loader_config=dict(loader_config, num_workers=0, pin_memory=False), **kwargs)
+    monkeypatch.setattr(prefetch, 'make_ticket_loader', serial_loader)
+    cfg['data']['smoke_frame_keys'] = [list(key) for key in ToySource.keys]
+    cfg['training'].update(max_optimizer_steps=5, validate_every_optimizer_steps=5)
+    label = tmp_path / 'labels'
+    runtime.atomic_json(label / 'config_frozen.json', ToySource.data_cfg)
+    runtime.atomic_json(label / 'manifest.json', {'passed': True})
+    cfg['data']['label_root'] = str(label)
+    run, control = tmp_path / 'run', tmp_path / 'run/control'
+    base = Path(__file__).parents[1] / 'configs/performance'
+    p1_path, p2_path, p3_path = [base / f'cd009-p{version}.json' for version in (1, 2, 3)]
+    p2_config = attach_performance(cfg, p2_path)
+
+    def select_code(revision, worktree):
+        for module in (entry, training):
+            monkeypatch.setattr(module, 'code_revision', lambda: revision)
+            monkeypatch.setattr(module, 'worktree_digest', lambda: worktree)
+
+    def paused_source():
+        status = runtime.read_json(control / 'status.json')
+        gone = dict(pid=99999999, start_ticks=1, boot_id='retired-test-process')
+        runtime.atomic_json(control / 'worker.json', dict(token=status['attempt_id'], exit_code=75,
+            worker_identity=gone, trainer_identity=gone))
+        return runtime.read_json(run / 'checkpoint-manifest.json')['current']
+
+    select_code(performance.P2_SOURCE_REVISION, performance.P2_SOURCE_WORKTREE_SHA256)
+    continuous = tmp_path / 'continuous'
+    entry.train(p2_config, continuous, torch.device('cpu'))
+    references = []
+    if p2_start == 'migrated':
+        select_code(SOURCE_REVISION, SOURCE_WORKTREE_SHA256)
+        entry.train(copy.deepcopy(cfg), run, torch.device('cpu'), pause_at_step=1)
+        source = paused_source()
+        select_code(performance.P1_SOURCE_REVISION, performance.P1_SOURCE_WORKTREE_SHA256)
+        references.append(converter.migrate(cfg, run, p1_path, control, source['sha256'])['receipt'])
+        entry.train(attach_performance(cfg, p1_path), run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=2)
+        source = paused_source()
+        select_code(performance.P2_SOURCE_REVISION, performance.P2_SOURCE_WORKTREE_SHA256)
+        references.append(converter.migrate(cfg, run, p2_path, control, source['sha256'])['receipt'])
+        entry.train(p2_config, run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=3)
+    else:
+        entry.train(p2_config, run, torch.device('cpu'), pause_at_step=3)
+
+    source = paused_source()
+    before = state(run)
+    manifest_before = runtime.read_json(run / 'checkpoint-manifest.json')
+    assert performance.approved_migration_source(before['runtime_state']['identity']) == 'p2'
+    assert bool(before['runtime_state'].get('performance_migration')) == (p2_start == 'migrated')
+    select_code('test-p3-build', 'test-p3-worktree')
+    result = converter.migrate(cfg, run, p3_path, control, source['sha256'])
+    references.append(result['receipt'])
+    migrated = state(run)
+    same_training(migrated, before)
+    for key in ('ledger', 'validations', 'budget', 'effective_samples_completed'):
+        assert migrated['runtime_state'][key] == before['runtime_state'][key]
+    manifest_after = runtime.read_json(run / 'checkpoint-manifest.json')
+    assert manifest_after['best'] == manifest_before['best']
+    assert manifest_after['nodes'] == manifest_before['nodes']
+    receipt = runtime.verify_performance_migration(run, result['receipt'], migrated['runtime_state']['identity'])
+    assert receipt['source_identity'] == before['runtime_state']['identity']
+
+    entry.train(attach_performance(cfg, p3_path), run, torch.device('cpu'), resume=run / 'last.pt')
+    final = state(run)
+    same_training(final, state(continuous))
+    assert [r['frame_details'] for r in canonical_rows(run)] == [r['frame_details'] for r in canonical_rows(continuous)]
+    assert final['runtime_state']['performance_migration'] == result['receipt']
+    runtime.verify_performance_migration(run, result['receipt'], final['runtime_state']['identity'])
+
+    # Ordinary backup follows both an existing original/P1 chain and a fresh P2
+    # starting point after normal saves have replaced checkpoint predecessors.
+    backup = tmp_path / 'backup'
+    backup.mkdir()
+    monkeypatch.setattr(supervisor, 'assignment_paths', lambda *args: (run, control))
+    usage = supervisor.shutil.disk_usage
+    monkeypatch.setattr(supervisor.shutil, 'disk_usage', lambda path: usage(path)._replace(free=300 * supervisor.GIB))
+    destination = Path(supervisor.backup_snapshot({'root': str(tmp_path), 'backup_root': str(backup)},
+        {'experiment': cfg['experiment'], 'token': 'backup-test', 'host': 'L20'},
+        {'request_id': 'p3-final', 'final': True}))
+    for reference in references:
+        archived = runtime.read_json(destination / reference['path'])
+        assert runtime.file_digest(destination / reference['path']) == reference['sha256']
+        for name, info in archived['files'].items():
+            assert runtime.file_digest(destination / Path(reference['path']).parent / name) == info['sha256']
+
+
 def test_p1_to_p2_resume_retains_recursive_archive_after_predecessor_replacement(tmp_path, harness, monkeypatch):
     cfg, _, _ = harness
     install_toy(monkeypatch)
