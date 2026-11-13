@@ -10,6 +10,7 @@
 | --- | --- |
 | GPU | NVIDIA H20-3e；NVML 143,771 MiB，Torch 可见 139.80 GiB |
 | 驱动 / Torch / CUDA | 580.159.03 / 2.5.1 / 12.4 |
+| 主机 CPU / 内存 | 2 × Intel Xeon Platinum 8558P，96 物理核 / 192 逻辑核；系统可见内存约 2015.5 GiB，2 NUMA 节点 |
 | CPU 分配 | 8 个逻辑核；Torch CPU threads=8；OMP/MKL/OpenBLAS threads=1 |
 | 数据加载 | 2 workers，spawn、pin memory、persistent workers、prefetch=2 |
 | 模型 | E5；2 mm voxel，每帧 512 候选，AMP，BN train |
