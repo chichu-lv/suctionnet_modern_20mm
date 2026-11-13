@@ -17,13 +17,21 @@ def mlp(widths, *, output=False):
     return nn.Sequential(*layers)
 
 
-def chunk_apply(fn, *tensors, chunk_size=16384, checkpointed=False):
+def chunk_apply(fn, *tensors, chunk_size=16384, checkpointed=False, input_mode='slice'):
     """Bound transient dense activations without dropping observation points."""
     if len(tensors[0]) == 0:
         return fn(*tensors)
+    if input_mode == 'split':
+        # A shared multi-output view joins gradients once per input, instead of
+        # constructing a full input-sized gradient for each independent slice.
+        chunks = zip(*(torch.split(t, chunk_size, dim=0) for t in tensors))
+    elif input_mode == 'slice':
+        chunks = (tuple(t[start:start + chunk_size] for t in tensors)
+                  for start in range(0, len(tensors[0]), chunk_size))
+    else:
+        raise ValueError(f'Unknown chunk input_mode: {input_mode}')
     result = []
-    for start in range(0, len(tensors[0]), chunk_size):
-        args = tuple(t[start:start + chunk_size] for t in tensors)
+    for args in chunks:
         if checkpointed and torch.is_grad_enabled():
             result.append(checkpoint(fn, *args, use_reentrant=False))
         else:

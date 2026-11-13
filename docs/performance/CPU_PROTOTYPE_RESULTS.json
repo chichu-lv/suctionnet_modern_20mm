@@ -1,0 +1,321 @@
+{
+  "schema_version": "suction20.performance_evidence.v1",
+  "review_date": "2026-11-12",
+  "status": "CPU prototypes only; production optimization not implemented",
+  "repository": "chichu-lv/suctionnet_modern_20mm",
+  "reviewed_branch": "cd009/full-pretraining",
+  "reviewed_commit": "9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97",
+  "prototype_source_commit": "57bf0f73634d047afbaf0c5f4adaf01ff1b9bb92",
+  "source_files_identical_across_snapshots": {
+    "models/candidate_sampler.py": "13ab2432a687ebd462a1a183c22042d9445ba5c75ba31dbe5b7ecb108e97e35d",
+    "models/contact_grouping.py": "53b89e3298d8514815e110db2a6332fb581b2f64e9b260e0820d73f818114ed6",
+    "suction20/batching.py": "f90e3233aa11f86f7bd254fcce07f01beac023dcece9475d1dfe1290b36790fd"
+  },
+  "provenance": {
+    "grouping_results_sha256": "a218a5b638b01876df4fb3f80ad8c3594beed53efa88cc649f8edc1abd6782db",
+    "grouping_benchmark_script_sha256": "ecda2df36be731495d4109732b360464fc2045e4522578b064359be952d9b2e9",
+    "fps_prototype_c_sha256": "21485dbe50f89abe866c7790be37db925976403e2364250c09e5fad89e8dbf83",
+    "voxel_results_sha256": "9203f6109461b0fc3944e63efbabd948e0ef17681562479c6c5e8fe8a24c4d84",
+    "voxel_benchmark_script_sha256": "83d230649e26294b21ff70baa44e89d81dd03c450195b0b1542987648b2bb460",
+    "note": "Archived scalar measurements from temporary synthetic CPU prototypes. Scripts and platform binaries are not part of the production code. Real-data and CUDA integration validation is pending."
+  },
+  "grouping": {
+    "scope": {
+      "cpu_cores_visible": 9,
+      "torch_threads": 1,
+      "blas_threads_in_benchmark": 1,
+      "tree_workers": [
+        1,
+        4
+      ],
+      "gpu_used": false,
+      "product_files_changed": false
+    },
+    "points": 840000,
+    "candidates": 512,
+    "frames": 1,
+    "fixture": "synthetic height-field; not real training frames",
+    "prototype": {
+      "algorithm": "compiled float64 exact greedy FPS; ascending packed-index tie order; no fast-math/FMA; sorted-input fast path",
+      "status": "temporary C prototype, not production implementation",
+      "compiler_flags": "-O3 -ffp-contract=off -fPIC -shared",
+      "frames": 1,
+      "synthetic": true,
+      "notes": "Approach zone empty and mount mostly empty in this height-field; not a representative H20 scene timing."
+    },
+    "index_seconds": 0.24394365100010873,
+    "runs": [
+      {
+        "variant": "repository_numpy_fps",
+        "ball_seconds": 0.6854915799970058,
+        "fps_seconds": 2.987839800001211,
+        "total_query_seconds": 4.16616090499997,
+        "other_seconds": 0.4928295250017527,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps",
+        "ball_seconds": 0.6584130409901263,
+        "fps_seconds": 0.2604931320001924,
+        "total_query_seconds": 1.3764509550001094,
+        "other_seconds": 0.45754478200979065,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps_batched_tree1",
+        "ball_seconds": 0.7383510399999977,
+        "fps_seconds": 0.26150658400501925,
+        "total_query_seconds": 1.4470489129998896,
+        "other_seconds": 0.4471912889948726,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps_batched_tree4",
+        "ball_seconds": 0.48991986600003656,
+        "fps_seconds": 0.291297050004232,
+        "total_query_seconds": 1.227584294000053,
+        "other_seconds": 0.4463673779957844,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps_batched_tree4_shared_corelip",
+        "ball_seconds": 0.4638556109998717,
+        "fps_seconds": 0.2834206120019189,
+        "total_query_seconds": 1.147127490999992,
+        "other_seconds": 0.39985126799820137,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "repository_numpy_fps_repeat",
+        "ball_seconds": 0.7549804819939254,
+        "fps_seconds": 3.1823589920002178,
+        "total_query_seconds": 4.482405283000162,
+        "other_seconds": 0.5450658090060188,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps_batched_tree4_shared_corelip_repeat",
+        "ball_seconds": 0.9245448659999056,
+        "fps_seconds": 0.26879450200090105,
+        "total_query_seconds": 1.5778913540000303,
+        "other_seconds": 0.3845519859992237,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859,
+        "identical_to_repository": true
+      },
+      {
+        "variant": "compiled_fps_repeat1",
+        "ball_seconds": 0.6690190260048894,
+        "fps_seconds": 0.259181346000787,
+        "total_query_seconds": 1.3765161809999427,
+        "other_seconds": 0.44831580899426626,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859
+      },
+      {
+        "variant": "compiled_fps_repeat2",
+        "ball_seconds": 0.6935471140059235,
+        "fps_seconds": 0.2628461390004304,
+        "total_query_seconds": 1.426196402999949,
+        "other_seconds": 0.46980314999359507,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859
+      }
+    ],
+    "medians": {
+      "repository_numpy_fps": {
+        "n": 2,
+        "query_seconds": 4.324283094000066,
+        "fps_seconds": 3.0850993960007145,
+        "query_range_seconds": [
+          4.16616090499997,
+          4.482405283000162
+        ]
+      },
+      "compiled_fps": {
+        "n": 3,
+        "query_seconds": 1.3765161809999427,
+        "fps_seconds": 0.2604931320001924,
+        "query_range_seconds": [
+          1.3764509550001094,
+          1.426196402999949
+        ]
+      },
+      "compiled_fps_batched_tree4_shared_corelip": {
+        "n": 2,
+        "query_seconds": 1.3625094225000112,
+        "fps_seconds": 0.27610755700141,
+        "query_range_seconds": [
+          1.147127490999992,
+          1.5778913540000303
+        ]
+      }
+    },
+    "zone_counts": {
+      "core": {
+        "mean": 3238.943359375,
+        "maximum": 4045
+      },
+      "lip": {
+        "mean": 1452.96875,
+        "maximum": 2015
+      },
+      "cup": {
+        "mean": 461.697265625,
+        "maximum": 3634
+      },
+      "mount": {
+        "mean": 0.669921875,
+        "maximum": 256
+      },
+      "approach": {
+        "mean": 0.0,
+        "maximum": 0
+      }
+    },
+    "random_roll_equivalence": {
+      "seed": 42,
+      "candidate_count": 512,
+      "fields": "all indices/masks/geometry/counts/lip sectors",
+      "bitwise_equal": true,
+      "baseline": {
+        "ball_seconds": 0.7263085869908537,
+        "fps_seconds": 3.062139259000105,
+        "total_query_seconds": 4.320637139000155,
+        "other_seconds": 0.5321892930091963,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859
+      },
+      "prototype": {
+        "ball_seconds": 0.5692885059997934,
+        "fps_seconds": 0.31963315599841735,
+        "total_query_seconds": 1.322254402999988,
+        "other_seconds": 0.4333327410017773,
+        "ball_calls": 2048,
+        "ball_rows": 5965626,
+        "fps_calls": 1322,
+        "fps_rows": 2638859
+      }
+    },
+    "limitations": [
+      "Mount mostly empty and approach entirely empty in this fixture.",
+      "Compiled kernel used ctypes; production CPython binding has not been implemented or timed.",
+      "Batched-query prototype prepared a full frame; proposed 64-candidate chunks are not yet timed.",
+      "No real H20/L20, CUDA/AMP forward/backward, or end-to-end training validation."
+    ]
+  },
+  "voxel": {
+    "kind": "synthetic_cpu_microbenchmark_not_real_training",
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "cpu_count_reported": 9,
+    "thread_environment": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1"
+    },
+    "points": 840000,
+    "voxels": 147847,
+    "grid_shape": [
+      486,
+      343,
+      75
+    ],
+    "exactly_equal": [
+      "origin",
+      "unique_xyz_order",
+      "inverse_map",
+      "bzyx_coords",
+      "float32_8channel_aggregation"
+    ],
+    "unique_axis": {
+      "median_s": 0.690235629999961,
+      "runs_s": [
+        0.7016002240000034,
+        0.690235629999961,
+        0.6810019170000032,
+        0.6865631099999518,
+        0.7170004760000666
+      ]
+    },
+    "unique_linear": {
+      "median_s": 0.09535043199980464,
+      "runs_s": [
+        0.09680476899984569,
+        0.09498286899997765,
+        0.09535043199980464,
+        0.09460909599988554,
+        0.09685633599997345
+      ]
+    },
+    "feature_aggregation": {
+      "median_s": 0.02376405999984854,
+      "runs_s": [
+        0.024071513000080813,
+        0.02376405999984854,
+        0.02309036700012257,
+        0.023870901000009326,
+        0.023268363999932262
+      ]
+    },
+    "depth_geometry": {
+      "median_s": 0.12045849199989789,
+      "runs_s": [
+        0.13383589199997914,
+        0.12045849199989789,
+        0.11737995199996476,
+        0.11834863900003256,
+        0.12500578200001655
+      ]
+    },
+    "unique_speed_ratio": 7.238935529955178
+  },
+  "user_reported_training": {
+    "independently_measured_by_this_review": false,
+    "E5": {
+      "recent_updates": 50,
+      "update_seconds": 33.6,
+      "grouping_seconds": 22.0,
+      "data_preparation_seconds": 7.0,
+      "other_forward_and_index_seconds": 1.9,
+      "backward_optimizer_other_seconds": 2.7
+    },
+    "E0": {
+      "update_seconds": 11.1,
+      "data_preparation_seconds": 6.9
+    },
+    "timing_scope": "Host-stage intervals include incidental synchronization; not isolated GPU kernel timings."
+  }
+}

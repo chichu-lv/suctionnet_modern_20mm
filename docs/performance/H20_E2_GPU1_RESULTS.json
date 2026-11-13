@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "experiment": "E2",
+  "host_class": "H20",
+  "gpu_model": "NVIDIA H20-3e",
+  "torch_total_gpu_bytes": 150109880320,
+  "cpu_threads": 8,
+  "loader_workers": 2,
+  "dense_chunk_size": 65536,
+  "gpu_memory_limit_gib": 112,
+  "effective_batch": 4,
+  "selected": "b1a4",
+  "selection_basis": "Same 16 frames/seeds; B2A2 throughput +1.39% with one of three measured blocks slower and higher memory. Retain B1A4; bounded profiling excludes optimizer updates, checkpoint and validation. Formal prefix validates actual training.",
+  "trials": [
+    {
+      "name": "b1a4",
+      "status": "completed",
+      "optimizer_updates": 0,
+      "unchanged_parameters": true,
+      "summary": {
+        "measured_blocks": 3,
+        "measured_frames": 12,
+        "measured_seconds": 8.86989943869412,
+        "frames_per_second": 1.3528901971144234,
+        "median_block_seconds": 2.952362574636936,
+        "all_gradients_finite": true
+      },
+      "measured_block_seconds": [
+        3.00264580687508,
+        2.9148910571821034,
+        2.952362574636936
+      ],
+      "peak_allocated_bytes": 12334956032,
+      "peak_reserved_bytes": 18134073344,
+      "min_estimated_headroom_after_adam_bytes": 102001412576,
+      "limitations": [
+        "Fresh seed42 model; no optimizer update or formal run state. BN and local RNG advance then are discarded.",
+        "Adam moments/update, checkpoint and validation are excluded; reported moment estimate is not a complete safety margin.",
+        "Equal effective4 partitions may differ in BN statistics, loss weighting and RNG interleaving; no numerical equivalence claim.",
+        "Host stage times include incidental sync; block boundaries synchronize. Producer work overlaps training; do not add it to wall.",
+        "Only16 tickets are issued/prepared; one warmup and three measured blocks. Existing bounded metadata caches/OS cache remain.",
+        "Resource observations are sparse1s snapshots; maxima can miss peaks. NVML process mapping unavailable, device values reported.",
+        "CPU workers share selected affinity, each uses one Torch/BLAS thread. Four workers are research-only outside formal schema.",
+        "SIGALRM cannot interrupt stuck native calls; caller must enforce external process-group timeout <=1200s."
+      ],
+      "sparse_resource_observations": {
+        "samples": 10,
+        "gpu_utilization_percent_range": [
+          0.0,
+          100.0
+        ],
+        "device_memory_used_mib_peak": 17825.0,
+        "trainer_cpu_core_equivalents_peak": 1.650412350615295,
+        "loader_cpu_core_equivalents_peak": 2.5754898831653805,
+        "trainer_rss_bytes_peak": 2898931712,
+        "note": "Sparse observations, not time averages; NVML process PID mapping unavailable; device memory is device-level."
+      }
+    },
+    {
+      "name": "b2a2",
+      "status": "completed",
+      "optimizer_updates": 0,
+      "unchanged_parameters": true,
+      "summary": {
+        "measured_blocks": 3,
+        "measured_frames": 12,
+        "measured_seconds": 8.748350174166262,
+        "frames_per_second": 1.3716872051413542,
+        "median_block_seconds": 2.8642750191502273,
+        "all_gradients_finite": true
+      },
+      "measured_block_seconds": [
+        3.021971433889121,
+        2.8642750191502273,
+        2.862103721126914
+      ],
+      "peak_allocated_bytes": 23976380416,
+      "peak_reserved_bytes": 36647731200,
+      "min_estimated_headroom_after_adam_bytes": 83487754720,
+      "limitations": [
+        "Fresh seed42 model; no optimizer update or formal run state. BN and local RNG advance then are discarded.",
+        "Adam moments/update, checkpoint and validation are excluded; reported moment estimate is not a complete safety margin.",
+        "Equal effective4 partitions may differ in BN statistics, loss weighting and RNG interleaving; no numerical equivalence claim.",
+        "Host stage times include incidental sync; block boundaries synchronize. Producer work overlaps training; do not add it to wall.",
+        "Only16 tickets are issued/prepared; one warmup and three measured blocks. Existing bounded metadata caches/OS cache remain.",
+        "Resource observations are sparse1s snapshots; maxima can miss peaks. NVML process mapping unavailable, device values reported.",
+        "CPU workers share selected affinity, each uses one Torch/BLAS thread. Four workers are research-only outside formal schema.",
+        "SIGALRM cannot interrupt stuck native calls; caller must enforce external process-group timeout <=1200s."
+      ],
+      "sparse_resource_observations": {
+        "samples": 12,
+        "gpu_utilization_percent_range": [
+          0.0,
+          100.0
+        ],
+        "device_memory_used_mib_peak": 35483.0,
+        "trainer_cpu_core_equivalents_peak": 1.5847767884991983,
+        "loader_cpu_core_equivalents_peak": 2.6697559070756847,
+        "trainer_rss_bytes_peak": 3320152064,
+        "note": "Sparse observations, not time averages; NVML process PID mapping unavailable; device memory is device-level."
+      }
+    }
+  ],
+  "formal_prefix": {
+    "paused_step": 100,
+    "effective_samples": 400,
+    "pre_resume_check": true,
+    "identity_and_sampler_passed": true,
+    "timing": {
+      "effective_samples": 400,
+      "median_update_seconds": 3.0906439821701497,
+      "physical_frames": 400,
+      "prefix_compute_seconds": 319.5976874739863
+    },
+    "counters": {
+      "attempts": 100,
+      "frames": 400,
+      "global_step": 100,
+      "skipped": 0
+    },
+    "checkpoint_size_bytes": 185764782,
+    "full_development_validation_performed": false,
+    "resume_verified": true,
+    "worker_exit_code": 75,
+    "locks_free": true,
+    "checkpoint_verified": true,
+    "final_backup_verified": true,
+    "resumed_step_at_audit": 113,
+    "resumed_first_update_durability": "live, not checkpoint committed"
+  }
+}

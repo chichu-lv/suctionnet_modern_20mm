@@ -1,0 +1,145 @@
+{
+  "root": "/srv/cd009-pretraining-v3",
+  "python": "/srv/cd009-pretraining-v3/venv/bin/python",
+  "source_root": "/data/suctionnet/input_raw",
+  "label_root": "/data/suctionnet/output",
+  "backup_root": "/backup/cd009-pretraining-v3",
+  "backbone_root": "/srv/cd009-pretraining-v3/repo/external/graspness_modern",
+  "manifest_sha256": "37c4336b839b9621fa8317ec6f701846b9e8c073a494c8fa7a66b13cb62ae6a8",
+  "hosts": {
+    "H20": {
+      "machine_id": "REPLACE_FROM_HOST_ETC_MACHINE_ID",
+      "ssh": "H20",
+      "ssh_options": [],
+      "gpus": {
+        "0": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "1": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        }
+      },
+      "hostname": "REPLACE_FROM_HOSTNAME"
+    },
+    "L20": {
+      "machine_id": "REPLACE_FROM_HOST_ETC_MACHINE_ID",
+      "ssh": "L20",
+      "ssh_options": [],
+      "gpus": {
+        "0": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        "1": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "2": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ]
+        },
+        "3": {
+          "uuid": "GPU-REPLACE_FROM_NVIDIA_SMI",
+          "cpus": [
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        }
+      },
+      "hostname": "REPLACE_FROM_HOSTNAME"
+    }
+  },
+  "contract_version": "suction20.pretrain.samples.v3",
+  "lock_root": "/srv/cd009-shared-locks",
+  "profiles": {
+    "H20": {
+      "E5": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/H20-E5.json",
+        "config_sha256": "55e98e4d1adc6038590414ee92d15e8ad36152cd4ca0012128f25e7a19fab7c9"
+      }
+    },
+    "L20": {
+      "E0": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E0.json",
+        "config_sha256": "22299a521be8ee000ef90e240307926f2424c32de53a1428fab125b866e0134e"
+      },
+      "E1": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E1.json",
+        "config_sha256": "5dc5ed7648d63f4362afd49537d8c6a552548405348a47c212bc18b80bcc80c9"
+      },
+      "E2": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E2.json",
+        "config_sha256": "d67bf34afb0801ed057194527fcd173bd708b58cb141fa6a41767f5e06a31329"
+      },
+      "E3": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E3.json",
+        "config_sha256": "ca7540840777c8e2223fae61098b5414082b65a98e9ebffb5fa4e6e16e5aa85a"
+      },
+      "E4": {
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E4.json",
+        "config_sha256": "207b5c854c1b4cea477a646270d0888645d8d1cd0772bdf8bdb4b3cb1ea5cc8c"
+      }
+    }
+  },
+  "_usage": [
+    "Public deployment template; replace paths, host identities, GPU UUIDs and SSH aliases locally. Never commit private transport settings.",
+    "Only the six measured host/experiment profiles are listed. JSON configs are parsed with the JSON parser, preserving scientific numeric values such as optimizer.eps=1e-08.",
+    "Profile SHA256 hashes bind exact file bytes. Retain the packaged configs and supply data/backbone paths through supervisor overrides.",
+    "Use the frozen deployed revision recorded by configs/runtime_profiles/cd009-v3/manifest.json for an existing run. Publishing newer docs does not upgrade a running checkout.",
+    "Verify environment, persistence, data, assigned-device ownership and copied JSON AdamW construction before recording host evidence. Follow docs/MODEL_USAGE.md for staged prefix/resume acceptance.",
+    "All versions must share the same GPU lock_root. Reconcile old owners before starting a replacement coordinator."
+  ]
+}

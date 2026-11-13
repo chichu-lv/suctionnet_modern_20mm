@@ -1,0 +1,23 @@
+{
+  "schema_version": "suction20.performance.v3",
+  "fps_backend": "compiled",
+  "spatial_index": {
+    "backend": "uniform_grid_cpu",
+    "cell_size_m": 0.02
+  },
+  "contact_query_backend": "native_cpu",
+  "no_instance_voxel_heads": false,
+  "backbone_coordinate_fastpath": true,
+  "dense_chunk_size_override": 65536,
+  "chunk_input_mode": "split",
+  "query_chunk_size": null,
+  "query_workers": 1,
+  "loader": {
+    "num_workers": 2,
+    "prefetch_factor": 2,
+    "persistent_workers": true,
+    "pin_memory": true,
+    "multiprocessing_context": "spawn"
+  },
+  "detailed_cpu_timing": false
+}

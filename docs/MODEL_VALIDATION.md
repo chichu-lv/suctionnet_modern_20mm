@@ -1,4 +1,48 @@
-# CD-008 模型实现验证（2026-11-11）
+# 模型验证与当前训练状态
+
+## P3 整合：真实配对与正常续训（2026-11-13）
+
+根据 [最新 P3 结果](performance/P3_INTEGRATED_RESULTS.md)，本轮实际源 checkpoint 已确认为 P2 `e73d62e`。**H20/E5 的 64k 与 L20/E3 的 16k 组合已通过真实四帧配对；H20/E5、L20/E0、E1、E3 均已迁移续训并取得首 25 次正常更新窗口。** 方案调整与各阶段证据见 [性能优化全程总览](PERFORMANCE_HISTORY.md)，原 [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) / [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 诊断保留其历史范围。
+
+- H20 使用 [64k sidecar](../configs/performance/cd009-p3-integrated.json)，L20 使用 [16k sidecar](../configs/performance/cd009-p3-l20-16k.json)。两者保留 P2 grid/坐标快路径，启用 split 与原生接触查询；E0/E1 不使用 contact grouping。voxel heads 保持关闭，B1A4、完整观测、2 mm 体素、512 候选和原训练预算不变。
+- 原生正负零字节差异已修复。修复后的 H20/E5 64k 与 L20/E3 16k 配对均为 `passed=true`、0 失败；原 AMP 容差 `atol=2e-4, rtol=2e-3`、离散结果和固定输入几何字节标准未放宽。
+- L20 原 16k→64k 组合有 148 项失败，除正负零外还有 scaled 梯度失败。用户选择保留 16k；原 64k 失败报告和此前 E5 零更新短测的吞吐 +28.40% 均保留，不能把短测收益写成当前 16k 组合收益。
+- 正常窗口分别为 H20/E5 的 8,331–8,355，L20/E0 的 17,076–17,100、E1 的 2,722–2,746、E3 的 7,602–7,626。每组 25 次尝试均成功、无跳步，100 个物理帧及 100 个有效帧，首个慢步计入。具体墙钟、自然帧差异和持久化范围见 [正常窗口记录](performance/P3_INTEGRATED_RESULTS.md)；日志末步不等于当时已保存的 checkpoint 步。
+- 这些窗口的训练代码为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，worktree 为 `0d44b123d9b15d312b64b05aafe992c3e454f7f6c1805eb94e4b070915b2cea1`。后续 GitHub HEAD 或独立 `control_repo` 的 supervisor 身份不替换该训练身份。
+
+[P3 文档](PERFORMANCE_PHASE3.md) 保留正常接续流程；已完成的配对与窗口直接引用上述记录，不重复安排。批准的 original/P1/P2 仍可直接迁到目标 v3，沿用历史回执和学习状态。E2 的既有 FP16 投影溢出未在本轮恢复，六组完整训练、最终评估及收敛结论仍未完成。
+
+### 整合发布前的本地检查（历史）
+
+- [split CPU 子图记录](performance/P3_SPLIT_CPU_RESULTS.json)：2,049 点、9 块的真实 fusion MLP，独立 SliceBackward 9→0、整输入梯度清零 9→0、累加 8→0；仅 split 的 FP32/FP64 输出与全部测量梯度相同。额外一次广播仅为探索原型，未纳入应用代码。
+- 普通 CPU E5 集成对照覆盖原生几何、不同 dense chunk、split 和全部参数梯度；checkpoint 分块路径也有现有测试覆盖。该 CPU 结果不代替上述真实 AMP 配对。
+
+整合发布前的本地既有 CPU 套件为 **333 passed、1 skipped（14.94 s）**；因当时本地 Unix socket 限制排除 `tests/test_prefetch.py`，没有改动该测试，完整套件由该提交的 GitHub CI 执行。配对工具保留相同姿态下的几何精确比较，并将不同 chunk 导致的实际浮点描述量按既有 AMP 容差比较；实际离散索引仍须相同，未改变实际输出或梯度。这些历史测试数字不改记为后续正零修复或训练机验证的测试数。
+
+## 原 P3 几何实现：本地 CPU 验证（2026-11-13，整合调整前）
+
+基于 GitHub `0bda78b` 实现融合原生接触查询和两个候选线程，模型及训练定义不变。[完整实现与接续说明](PERFORMANCE_PHASE3.md) 和 [CPU 原始结果](performance/P3_CPU_RESULTS.json) 记录本轮范围。
+
+- 普通两帧场景的五区索引、mask、全部几何描述量、计数、lip 扇区和 Torch RNG 后态与 P2 完全一致；包括倾斜轴和正常无效观测分支。
+- CPU 小模型的输出精确一致，参数梯度通过原有 `rtol=1e-6, atol=1e-7`；上述定向测试共 **8 passed、无 skip**。
+- 同一 840,000 点、512 候选合成场景，两条路径各预热一次、计时两次；完整 query 中位 **0.901812→0.295082 秒，约 3.056×**。六次调用（含预热）的完整输出和 RNG 一致，未减少邻域或 FPS 输入。
+- 新增 P3 配置及两条正常 P2→P3 迁移测试 **3 passed**，覆盖从 P2 开始和带旧迁移链的保存、恢复、预算及归档接续。
+- 本地既有套件 **324 passed、1 skipped**；另一个既有 `test_prefetch.py` 因环境禁止 Unix socket 而无法完成，未改写该测试，由原 CI 全量执行。跳过项需要真实 release 路径。
+
+历史测量环境：Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0。该轮 CPU 验证没有执行真实训练帧或 GPU optimizer 更新，当时也未部署 P3 到训练机；随后确认的 P2 源 checkpoint、P3 真机配对和部署状态见本文首节。CPU 局部加速比不作为 H20/L20 整步提速或完整训练 ETA。
+
+## CD-009 v3：初始部署记录（2026-11-12，性能优化前）
+
+正式训练按 [固定配置和策略](CD009_PRETRAINING.md) 分阶段运行，六组尚未完成。实际部署源码身份为 `98862f4d6a133c99afa082a0755dbb888b41b38d`；GitHub 发布是包含相同 runtime Python 与新增文档/配置的源码快照，发布 SHA 不替换运行版本，也不声称保留原部署 Git 祖先链。
+
+- 17 个隔离 profile trial，共 216 次帧呈现，零 optimizer 更新；只用于选择运行参数，不能作为收敛证据。
+- [六份固定 JSON 和哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 对应 H20/E5、L20/E0–E4。当前均为 microbatch1 × accumulation4，按实际吞吐选择；H20/L20 的 chunk 和 allocator cap 不同。
+- E5、E3、E0 已有预算内 100 步暂停及恢复下一步的身份/采样器证据；其余实验逐级启用。该检查不是完整 320 帧开发验证，也不构成全程稳定性或训练完成证明。
+- 当前没有发布六组完整开发指标、收敛排名、官方测试、真实目标域微调或物理吸取结果。必须每组 230400 有效样本、10 次固定 320 帧验证及 checkpoint/日志/备份验收后才完成 TODO1。
+
+以下 CD-008 的 20 更新 smoke 和 129 项测试是历史记录，保持其原始范围；不将它们改写为 v3 完成结果。
+
+## CD-008 模型实现验证（2026-11-11）
 
 代码已通过只读数据适配、真实完整场景训练链路、checkpoint重启、无标签推理和实际姿态R20评价检查。**这次仅有20次成功更新，不构成收敛、模型优劣或实机成功验证。** 运行方式见 [MODEL_USAGE](MODEL_USAGE.md)，数值与源码哈希见 [机器可读摘要](validation/cd008-smoke-summary.json)。
 

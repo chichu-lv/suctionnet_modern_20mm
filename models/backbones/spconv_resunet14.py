@@ -38,6 +38,22 @@ def coordinate_rows(input_coords, output_coords):
     return rows
 
 
+def same_coordinate_storage(a, b):
+    """Recognize identical row layout using metadata only, without CUDA reads."""
+    return a is b or (
+        a.device == b.device and a.dtype == b.dtype
+        and a.shape == b.shape and a.stride() == b.stride()
+        and a.data_ptr() == b.data_ptr()
+    )
+
+
+def align_backbone_features(coords, output_indices, output_features, *, fastpath=False):
+    """Align one raw sparse output before projection; retain the exact fallback."""
+    if fastpath and same_coordinate_storage(coords, output_indices):
+        return output_features
+    return output_features[coordinate_rows(coords, output_indices)]
+
+
 def _load_external(root):
     root = Path(root) / 'models'
     for name, expected in _BLOBS.items():
@@ -68,8 +84,9 @@ def _load_external(root):
 
 
 class SpconvResUNet14(nn.Module):
-    def __init__(self, backbone_root):
+    def __init__(self, backbone_root, *, backbone_coordinate_fastpath=False):
         super().__init__()
+        self.backbone_coordinate_fastpath = bool(backbone_coordinate_fastpath)
         self.network = _load_external(backbone_root)(8, 512)
         self.projection = mlp((512, 256))
 
@@ -86,8 +103,10 @@ class SpconvResUNet14(nn.Module):
         sparse = spconv.SparseConvTensor(inputs['voxel_features'].contiguous(), coords, shape,
                                         len(inputs['g_cam']))
         output = self.network(sparse)
-        rows = coordinate_rows(coords, output.indices)
-        return self.projection(output.features[rows])
+        features = align_backbone_features(
+            coords, output.indices, output.features,
+            fastpath=self.backbone_coordinate_fastpath)
+        return self.projection(features)
 
     def parameter_groups(self):
         encoder, decoder = [], []

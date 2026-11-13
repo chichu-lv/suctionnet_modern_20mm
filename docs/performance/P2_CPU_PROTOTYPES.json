@@ -1,0 +1,126 @@
+{
+  "schema": "suction20.p2-cpu-prototypes.v1",
+  "record_date": "2026-11-12",
+  "date_timezone": "Asia/Shanghai",
+  "reviewed_commit": "1e28a2faa9991478d706e4d188081aa1a482ff9b",
+  "deployed_commit_unchanged": "996421c664a5a0b84c308aa4ca47c31eaff4035b",
+  "status": "Local CPU research only; P2 product integration and H20/L20 measurements not performed.",
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.5.1+cpu",
+    "numpy": "2.3.5",
+    "scipy": "1.17.0",
+    "cuda_available": false,
+    "machine": "x86_64",
+    "visible_logical_cpus": 9,
+    "affinity_count": 9,
+    "torch_threads": 1,
+    "blas_threads": 1,
+    "grid_query_threads": 1,
+    "grid_compiler_flags": [
+      "-std=c++17",
+      "-O3",
+      "-fno-fast-math",
+      "-ffp-contract=off"
+    ],
+    "note": "CPU software differs from deployed Python3.10/NumPy1.26.4/SciPy1.11.4; no H20/L20 dataset was used."
+  },
+  "grid": {
+    "source_results": "../../research/performance_p2/results/geometry_grid_results.json",
+    "raw_points": 840000,
+    "candidates": 512,
+    "ball_queries": 2048,
+    "cell_size_m": 0.02,
+    "repeats": 2,
+    "keeps_all_raw_points": true,
+    "returned_point_visits": 6565455,
+    "medians": {
+      "build_including_geometry_seconds": {
+        "kdtree_median_s": 0.27040775049999866,
+        "grid_median_s": 0.025992870000038693,
+        "speedup": 10.40315096022856,
+        "elapsed_reduction_fraction": 0.903875277420945
+      },
+      "standalone_ball_queries_seconds": {
+        "kdtree_median_s": 0.7624693580000326,
+        "grid_median_s": 0.2891975215000002,
+        "speedup": 2.6365003200763324,
+        "elapsed_reduction_fraction": 0.6207093197049003
+      },
+      "query_wall_seconds": {
+        "kdtree_median_s": 1.5104434849999961,
+        "grid_median_s": 0.9410700555000062,
+        "speedup": 1.6050276769219614,
+        "elapsed_reduction_fraction": 0.37695778435562677
+      },
+      "build_plus_query_seconds": {
+        "kdtree_median_s": 1.7808512354999948,
+        "grid_median_s": 0.9670629255000449,
+        "speedup": 1.8415050236562007,
+        "elapsed_reduction_fraction": 0.4569659125802663
+      }
+    },
+    "all_recorded_neighborhoods_equal": true,
+    "all_recorded_grouping_outputs_equal": true,
+    "rng_note": "Historical adapter supplied one pre-generated roll array; its query body consumed no RNG. Portable runner restores same RNG before direct production calls and compares their after states. Portable runner was only syntax/import checked, not re-benchmarked."
+  },
+  "candidate_threads": {
+    "source_results": "../../research/performance_p2/results/geometry_parallel_results.json",
+    "query_wall_medians_s": {
+      "1": 1.521172907499988,
+      "2": 1.2767434575000038,
+      "4": 1.2757108895000044
+    },
+    "two_thread_speedup": 1.1914475837445075,
+    "four_thread_speedup": 1.1924119485224343,
+    "scope": "Old KDTree plus compiled FPS; whole candidate chunks of64; not composed with grid; phase timers are sums of worker durations, not wall."
+  },
+  "voxel_heads": {
+    "source_results": "../../research/performance_p2/results/voxel_heads_equivalence.json",
+    "scope": "one synthetic CPU float64 algebra/gradient comparison; no CUDA speed or AMP claim",
+    "torch": "2.5.1+cpu",
+    "cuda_available": false,
+    "raw_points": 2117,
+    "voxels": 113,
+    "frames": 2,
+    "max_abs_q0": 1.6653345369377348e-16,
+    "max_abs_seed_fused": 2.6645352591003757e-15,
+    "max_abs_axis_pregeometry_ab": 4.440892098500626e-16,
+    "abs_loss": 1.1102230246251565e-16,
+    "max_abs_voxel_feature_grad": 8.673617379884035e-19,
+    "max_abs_parameter_grad": 7.632783294297951e-17,
+    "state_dict_keys_unchanged": true,
+    "state_dict_shapes_unchanged": true,
+    "scope_detail": "Joint CPU float64 algebra comparison includes no-instance fusion/q0 reuse and optional axis-first-affine split, raw-point synthetic weighted squared loss and seed feature path. Not full production loss, CUDA AMP equivalence, or speed.",
+    "checked_components": [
+      "no-instance voxel fusion and q0",
+      "selected seed fused features",
+      "optional axis first-affine split with pointwise observed normals, before axis geometry"
+    ],
+    "objective": "synthetic weighted q0 squared error plus squared seed features and pregeometry axis ab; not production source_losses",
+    "not_checked": [
+      "sparse backbone",
+      "production source_losses and instance-frame-batch reduction",
+      "directed-axis geometric normalization",
+      "CUDA/AMP execution",
+      "runtime speed"
+    ],
+    "state_dict_comparison_scope": "the prototype Dense modules only"
+  },
+  "limitations": [
+    "One synthetic height-field scene is not a real SuctionNet pile; two repeats have cold/warm variation.",
+    "Standalone ball-query comparison retained all result arrays; complete grouping released results per candidate.",
+    "Initial temporary adapter replaced only roll input/timing return boundary; local geometry math, point set and FPS remained production code.",
+    "Do not multiply grid/thread/async-index/local-MLP speedups or advertise them as total training acceleration.",
+    "Existing four-real-frame paired comparison, normal resume and20-30 budgeted updates are proposed integration acceptance, not completed P2 results."
+  ],
+  "source_file_sha256": {
+    "research/performance_p2/results/geometry_grid_results.json": "7de0f8273c37cf1350d9a3d1eb36c880b846ea5eb8008f8c4fa552253c9488c8",
+    "research/performance_p2/results/geometry_parallel_results.json": "69b380a2fbc1e04dfd403084b469725a4e04fd71b00f716080631734f723acc5",
+    "research/performance_p2/grid_index.cpp": "8be14dd3d1b3fc09e941f85afe23d6db59bfd1279aef64cadd0829b43062c76d",
+    "research/performance_p2/benchmark_grid.py": "e42e6dfa08f06cb5cbdfbbf46fb4c5a193b26bb3e9f92e42f53a80fe6bf443df",
+    "research/performance_p2/fixture.py": "9b4d7b1fe5fecc76b0f888d4f8680958b18e5b553bc3e3318dad8f8b4ba8a139",
+    "research/performance_p2/voxel_heads_equivalence.py": "1c2f9f5e811531776bc05b0e99a45893e192a39bc6e5bae6fefb984ef5845db0",
+    "research/performance_p2/results/voxel_heads_equivalence.json": "655649e8ee428798aab1e5c3d8f55cb441a8e1292b74e067a42b7cda399f36d8"
+  }
+}

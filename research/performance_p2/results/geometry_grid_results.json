@@ -1,0 +1,120 @@
+{
+  "source_head": "1e28a2faa9991478d706e4d188081aa1a482ff9b",
+  "scope": "synthetic CPU only; same 840000-point/512-pose fixture; no CUDA or training",
+  "cell_size_m": 0.02,
+  "raw_points": 840000,
+  "poses": 512,
+  "ball_queries": 2048,
+  "threads": {
+    "index": 1,
+    "torch": 1,
+    "blas": 1
+  },
+  "compile_flags": [
+    "-O3",
+    "-fno-fast-math",
+    "-ffp-contract=off"
+  ],
+  "runs": [
+    {
+      "repeat": 0,
+      "index": "kdtree",
+      "build_including_geometry_seconds": 0.28017764100002296,
+      "standalone_ball_queries_seconds": 0.8204704480000373,
+      "query_wall_seconds": 1.5395735289999948,
+      "build_plus_query_seconds": 1.8197511700000177,
+      "all_neighborhoods_equal": true,
+      "all_grouping_outputs_equal": true,
+      "rng_unchanged": true,
+      "standalone_returned_points": 6565455,
+      "phase_timings": {
+        "pose_d2h_host_s": 0.0004157939999913651,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.7888415330007774,
+        "region_filter_s": 0.39583548599921414,
+        "fps_s": 0.30275419700149087,
+        "descriptor_pack_s": 0.046612684999786325
+      }
+    },
+    {
+      "repeat": 0,
+      "index": "uniform_grid",
+      "build_including_geometry_seconds": 0.03979562300003181,
+      "standalone_ball_queries_seconds": 0.39442174099997374,
+      "query_wall_seconds": 0.9707349259999773,
+      "build_plus_query_seconds": 1.0105305490000092,
+      "all_neighborhoods_equal": true,
+      "all_grouping_outputs_equal": true,
+      "rng_unchanged": true,
+      "standalone_returned_points": 6565455,
+      "phase_timings": {
+        "pose_d2h_host_s": 5.932900000971131e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.24794213799998488,
+        "region_filter_s": 0.3734065229978114,
+        "fps_s": 0.2967103219995124,
+        "descriptor_pack_s": 0.04750511299585014
+      }
+    },
+    {
+      "repeat": 1,
+      "index": "kdtree",
+      "build_including_geometry_seconds": 0.26063785999997435,
+      "standalone_ball_queries_seconds": 0.7044682680000278,
+      "query_wall_seconds": 1.4813134409999975,
+      "build_plus_query_seconds": 1.7419513009999719,
+      "all_neighborhoods_equal": true,
+      "all_grouping_outputs_equal": true,
+      "rng_unchanged": true,
+      "standalone_returned_points": 6565455,
+      "phase_timings": {
+        "pose_d2h_host_s": 0.00034264500004610454,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.7596888739997212,
+        "region_filter_s": 0.3765977980006028,
+        "fps_s": 0.29370683900140193,
+        "descriptor_pack_s": 0.045828163998066884
+      }
+    },
+    {
+      "repeat": 1,
+      "index": "uniform_grid",
+      "build_including_geometry_seconds": 0.012190117000045575,
+      "standalone_ball_queries_seconds": 0.1839733020000267,
+      "query_wall_seconds": 0.9114051850000351,
+      "build_plus_query_seconds": 0.9235953020000807,
+      "all_neighborhoods_equal": true,
+      "all_grouping_outputs_equal": true,
+      "rng_unchanged": true,
+      "standalone_returned_points": 6565455,
+      "phase_timings": {
+        "pose_d2h_host_s": 5.382100005135726e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.23039965600082724,
+        "region_filter_s": 0.3485000499980515,
+        "fps_s": 0.2842903550006213,
+        "descriptor_pack_s": 0.043360220999488774
+      }
+    }
+  ]
+}

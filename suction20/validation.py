@@ -112,7 +112,7 @@ def nms_prediction(prediction, config, *, task_success=False):
                     max_per_instance=rank.get("max_per_instance", 10), max_per_scene=rank.get("max_per_scene", 50))
 
 
-def evaluate_model(model, config, device, *, split="val", frame_keys=None):
+def evaluate_model(model, config, device, *, split="val", frame_keys=None, progress=None):
     from .eval_r20 import evaluate_poses, load_scene_eval_context
     from .metrics import (aggregate_scene_metrics, evaluate_view_metrics,
                           masked_quality_metrics, normal_angle_metrics, proposal_coverage)
@@ -122,6 +122,8 @@ def evaluate_model(model, config, device, *, split="val", frame_keys=None):
             raise ValueError(f"AP-R20 protocol requires ranking.{key}={expected}")
     dataset = make_source_dataset(config, split=split, frame_keys=frame_keys, augment=False)
     records = []
+    if progress is not None:
+        progress(0, len(dataset), None)
     context, previous_scene = None, None
     for sample in dataset:
         scene, camera, frame = sample["meta"]["sample_uid"]
@@ -162,6 +164,8 @@ def evaluate_model(model, config, device, *, split="val", frame_keys=None):
         record["proposal_coverage_at_512"] = coverage.pop("proposal_coverage")
         record.update(coverage)
         records.append(record)
+        if progress is not None:
+            progress(len(records), len(dataset), sample["meta"]["sample_uid"])
     result = aggregate_scene_metrics(records)
     for key in ("AP_R20", "instance_Top1_Q20_at_0_4", "collision_rate", "no_candidate_rate"):
         result.setdefault(key, None)

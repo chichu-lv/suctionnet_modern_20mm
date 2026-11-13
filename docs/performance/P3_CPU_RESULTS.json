@@ -1,0 +1,302 @@
+{
+  "schema_version": "suction20.p3-cpu-contact-prototype.v1",
+  "scope": "synthetic CPU only; no CUDA work, training updates or real frames",
+  "device": "cpu",
+  "optimizer_updates": 0,
+  "real_frames": false,
+  "points": 840000,
+  "candidates": 512,
+  "index_backend": "uniform_grid_cpu",
+  "cell_size_m": 0.02,
+  "fps_backend": "compiled",
+  "native_contact_workers": 2,
+  "warmups_per_path": 1,
+  "measured_repeats_per_path": 2,
+  "timing_scope": "ContactGrouping.query wall time; shared index build, fixture, RNG restore and comparisons excluded",
+  "native_phase_semantics": "native_*_worker_s are summed worker phase durations, not additive query wall time",
+  "source": {
+    "github_base": "0bda78b",
+    "local_snapshot_head": "b89170319f66c09d7770398afbe97e4223bdcf17",
+    "head_note": "The local snapshot commit is not the GitHub source revision; source SHA256 values identify the measured working tree.",
+    "sha256": {
+      "models/contact_grouping.py": "53bfd34d6ce7cb4c67705166097da4e4f2abaf0f3aad60849ee1617e7fcb421d",
+      "models/contact_ops.py": "07032f74b737dd2a24bb2afd211f510cc7a87f0449dbe6f421dd3e7b6f9ac72b",
+      "models/csrc/fps_cpu.c": "a4e05e84fee6e8386d4049253483d4cf6d552d92b35bfe9c7b50cba9e412aef4",
+      "models/csrc/spatial_index_cpu.cpp": "01cae137fb85a6f04dd670acd3d7b8c7798db2ee812595761fbcbd2552af7e29",
+      "models/geometry_ops.py": "3eb6fdb41db36f2458d2976771f8cbe0b2deaa063e126771ea67abfa044834e9",
+      "models/spatial_index.py": "843c8103543c5132dc509cc590c1f8d63d632da3933cb78b7c5c026c77402d28",
+      "models/suction20net.py": "e8e53764d167c96e4f5659aab34c2d8194deda916d65a451b55d25bfb3842321",
+      "research/performance_p2/fixture.py": "9b4d7b1fe5fecc76b0f888d4f8680958b18e5b553bc3e3318dad8f8b4ba8a139",
+      "research/performance_p3/benchmark_contact.py": "611e2ba2bba817e5cc4b48b7f9c3f8a2bdddedd9fb3929227e2b5dd10b39a762",
+      "setup.py": "bc80e1890bf07183673f89289c96e41e1f80a0691857846bc7b22b24ea5aa902"
+    }
+  },
+  "extensions": {
+    "fps": {
+      "backend": "compiled",
+      "abi_version": 1,
+      "python_cache_tag": "cpython-312",
+      "compile_flags": [
+        "-O3",
+        "-fno-fast-math",
+        "-ffp-contract=off"
+      ],
+      "compiler": "14.2.0",
+      "source_sha256": "a4e05e84fee6e8386d4049253483d4cf6d552d92b35bfe9c7b50cba9e412aef4",
+      "binary_sha256": "1646d04036f66d4cd6493ed1fff95161069038803a94f2aeb7c9f38f491e3e85"
+    },
+    "grid": {
+      "backend": "uniform_grid_cpu",
+      "abi_version": 1,
+      "python_cache_tag": "cpython-312",
+      "compile_flags": [
+        "-O3",
+        "-fno-fast-math",
+        "-ffp-contract=off",
+        "-pthread"
+      ],
+      "compiler": "14.2.0",
+      "link_flags": [
+        "-pthread"
+      ],
+      "source_sha256": "01cae137fb85a6f04dd670acd3d7b8c7798db2ee812595761fbcbd2552af7e29",
+      "binary_sha256": "df15c79f9420733853f71e6661d8d253f407fa1e5fe6780cec87cf2ff358430e"
+    },
+    "contact": {
+      "abi_version": 1,
+      "link_flags": [
+        "-pthread"
+      ],
+      "binary_sha256": "df15c79f9420733853f71e6661d8d253f407fa1e5fe6780cec87cf2ff358430e"
+    }
+  },
+  "environment": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "scipy": "1.17.0",
+    "torch": "2.5.1+cpu",
+    "torch_cuda_build": null,
+    "cpu_count": 9,
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "torch_threads": 1,
+    "blas_threads_enforced": 1,
+    "blas_environment": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": null
+    },
+    "threadpools_during_measurement": [
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "num_threads": 1,
+        "prefix": "libscipy_openblas",
+        "filepath": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/numpy.libs/libscipy_openblas64_-fdde5778.so",
+        "version": "0.3.30",
+        "threading_layer": "pthreads",
+        "architecture": "SkylakeX"
+      },
+      {
+        "user_api": "openmp",
+        "internal_api": "openmp",
+        "num_threads": 1,
+        "prefix": "libgomp",
+        "filepath": "/workspace/scratch/83e5a4519092/tmp/suction20-docs-venv/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+        "version": null
+      },
+      {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "num_threads": 1,
+        "prefix": "libscipy_openblas",
+        "filepath": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/site-packages/scipy.libs/libscipy_openblas-6cdc3b4a.so",
+        "version": "0.3.30",
+        "threading_layer": "pthreads",
+        "architecture": "SkylakeX"
+      }
+    ]
+  },
+  "warmups": [
+    {
+      "path": "p2_python",
+      "repeat": 0,
+      "wall_seconds": 0.839060371999949,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 9.233699984179111e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.20211800300035065,
+        "region_filter_s": 0.31161062999717615,
+        "fps_s": 0.28078298600462404,
+        "descriptor_pack_s": 0.03988280799785571
+      }
+    },
+    {
+      "path": "native_cpu",
+      "repeat": 0,
+      "wall_seconds": 0.3007337419999203,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 5.686400004378811e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 0,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "pose_frame_setup_s": 0.02057013800003915,
+        "native_query_wall_s": 0.279612898,
+        "native_workers": 2,
+        "native_contact_calls": 1,
+        "native_ball_query_worker_s": 0.17606871899999998,
+        "native_region_filter_worker_s": 0.13484202899999997,
+        "native_fps_worker_s": 0.22803316300000004,
+        "native_descriptor_pack_worker_s": 0.0031548740000000002,
+        "native_total_worker_s": 0.542261569
+      }
+    }
+  ],
+  "runs": [
+    {
+      "path": "p2_python",
+      "repeat": 0,
+      "wall_seconds": 0.8874296379999578,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 6.530599989673647e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.2153188500012675,
+        "region_filter_s": 0.3270686790006039,
+        "fps_s": 0.29537610300280903,
+        "descriptor_pack_s": 0.04486871399444681
+      }
+    },
+    {
+      "path": "native_cpu",
+      "repeat": 0,
+      "wall_seconds": 0.29584793699996226,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 6.105100010245224e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 0,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "pose_frame_setup_s": 0.022250232000033066,
+        "native_query_wall_s": 0.27294636,
+        "native_workers": 2,
+        "native_contact_calls": 1,
+        "native_ball_query_worker_s": 0.16941735200000013,
+        "native_region_filter_worker_s": 0.12791569800000002,
+        "native_fps_worker_s": 0.22471391899999998,
+        "native_descriptor_pack_worker_s": 0.0030948,
+        "native_total_worker_s": 0.525265903
+      }
+    },
+    {
+      "path": "p2_python",
+      "repeat": 1,
+      "wall_seconds": 0.9161939130001429,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 6.662900000264926e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 2048,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "ball_query_s": 0.226702313002761,
+        "region_filter_s": 0.3380547130020659,
+        "fps_s": 0.301455521000662,
+        "descriptor_pack_s": 0.04493426899966835
+      }
+    },
+    {
+      "path": "native_cpu",
+      "repeat": 1,
+      "wall_seconds": 0.29431511600000704,
+      "complete_query_equal": true,
+      "rng_after_matches_reference": true,
+      "phase_timings": {
+        "pose_d2h_host_s": 6.542699998135504e-05,
+        "valid_candidates": 512,
+        "ball_calls": 2048,
+        "ball_api_calls": 0,
+        "ball_returned_points": 6565455,
+        "fps_calls": 1458,
+        "fps_input_points": 2954462,
+        "pose_frame_setup_s": 0.020826081999985036,
+        "native_query_wall_s": 0.272951547,
+        "native_workers": 2,
+        "native_contact_calls": 1,
+        "native_ball_query_worker_s": 0.17479945,
+        "native_region_filter_worker_s": 0.1290980820000001,
+        "native_fps_worker_s": 0.23241172300000007,
+        "native_descriptor_pack_worker_s": 0.0031917060000000003,
+        "native_total_worker_s": 0.539627965
+      }
+    }
+  ],
+  "summary": {
+    "median_wall_seconds": {
+      "p2_python": 0.9018117755000503,
+      "native_cpu": 0.29508152649998465
+    },
+    "query_speedup": 3.0561444702980998,
+    "query_time_reduction_percent": 67.27903377216788,
+    "all_complete_queries_equal": true,
+    "all_rng_after_states_equal": true
+  },
+  "zone_counts": {
+    "core": {
+      "mean": 3238.943359375,
+      "max": 4045
+    },
+    "lip": {
+      "mean": 1452.970703125,
+      "max": 2015
+    },
+    "cup": {
+      "mean": 263.302734375,
+      "max": 1089
+    },
+    "mount": {
+      "mean": 496.150390625,
+      "max": 7562
+    },
+    "approach": {
+      "mean": 319.25,
+      "max": 9575
+    }
+  }
+}

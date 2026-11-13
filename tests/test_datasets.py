@@ -188,3 +188,34 @@ def test_test_split_api_uses_all_views_without_reading_official_test():
     keys = public_frame_keys('test_seen')
     assert len(keys) == 30*256
     assert {key[2] for key in keys} == set(range(256))
+
+
+def test_selective_payload_matches_full_read_augmented_sample(source_fixture, monkeypatch):
+    from suction20 import datasets as module
+    original = module.read_view_payload
+
+    def old_payload(path, source_format, compatibility, corrupt_depth):
+        with np.load(path, allow_pickle=False) as archive:
+            frame = {key: archive[key] for key in archive.files}
+        effective = resolve_source_format(frame, source_format, compatibility)
+        derive = corrupt_depth or not {'normals_raw', 'normals_raw_valid'} <= set(frame)
+        return frame, effective, derive
+
+    augment = AugmentConfig(depth_noise_std_m=.0005, dropout_max=.1)
+    monkeypatch.setattr(module, 'read_view_payload', old_payload)
+    expected = dataset(source_fixture, augment=augment).get_sample(0, 17)
+    monkeypatch.setattr(module, 'read_view_payload', original)
+    actual_dataset = dataset(source_fixture, augment=augment)
+    actual = actual_dataset.get_sample(0, 17)
+    for section in ('inputs', 'targets', 'meta'):
+        assert actual[section].keys() == expected[section].keys()
+        for key, value in actual[section].items():
+            np.testing.assert_array_equal(value, expected[section][key])
+    frame, effective, derive = original(source_fixture[2], 'legacy_dc4ad6b', 'auto', True)
+    assert effective == 'legacy_dc4ad6b' and derive
+    assert 'gt_normal' not in frame and 'config_version' not in frame
+    assert {'candidate_id', 'candidate_row', 'normal_valid', 'match_distance'} <= frame.keys()
+    assert all(set(value) == {'normals', 'indices'} for value in actual_dataset._objects.values())
+    assert all(value['normals'].dtype == np.float64 for value in actual_dataset._objects.values())
+    assert actual['production_timing']['prepare_total_s'] >= 0
+    assert actual['cache_info']['object_array_bytes'] > 0

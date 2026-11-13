@@ -6,6 +6,7 @@ from torch import nn
 
 from .backbones.spconv_resunet14 import SpconvResUNet14
 from .candidate_sampler import CandidateSampler
+from .geometry_ops import make_fps_backend
 from .heads import AxisHead, chunk_apply, mlp
 from .contact_grouping import ContactGrouping, ZONE_LIMITS, ZONE_NAMES
 from .instance_fusion import InstanceFusion, instance_blocks
@@ -19,8 +20,11 @@ EXPERIMENTS = {
 
 
 class Suction20Net(nn.Module):
-    def __init__(self, model_config, frozen_config, backbone=None):
+    def __init__(self, model_config, frozen_config, backbone=None, *, performance=None):
         super().__init__()
+        performance = dict(performance or {})
+        self.no_instance_voxel_heads = bool(performance.get('no_instance_voxel_heads', False))
+        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'))
         self.model_config = dict(model_config)
         self.frozen_config = dict(frozen_config)
         self.experiment = model_config.get('experiment', 'E1')
@@ -43,7 +47,8 @@ class Suction20Net(nn.Module):
             if key in model_config and model_config[key] != expected:
                 raise ValueError(f'{self.experiment} requires {key}={expected!r}')
         self.backbone = backbone if backbone is not None else SpconvResUNet14(
-            model_config.get('backbone_root', 'external/graspness_modern'))
+            model_config.get('backbone_root', 'external/graspness_modern'),
+            backbone_coordinate_fastpath=performance.get('backbone_coordinate_fastpath', False))
         self.fusion = mlp((393, 256, 256))
         self.axis_head = AxisHead()
         self.q0_head = mlp((256, 128, 1), output=True)
@@ -54,8 +59,22 @@ class Suction20Net(nn.Module):
         self.task_success_head = mlp((260, 128, 1), output=True) if use_success else None
         if self.task_success_head is not None:
             nn.init.zeros_(self.task_success_head[-1].bias)
-        self.sampler = CandidateSampler(model_config.get('seed_count', model_config.get('num_seeds', 512)))
-        self.chunk_size = int(model_config.get('dense_chunk_size', 16384))
+        self.sampler = CandidateSampler(model_config.get('seed_count', model_config.get('num_seeds', 512)),
+                                        fps_fn=fps_fn)
+        # Execution-only overrides live in the performance sidecar. Keep the
+        # frozen model/profile configuration unchanged for checkpoint resume.
+        profile_chunk_size = int(model_config.get('dense_chunk_size', 16384))
+        chunk_override = performance.get('dense_chunk_size_override')
+        self.chunk_size = profile_chunk_size if chunk_override is None else int(chunk_override)
+        self.chunk_input_mode = performance.get('chunk_input_mode', 'slice')
+        if self.chunk_input_mode not in ('slice', 'split'):
+            raise ValueError('chunk_input_mode must be slice or split')
+        self.execution_settings = {
+            'profile_dense_chunk_size': profile_chunk_size,
+            'effective_dense_chunk_size': self.chunk_size,
+            'dense_chunk_override_source': 'profile' if chunk_override is None else 'performance_sidecar',
+            'chunk_input_mode': self.chunk_input_mode,
+        }
         self.checkpoint_dense = bool(model_config.get('checkpoint_dense', True))
         if self.chunk_size <= 0 or self.sampler.num_seeds <= 0:
             raise ValueError('dense_chunk_size and seed_count must be positive')
@@ -64,7 +83,13 @@ class Suction20Net(nn.Module):
         self.instance_module = InstanceFusion() if self.use_instance_fusion else None
         self.contact_grouping = (ContactGrouping(frozen_config,
                                   chunk_size=model_config.get('pose_chunk_size', 32),
-                                  checkpointed=self.checkpoint_dense)
+                                  checkpointed=self.checkpoint_dense, fps_fn=fps_fn,
+                                  query_chunk_size=performance.get('query_chunk_size'),
+                                  query_workers=performance.get('query_workers', 1),
+                                  spatial_index=performance.get('spatial_index'),
+                                  contact_query_backend=performance.get('contact_query_backend', 'numpy'),
+                                  chunk_input_mode=self.chunk_input_mode,
+                                  detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
         if self.use_aux_heads:
             self.seal_head = mlp((136, 128, 1), output=True)
@@ -78,9 +103,10 @@ class Suction20Net(nn.Module):
 
     def _chunks(self, fn, *args):
         return chunk_apply(fn, *args, chunk_size=self.chunk_size,
+                           input_mode=self.chunk_input_mode,
                            checkpointed=self.checkpoint_dense and self.training)
 
-    def encode_scene(self, batch_input):
+    def encode_scene(self, batch_input, *, cpu_geometry=None):
         """Only observation inputs enter this method; labels have no encoder path."""
         if len(batch_input['voxel_features']):
             voxel_features = self.backbone(batch_input)
@@ -89,7 +115,10 @@ class Suction20Net(nn.Module):
             # through the dense heads, producing graph-connected empty outputs.
             voxel_features = batch_input['voxel_features'].new_empty((0, 256))
         local = voxel_features[batch_input['inverse_map']]
-        gravity = batch_input['g_cam'][batch_input['batch_index']]
+        voxel_heads = self.no_instance_voxel_heads and not self.use_instance_fusion
+        frame = (batch_input['voxel_coords'][:, 0].long() if voxel_heads
+                 else batch_input['batch_index'])
+        gravity = batch_input['g_cam'][frame]
         stats = {}
         if self.instance_module is not None:
             stats = self.instance_module(local, batch_input['xyz_cam_m'], batch_input['batch_index'],
@@ -103,18 +132,35 @@ class Suction20Net(nn.Module):
             def fuse(feature, g):
                 zero = feature.new_zeros((len(feature), 134))
                 return self.fusion(torch.cat((feature, zero, g.to(feature)), -1))
-            fused = self._chunks(fuse, local, gravity)
-        return {**batch_input, **stats, 'F_local': local, 'F_fused': fused,
-                'random_group_roll': self.training}
+            fused = self._chunks(fuse, voxel_features if voxel_heads else local, gravity)
+        fused_key = 'F_fused_voxel' if voxel_heads else 'F_fused'
+        return {**batch_input, **stats, 'F_local': local, fused_key: fused,
+                'random_group_roll': self.training, 'cpu_geometry': cpu_geometry}
 
     def predict_dense(self, encoded):
-        q0 = self._chunks(lambda x: self.q0_head(x).sigmoid(), encoded['F_fused']).squeeze(-1)
+        voxel_heads = 'F_fused_voxel' in encoded
+        fused = encoded['F_fused_voxel' if voxel_heads else 'F_fused']
+        q0 = self._chunks(lambda x: self.q0_head(x).sigmoid(), fused).squeeze(-1)
+        if voxel_heads:
+            # Targets and all subsequent loss reductions remain in raw-point space.
+            q0 = q0[encoded['inverse_map']]
         axis = self._chunks(self.axis_head, encoded['F_local'], encoded['normal_obs'],
                             encoded['normal_obs_valid'])
         return q0, axis
 
-    def sample(self, encoded, q0_all, sampler_mode='inference', targets=None):
-        return self.sampler(encoded, q0_all, mode=sampler_mode, targets=targets, epoch=self.epoch)
+    @staticmethod
+    def gather_fused_features(encoded, safe_anchors):
+        """Gather associated raw-point features without expanding voxel fusion."""
+        voxel_heads = 'F_fused_voxel' in encoded
+        fused = encoded['F_fused_voxel' if voxel_heads else 'F_fused']
+        if not len(fused):
+            return fused.new_zeros((len(safe_anchors), 256))
+        rows = encoded['inverse_map'][safe_anchors] if voxel_heads else safe_anchors
+        return fused[rows]
+
+    def sample(self, encoded, q0_all, sampler_mode='inference', targets=None, *, sampler_targets_cpu=None):
+        return self.sampler(encoded, q0_all, mode=sampler_mode, targets=targets, epoch=self.epoch,
+                            sampler_targets_cpu=sampler_targets_cpu)
 
     @staticmethod
     @torch.no_grad()
@@ -159,8 +205,7 @@ class Suction20Net(nn.Module):
         anchors = self._anchors(encoded, point_cam_m, instance_id, batch, feature_point_index)
         valid = (anchors >= 0) & (instance_id > 0) & valid_normal & torch.isfinite(point_cam_m).all(-1)
         safe = anchors.clamp_min(0)
-        fused = (encoded['F_fused'][safe] if len(encoded['F_fused']) else
-                 encoded['F_fused'].new_zeros((len(point_cam_m), 256)))
+        fused = self.gather_fused_features(encoded, safe)
         gravity = encoded['g_cam'][batch].to(fused)
         if self.contact_grouping is not None:
             zones = self.contact_grouping(encoded, point_cam_m, n, instance_id, batch, valid,
@@ -196,15 +241,17 @@ class Suction20Net(nn.Module):
                 (h, n.to(h), (n * gravity.float()).sum(-1, keepdim=True).to(h)), -1)).squeeze(-1) * valid
         return result
 
-    def forward(self, batch_input, *, sampler_mode='inference', targets=None):
-        encoded = self.encode_scene(batch_input)
+    def forward(self, batch_input, *, sampler_mode='inference', targets=None, cpu_geometry=None,
+                sampler_targets_cpu=None):
+        encoded = self.encode_scene(batch_input, cpu_geometry=cpu_geometry)
         encoded['random_group_roll'] = self.training and sampler_mode != 'inference'
         q0, axis = self.predict_dense(encoded)
-        seeds, valid = self.sample(encoded, q0, sampler_mode, targets)
+        seeds, valid = self.sample(encoded, q0, sampler_mode, targets, sampler_targets_cpu=sampler_targets_cpu)
         rows = seeds[valid]
         pose = self.score_at_pose(encoded, encoded['xyz_cam_m'][rows], axis[rows],
                                   encoded['instance_id_input'][rows], proposal_q0=q0[rows],
                                   feature_point_index=rows, pose_batch_index=encoded['batch_index'][rows])
+        self.last_grouping_timings.update(self.sampler.last_timings)
         result = {'q0_all': q0, 'normal_out_all': axis,
                   'seed_point_index': seeds, 'seed_valid': valid}
         for name in ['q', 'pose_features', 'pose_feature_valid', 'task_success_logit',

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 from PIL import Image
@@ -80,6 +81,25 @@ def resolve_source_format(frame, fallback='legacy_dc4ad6b', compatibility='auto'
     if compatibility == 'strict' and schema and fallback != 'r20_v2_1':
         raise ValueError('Source schema contradicts explicitly requested format')
     return fallback
+
+
+def read_view_payload(path, source_format, compatibility, corrupt_depth):
+    """Decompress only consumed members; preserve source identity and trace fields."""
+    common = {'xyz', 'source_indices', 'instance_id', 'gt_valid', 'gt_A', 'gt_B',
+              'gt_seal_norm', 'gt_wrench_eval', 'collision_flag'}
+    trace = {'candidate_row', 'candidate_id', 'class_id', 'match_distance', 'normal_valid'}
+    with np.load(path, allow_pickle=False) as archive:
+        names = set(archive.files)
+        header = {'schema_version': archive['schema_version']} if 'schema_version' in names else {}
+        effective = resolve_source_format(header, source_format, compatibility)
+        needed = common | (trace & names)
+        needed.add('candidate_row' if effective == 'legacy_dc4ad6b' else 'gt_normal')
+        derive = corrupt_depth or not {'normals_raw', 'normals_raw_valid'} <= names
+        if not derive:
+            needed.update(('normals_raw', 'normals_raw_valid'))
+        frame = dict(header)
+        frame.update((key, archive[key]) for key in sorted(needed))
+    return frame, effective, derive
 
 
 def recover_candidate_axes(frame, records, seal_loader, T_world_cam):
@@ -189,6 +209,15 @@ class PublicSuction20Dataset:
             raise ValueError('Cache sizes must be positive')
         self._pid = None
         self._scenes, self._objects = OrderedDict(), OrderedDict()
+        self._cache_counts = {'hits': 0, 'misses': 0, 'evictions': 0}
+
+    def __getstate__(self):
+        # Spawn workers start with their own small metadata caches, not copies of
+        # an already used parent's arrays. No frame/depth/voxel cache is added.
+        state = self.__dict__.copy()
+        state.update(_pid=None, _scenes=OrderedDict(), _objects=OrderedDict(),
+                     _cache_counts={'hits': 0, 'misses': 0, 'evictions': 0})
+        return state
 
     def __len__(self):
         return len(self.keys)
@@ -205,11 +234,16 @@ class PublicSuction20Dataset:
         if self._pid != os.getpid():
             self._scenes.clear()
             self._objects.clear()
+            self._cache_counts = {'hits': 0, 'misses': 0, 'evictions': 0}
             self._pid = os.getpid()
         if key not in cache:
+            self._cache_counts['misses'] += 1
             cache[key] = loader()
             if len(cache) > limit:
                 cache.popitem(last=False)
+                self._cache_counts['evictions'] += 1
+        else:
+            self._cache_counts['hits'] += 1
         cache.move_to_end(key)
         return cache[key]
 
@@ -224,17 +258,35 @@ class PublicSuction20Dataset:
         return cached['table'], cached['poses'], cached['records']
 
     def _seal(self, object_id):
+        def load_axes():
+            full = load_seal(self.label_root / 'seal_r20' / 'poisson' / f'{object_id:03d}_labels.npz')
+            # load_seal retains the original FP64 normalization and validation.
+            return {key: full[key] for key in ('normals', 'indices')}
         return self._cached(self._objects, object_id,
-                            lambda: load_seal(self.label_root / 'seal_r20' / 'poisson' / f'{object_id:03d}_labels.npz'),
+                            load_axes,
                             self.object_cache_size)
 
+    def cache_info(self):
+        def nbytes(value):
+            if isinstance(value, np.ndarray):
+                return value.nbytes
+            if isinstance(value, dict):
+                return sum(nbytes(v) for v in value.values())
+            if isinstance(value, (tuple, list)):
+                return sum(nbytes(v) for v in value)
+            return 0
+        return dict(self._cache_counts, scene_entries=len(self._scenes), object_entries=len(self._objects),
+                    scene_array_bytes=nbytes(self._scenes), object_array_bytes=nbytes(self._objects))
+
     def get_sample(self, index, augmentation_seed):
+        started = perf_counter()
+        timing = {}
         key = self.keys[index]
         scene, camera, frame_id = key
         path = self.label_root / 'scenes' / f'scene_{scene:04d}' / camera / 'graspness_r20_v2' / f'{frame_id:04d}.npz'
-        with np.load(path, allow_pickle=False) as npz:
-            frame = {key: npz[key] for key in npz.files}
-        effective = resolve_source_format(frame, self.source_format, self.compatibility)
+        corrupt = self.augment is not None and (self.augment.depth_noise_std_m > 0 or self.augment.dropout_max > 0)
+        frame, effective, derive = read_view_payload(path, self.source_format, self.compatibility, corrupt)
+        timing['read_npz_s'] = perf_counter() - started
         xyz = np.asarray(frame['xyz'], np.float32)
         pixels = np.asarray(frame['source_indices'], np.int64)
         ids = np.asarray(frame['instance_id'], np.int64)
@@ -242,22 +294,32 @@ class PublicSuction20Dataset:
         if xyz.shape != (n, 3) or not np.isfinite(xyz).all() or pixels.shape != (n,) or ids.shape != (n,):
             raise ValueError('Malformed source geometry or point indices')
         base = self.dataset_root / 'scenes' / f'scene_{scene:04d}' / camera
+        reading = perf_counter()
         with Image.open(base / 'depth' / f'{frame_id:04d}.png') as image:
             shape = (image.height, image.width)
             # Only read depth values when normals must be derived or corrupted.
-            corrupt = self.augment is not None and (self.augment.depth_noise_std_m > 0 or self.augment.dropout_max > 0)
-            derive = corrupt or 'normals_raw' not in frame or 'normals_raw_valid' not in frame
             depth = np.array(image) if derive else None
+        timing['read_depth_meta_s'] = perf_counter() - reading
         if np.any((pixels < 0) | (pixels >= np.prod(shape))) or len(np.unique(pixels)) != n:
             raise ValueError('source_indices must be unique pixels within the original image')
+        reading = perf_counter()
         table, poses, records = self._scene(scene, camera, effective == 'legacy_dc4ad6b')
         T_world_cam = table @ poses[frame_id]
+        timing['read_depth_meta_s'] += perf_counter() - reading
+        axes_started = perf_counter()
         normal_label = (recover_candidate_axes(frame, records, self._seal, T_world_cam)
                         if effective == 'legacy_dc4ad6b' else np.asarray(frame['gt_normal'], np.float32))
+        timing['axis_recovery_s'] = perf_counter() - axes_started
+        geometry_started = perf_counter()
         keep_rows = np.ones(n, bool)
         rng = np.random.default_rng(augmentation_seed)
         if derive:
+            reading = perf_counter()
             mat = loadmat(base / 'meta' / f'{frame_id:04d}.mat')
+            metadata_seconds = perf_counter() - reading
+            timing['read_depth_meta_s'] += metadata_seconds
+            # Keep geometry timing separate from this metadata read.
+            geometry_started += metadata_seconds
             scale = float(np.asarray(mat['factor_depth']).reshape(-1)[0])
             if not np.isfinite(scale) or scale <= 0:
                 raise ValueError('Invalid source depth scale')
@@ -310,6 +372,10 @@ class PublicSuction20Dataset:
         derive_masks(sample['inputs'], sample['targets'])
         if self.augment is not None:
             apply_rigid(sample, rigid_transform(sample['inputs']['g_cam'], rng, self.augment))
+        timing['augment_geometry_s'] = perf_counter() - geometry_started
+        timing['prepare_total_s'] = perf_counter() - started
+        sample['production_timing'] = timing
+        sample['cache_info'] = self.cache_info()
         return sample
 
 
