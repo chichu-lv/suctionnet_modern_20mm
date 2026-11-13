@@ -12,6 +12,10 @@ artificial GPU memory cap. By default only prepare; --run executes the plan.
 --suite final is the last comparison at the formal effective batch8: five
 H20/E5 settings and four L20/E3 settings. --start-training selects the result
 and immediately starts fresh full training for that host after the comparison.
+--suite batch-combo supplements the completed final comparison with six settings
+per host, all zone/pose128/depth2. It compares longer accumulation windows and
+microbatch choices at effective batch24. It only reports throughput; existing
+formal runs are never paused, resumed, reconfigured or launched by this suite.
 """
 from __future__ import annotations
 
@@ -46,6 +50,14 @@ CONTACT_HEAD_SETTINGS = {
     'H20': {'microbatch_size': 4, 'effective_batch_size': 24},
     'L20': {'microbatch_size': 1, 'effective_batch_size': 12},
 }
+BATCH_COMBO_SETTINGS = {
+    # (microbatch, accumulation): current recipe first, then longer windows
+    # and the same-effective-batch24 microbatch comparisons.
+    'H20': ((4, 2), (4, 4), (4, 6), (4, 12), (2, 12), (3, 8)),
+    'L20': ((1, 8), (1, 12), (1, 24), (1, 48), (2, 12), (3, 8)),
+}
+BUDGET_FIELDS = ('target_optimizer_updates', 'warmup_optimizer_updates',
+                 'validation_interval_updates')
 SCAN_WARMUP_FRAMES = 48
 SCAN_TIMED_FRAMES = 240
 
@@ -60,8 +72,8 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                  batch_sizes=None, effective_batch_size=None, overlap_only=False):
     """Fresh configurations with equal credited-frame windows within a suite."""
     selected = HOSTS[hardware]
-    if suite not in ('overlap', 'memory', 'batch-scan', 'contact-head', 'final'):
-        raise ValueError('suite must be overlap, memory, batch-scan, contact-head or final')
+    if suite not in ('overlap', 'memory', 'batch-scan', 'contact-head', 'final', 'batch-combo'):
+        raise ValueError('suite must be overlap, memory, batch-scan, contact-head, final or batch-combo')
     if suite != 'batch-scan' and (batch_sizes is not None or effective_batch_size is not None or overlap_only):
         raise ValueError('Batch list, effective batch and overlap-only overrides require --suite batch-scan')
     warmup_frames, timed_frames = WARMUP_FRAMES, TIMED_FRAMES
@@ -118,6 +130,20 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
             'the contact encoder chunk on that path. Geometry, dense chunk, resources and '
             'frame windows stay fixed. New operator speedups require these GPU measurements; '
             'the scan effective batch is not an automatically selected final training recipe.')
+    elif suite == 'batch-combo':
+        specifications = [(f'b{micro}_a{accumulation}_e{micro * accumulation}_zone128',
+                           micro, micro * accumulation, 2)
+                          for micro, accumulation in BATCH_COMBO_SETTINGS[hardware]]
+        head_settings = {name: ('zone', 128) for name, *_ in specifications}
+        warmup_frames, timed_frames = SCAN_WARMUP_FRAMES, SCAN_TIMED_FRAMES
+        comparison_note = (
+            'Supplementary throughput comparison with zone gather, pose128 and depth2 fixed. '
+            'The first candidate repeats the current effective-batch8 recipe in this run. '
+            'Longer accumulation windows change optimizer update frequency and the training '
+            'recipe, not just execution; effective-batch24 candidates separately compare '
+            'microbatch choices at the same update frequency. Compare frames/s over equal '
+            '48 warmup and 240 timed credited frames. Report global and same-effective-batch '
+            'rankings; do not automatically select or alter any formal training run.')
     else:
         microbatch = 4 if hardware == 'H20' else 1
         effective = 8
@@ -178,7 +204,12 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                          'effective_batch_size': effective_batch,
                          'contact_feature_gather_mode': gather_mode,
                          'pose_chunk_size': pose_chunk_size,
-                         'role': 'baseline' if gather_mode == 'chunk' else 'optimization',
+                         'role': ('current_baseline' if not variants else 'candidate') if suite == 'batch-combo'
+                                 else 'baseline' if gather_mode == 'chunk' else 'optimization',
+                         **({'target_optimizer_updates': config['training']['max_optimizer_steps'],
+                             'warmup_optimizer_updates': config['scheduler']['warmup_optimizer_steps'],
+                             'validation_interval_updates': config['training']['validate_every_optimizer_steps']}
+                            if suite == 'batch-combo' else {}),
                          'warmup_successful_steps': warmup_steps,
                          'stop_at_successful_step': stop_step,
                          'warmup_credited_frames': warmup_frames,
@@ -193,6 +224,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                                                *variant['command']])
     plan = {
         'schema_version': ('suction20.geometry_overlap_benchmark.v1' if suite == 'overlap'
+                           else 'suction20.geometry_overlap_benchmark.v6' if suite == 'batch-combo'
                            else 'suction20.geometry_overlap_benchmark.v5' if suite == 'final'
                            else 'suction20.geometry_overlap_benchmark.v4' if suite == 'contact-head'
                            else 'suction20.geometry_overlap_benchmark.v3' if suite == 'batch-scan'
@@ -203,7 +235,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
         'total_credited_frames_per_variant': warmup_frames + timed_frames,
         'gpu_memory_limit_gib': memory_limit,
         'memory_policy': 'No artificial allocator cap; use available device VRAM' if memory_limit is None else f'Explicit {memory_limit:g} GiB allocator cap',
-        'continue_on_cuda_oom': suite in ('batch-scan', 'contact-head', 'final'),
+        'continue_on_cuda_oom': suite in ('batch-scan', 'contact-head', 'final', 'batch-combo'),
         'continue_on_candidate_failure': suite == 'final',
         'comparison_note': comparison_note,
         'working_directory': str(ROOT), 'environment': environment,
@@ -224,6 +256,9 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                     gradient_accumulation_steps=4 // selected['microbatch_size'],
                     effective_batch_size=4, warmup_successful_steps=WARMUP_STEPS,
                     stop_at_successful_step=STOP_STEP)
+    if suite == 'batch-combo':
+        plan['current_baseline_variant'] = variants[0]['name']
+        plan['formal_training_policy'] = 'Benchmark only; do not pause, resume, reconfigure or launch existing formal runs.'
     write_json(output / 'plan.json', plan)
     return plan
 
@@ -310,6 +345,7 @@ def summarize_run(run_dir, *, warmup_steps=WARMUP_STEPS, stop_step=STOP_STEP):
 
 
 def summarize_plan(plan, out_dir):
+    budget_fields = BUDGET_FIELDS if plan.get('suite') == 'batch-combo' else ()
     results = []
     for variant in plan['variants']:
         warmup = variant.get('warmup_successful_steps', plan.get('warmup_successful_steps', WARMUP_STEPS))
@@ -318,7 +354,7 @@ def summarize_plan(plan, out_dir):
                   **{key: variant.get(key, plan.get(key)) for key in
                      ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
                       'geometry_pipeline_depth', 'gpu_memory_limit_gib',
-                      'contact_feature_gather_mode', 'pose_chunk_size', 'role')},
+                      'contact_feature_gather_mode', 'pose_chunk_size', 'role') + budget_fields},
                   **summarize_run(variant['run_dir'], warmup_steps=warmup, stop_step=stop)}
         execution_path = Path(variant['run_dir']).parent / 'execution.json'
         if execution_path.exists():
@@ -335,6 +371,8 @@ def summarize_plan(plan, out_dir):
             result['execution_status'] = result['measurement_status']
         results.append(result)
     base_fps = results[0].get('frames_per_second')
+    if plan.get('suite') == 'batch-combo' and results[0]['execution_status'] != 'completed':
+        base_fps = None
     for result in results:
         fps = result.get('frames_per_second')
         result['throughput_change_from_first_percent'] = (fps / base_fps - 1.) * 100. if base_fps and fps else None
@@ -343,7 +381,7 @@ def summarize_plan(plan, out_dir):
     ranking = [{key: result.get(key) for key in
                 ('name', 'microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
                  'geometry_pipeline_depth', 'contact_feature_gather_mode', 'pose_chunk_size',
-                 'frames_per_second', 'peak_allocated_gib', 'peak_reserved_gib')}
+                 'frames_per_second', 'peak_allocated_gib', 'peak_reserved_gib') + budget_fields}
                for result in ranked]
     change = results[1]['throughput_change_from_first_percent'] if len(results) == 2 else None
     summary = {'hardware': plan['hardware'], 'experiment': plan['experiment'],
@@ -356,7 +394,18 @@ def summarize_plan(plan, out_dir):
                'comparison_note': plan.get('comparison_note'),
                'conclusion_scope': ('One-pass throughput selection at formal effective batch8; only complete windows with observed normal trainer exits enter ranking. The 3% adoption rule selects the final configuration; --start-training immediately launches fresh full training. Does not measure convergence.'
                                     if plan.get('suite') == 'final' else
+                                    'Supplementary throughput ranking across different effective batches, with separate same-effective-batch rankings. Changing effective batch changes optimizer update frequency and training trajectory. This report does not modify running training.'
+                                    if plan.get('suite') == 'batch-combo' else
                                     'One-pass throughput/capacity screening; only complete windows with observed normal trainer exits enter ranking. Does not measure convergence or automatically change the final training recipe.')}
+    if plan.get('suite') == 'batch-combo':
+        groups = {str(effective): [result for result in ranking if result['effective_batch_size'] == effective]
+                  for effective in sorted({variant['effective_batch_size'] for variant in plan['variants']})}
+        summary.update(
+            current_baseline_variant=plan['current_baseline_variant'],
+            rankings_by_effective_batch=groups,
+            best_variant_by_effective_batch={effective: ranked_group[0]['name'] if ranked_group else None
+                                            for effective, ranked_group in groups.items()},
+            formal_training_policy=plan['formal_training_policy'])
     output = Path(out_dir)
     write_json(output / 'summary.json', summary)
     def number(value, digits=3):
@@ -377,7 +426,24 @@ def summarize_plan(plan, out_dir):
                      f'{number(result["throughput_change_from_first_percent"], 2)} | '
                      f'{pair(result, "update_seconds")} | {number(result.get("peak_allocated_gib"))} / {number(result.get("peak_reserved_gib"))} | '
                      f'{result.get("successful_updates", "—")} / {result.get("skipped_updates", "—")} |')
-    lines.extend(['', f'Fastest completed candidate: {summary["best_variant"] or "none"}.', '',
+    lines.extend(['', f'Fastest completed candidate: {summary["best_variant"] or "none"}.'])
+    if plan.get('suite') == 'batch-combo':
+        lines.extend(['', '## Same-effective-batch rankings', '',
+                      'Global ranking compares different training recipes. These groups keep optimizer update frequency fixed; microbatch grouping can still change BN/loss numerical behavior.', '',
+                      '| Effective batch | Completed candidates, fastest first |',
+                      '| ---: | --- |'])
+        for effective, group in summary['rankings_by_effective_batch'].items():
+            ordered = ', '.join(f'{item["name"]} ({number(item["frames_per_second"], 6)} frames/s)' for item in group)
+            lines.append(f'| {effective} | {ordered or "none"} |')
+        lines.extend(['', '## Implied full sample-budget recipe', '',
+                      'The following counts are generated from the unchanged 230,400-sample budget, not the short-test duration. No formal run is changed by this report.', '',
+                      '| Variant | Effective batch | Target updates | Warmup updates | Validation interval, updates |',
+                      '| --- | ---: | ---: | ---: | ---: |'])
+        for result in results:
+            lines.append(f'| {result["name"]} | {result["effective_batch_size"]} | '
+                         f'{result["target_optimizer_updates"]} | {result["warmup_optimizer_updates"]} | '
+                         f'{result["validation_interval_updates"]} |')
+    lines.extend(['',
                   '## Existing stage diagnostics', '',
                   '| Variant | Future wait median / p95 (s) | Loader wait median / p95 (s) | Forward host median / p95 (s) | Backward host median / p95 (s) | Optimizer host median / p95 (s) |',
                   '| --- | ---: | ---: | ---: | ---: | ---: |'])
@@ -463,11 +529,11 @@ def record_final_selection(plan, summary, out_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hardware', required=True, choices=tuple(HOSTS))
-    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan', 'contact-head', 'final'), default='overlap',
-                        help='final: last production-batch comparison and optional immediate full-training launch; earlier suites remain available')
+    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan', 'contact-head', 'final', 'batch-combo'), default='overlap',
+                        help='batch-combo: six fixed zone128 batch/accumulation comparisons per host, benchmark only; final retains its original E8 selection/launch behavior')
     parser.add_argument('--out-dir', required=True, help='New benchmark directory, or existing one with --summarize-existing')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--run', action='store_true', help='Run the fixed plan; batch-scan/contact-head continue after CUDA OOM, final records failed candidates and completes its list')
+    mode.add_argument('--run', action='store_true', help='Run the fixed plan; batch-scan/contact-head/batch-combo continue after CUDA OOM, final records failed candidates and completes its list')
     mode.add_argument('--summarize-existing', action='store_true', help='Read plan/logs; launch no process')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')

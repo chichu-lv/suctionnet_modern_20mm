@@ -4,7 +4,7 @@
 
 ## 1. 先确认我们现在到了哪里
 
-**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)，已有资源、几何重叠和[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)实测。扫描9档完成、3档OOM，支持H20/E5 B4/depth2、L20/E3 B1/depth2。按最新指令，[最后一轮优化并开训](FINAL_OPTIMIZATION_AND_TRAINING.md)统一正式有效batch8，执行H20五档、L20四档；新接触头比最快已完成原路径至少快3%才采用，否则用原路径。测试结束无论收益如何都直接从头启动六组正式训练，不再追加优化、恢复验收或等待确认。当前最后发布状态仍为停止，实际启动以训练机执行记录为准。下文保存CD-009历史，不把不同阶段提速比例相乘。
+**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)。资源、几何重叠、原接触头12档batch扫描及[最终9档接触头比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已完成；最后一轮选择H20 B4A2/zone128、L20 B1A8/zone128，并已启动六组新正式训练。其结论限定有效batch8。按用户后续要求新增[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)，补齐B4A6/zone128、B1A12/zone128并比较同有效batch24的不同microbatch；补测尚无GPU结果，不自动替换正在运行的正式配置。下文保存CD-009历史，不把不同阶段提速比例相乘。
 
 **目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
 

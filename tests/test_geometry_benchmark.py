@@ -181,6 +181,72 @@ def test_final_comparison_uses_production_batch_and_fixed_nine_candidates(hardwa
             for item in plan['variants'][-3:]] == [('zone', 32), ('zone', 64), ('zone', 128)]
 
 
+@pytest.mark.parametrize('hardware,batches', [
+    ('H20', [(4, 2), (4, 4), (4, 6), (4, 12), (2, 12), (3, 8)]),
+    ('L20', [(1, 8), (1, 12), (1, 24), (1, 48), (2, 12), (3, 8)]),
+])
+def test_batch_combo_restores_full_prior_recipe_with_zone128(hardware, batches, tmp_path):
+    plan = prepare_plan(hardware, tmp_path, suite='batch-combo')
+    assert len(plan['variants']) == 6
+    assert plan['continue_on_cuda_oom'] and not plan['continue_on_candidate_failure']
+    assert plan['current_baseline_variant'] == plan['variants'][0]['name']
+    assert [item['role'] for item in plan['variants']] == ['current_baseline'] + ['candidate'] * 5
+    for variant, (micro, accumulation) in zip(plan['variants'], batches):
+        effective = micro * accumulation
+        config = json.loads(Path(variant['train_config']).read_text())
+        performance = json.loads(Path(variant['performance_config']).read_text())
+        assert variant['name'] == f'b{micro}_a{accumulation}_e{effective}_zone128'
+        assert config['training']['microbatch_size'] == micro
+        assert config['training']['gradient_accumulation_steps'] == accumulation
+        assert config['training']['effective_batch_size'] == effective
+        assert variant['target_optimizer_updates'] == config['training']['max_optimizer_steps'] == 230400 // effective
+        assert variant['warmup_optimizer_updates'] == config['scheduler']['warmup_optimizer_steps'] == 11520 // effective
+        assert variant['validation_interval_updates'] == config['training']['validate_every_optimizer_steps'] == 23040 // effective
+        assert variant['warmup_successful_steps'] == 48 // effective
+        assert variant['stop_at_successful_step'] == 288 // effective
+        assert config['model']['pose_chunk_size'] == 128
+        assert performance['contact_feature_gather_mode'] == 'zone'
+        assert config['training']['geometry_pipeline_depth'] == 2
+        assert config['runtime']['gpu_memory_limit_gib'] is None
+        assert config['training']['precision'] == 'fp16'
+        assert performance['dense_chunk_size_override'] == 65536
+        assert performance['geometry_threads'] == 8
+        assert performance['loader']['num_workers'] == 4
+        assert not Path(variant['run_dir']).exists()
+
+
+def test_batch_combo_reports_equal_frame_throughput_and_same_effective_rankings(tmp_path):
+    plan = prepare_plan('H20', tmp_path, suite='batch-combo')
+    speeds = [2., 2.5, 3., 4., 3.5, 3.25]
+    for variant, fps in zip(plan['variants'], speeds):
+        run_dir = Path(variant['run_dir'])
+        attempt = run_dir / 'attempts' / 'one'
+        attempt.mkdir(parents=True)
+        effective = variant['effective_batch_size']
+        rows = [row(step, step * effective / fps, effective_batch=effective)
+                for step in range(1, variant['stop_at_successful_step'] + 1)]
+        (attempt / 'updates.jsonl').write_text(''.join(json.dumps(item) + '\n' for item in rows))
+        (run_dir / 'control').mkdir()
+        (run_dir / 'control/status.json').write_text(json.dumps({'phase': 'paused'}))
+        (run_dir.parent / 'execution.json').write_text(json.dumps({'exit_code': 75, 'outcome': 'completed'}))
+    summary = summarize_plan(plan, tmp_path)
+    assert summary['best_variant'] == 'b4_a12_e48_zone128'
+    assert summary['best_variant_by_effective_batch'] == {
+        '8': 'b4_a2_e8_zone128', '16': 'b4_a4_e16_zone128',
+        '24': 'b2_a12_e24_zone128', '48': 'b4_a12_e48_zone128'}
+    assert [item['name'] for item in summary['rankings_by_effective_batch']['24']] == [
+        'b2_a12_e24_zone128', 'b3_a8_e24_zone128', 'b4_a6_e24_zone128']
+    for result, fps in zip(summary['results'], speeds):
+        assert result['credited_frames'] == 240
+        assert result['successful_updates'] == 240 // result['effective_batch_size']
+        assert result['frames_per_second'] == pytest.approx(fps)
+        assert result['throughput_change_from_first_percent'] == pytest.approx((fps / speeds[0] - 1) * 100)
+    assert summary['ranking'][0]['target_optimizer_updates'] == 4800
+    assert summary['ranking'][0]['warmup_optimizer_updates'] == 240
+    assert summary['ranking'][0]['validation_interval_updates'] == 480
+    assert 'final_selection' not in summary
+
+
 @pytest.mark.parametrize('suite,failure,expected_calls,expected_exit', [
     ('batch-scan', 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00 GiB', 3, 0),
     ('batch-scan', 'FileNotFoundError: missing training input', 2, 1),

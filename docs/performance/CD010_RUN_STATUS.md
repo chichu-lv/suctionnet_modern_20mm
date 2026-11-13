@@ -2,6 +2,8 @@
 
 记录日期：2026-11-13。**最后九档测试已经完成，新的E0–E5正式训练均已从step0启动并产生成功更新。** H20采用B4A2、L20采用B1A8；接触组使用zone gather、pose chunk128，统一有效batch8。当前配置、实际启动进度、日志与模型位置见[最终结果与训练说明](CD010_FINAL_OPTIMIZATION_RESULTS.md)。旧CD-009及早期CD-010任务仍停止，不恢复旧协调器或备份服务。
 
+后续用户要求补充[batch与累积次数组合测试](../BATCH_ACCUMULATION_SUPPLEMENT.md)。新`batch-combo`入口只做独立短测，不自动替换本页正式配置或重启任务；若需复用正在训练的GPU，由执行环境使用原生checkpoint暂停/恢复对应任务。新增十二档尚无实测结果，本页启动快照不是实时监控。
+
 ## 已执行的最终方案
 
 已完成`--suite final --run`固定测试，并通过方案提供的独立`finalize_pretraining.py --launch`启动正式训练。先选同机最快已完成原路径，新头至少快3%才采用；两机均达到门槛，选中zone128。3%为工程取舍阈值。

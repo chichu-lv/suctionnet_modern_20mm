@@ -1,6 +1,6 @@
 # CD-010：从头预训练的性能实现与使用方案
 
-更新：2026-11-13，北京时间。已有[资源短测](performance/CD010_FROM_SCRATCH_RESULTS.md)、[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)和[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。按最新指令，[最后一轮优化](FINAL_OPTIMIZATION_AND_TRAINING.md)统一正式有效batch8，H20五档、L20四档；完成后无论新头是否提速都直接启动正式训练，不再增加优化轮次或等待确认。当前已发布运行状态仍为停止，新增GPU测量和实际启动待训练机执行。
+更新：2026-11-13，北京时间。[九档最终接触头测试](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已完成，H20/E5的B4A2/zone128为2.450753帧/s，L20/E3的B1A8/zone128为3.622360帧/s；新六组正式训练已启动。此前资源、几何重叠和原接触头batch扫描均有实测。用户随后要求补齐[batch/累积组合](BATCH_ACCUMULATION_SUPPLEMENT.md)：每机六档，显式包含B4A6/zone128与B1A12/zone128，补测尚无GPU结果，不自动替换正式配置。
 
 **结论：从头训练可以启用共享体素头、重新选择 dense chunk、改变广播梯度归约和几何精度，不再把旧 checkpoint 的四帧 AMP 梯度/RNG 对齐作为准入条件。已实现配置生成器、两级分段广播反向、FP32 原生几何、可调线程与 worker、静态缓存、显式精度、融合 AdamW、按更新读回 loss，以及可选的局部编译。** CUDA 全点接触查询/FPS 和 GPU 数据增强本轮没有实现，理由与后续接口见第 8 节。
 
@@ -8,7 +8,7 @@
 
 BF16已实现为显式选项：当前spconv 2.3.6下密集层使用BF16、稀疏骨干使用FP32，不能直接称为更快的全模型BF16。E2可优先使用这个选项处理已有的FP16投影溢出。
 
-最新[运行状态](performance/CD010_RUN_STATUS.md)记录六组CD-010与协调器当前停止；用户已授权最后一轮测试结束后立即从头启动正式训练。使用`--suite final --run --start-training --training-root`衔接测试、选择和实际启动，执行边界见[最终方案](FINAL_OPTIMIZATION_AND_TRAINING.md)。CD-009不恢复，已有数据、标签和冻结物理定义继续复用。
+最新[运行状态](performance/CD010_RUN_STATUS.md)记录新的六组CD-010直接trainer已启动，旧任务及旧协调器停止。`final`测试与正式启动流程已完成，不能重复执行以重启六组；新补测使用`--suite batch-combo`和独立测试checkout。已有数据、标签和冻结物理定义继续复用。
 
 ## 1. 先校正原方案的依据
 
@@ -57,7 +57,7 @@ flowchart TB
 | E4 | 有 | 有 | 关闭 | 开启 | 开启 |
 | E5 | 有 | 有 | 关闭 | 开启 | 开启 |
 
-E5继续带原辅助头。B表示microbatch，A表示梯度累积，B×A为有效batch。此前扫描已支持H20/E5的B4/depth2、L20/E3的B1/depth2；正式六组现统一有效batch8。最后一轮保留H20 B2A4/B4A2两个原路径对照以覆盖流水线填充比例的变化，L20用B1A8，不再扩展batch矩阵。
+E5继续带原辅助头。B表示microbatch，A表示梯度累积，B×A为有效batch。当前正式六组统一有效batch8；已完成的最终矩阵选择H20 B4A2与L20 B1A8的zone128。这个结论不覆盖B4A6/zone128；后续补测明确比较更长累积窗口以及有效batch24下的不同B/A组合。
 
 ### H20 / L20 分开选择资源
 
@@ -310,7 +310,7 @@ python scripts/evaluate.py \
 - `profiles[host][experiment]`：新 train.json 的绝对路径和原字节 SHA256。
 - `performance_configs[host][experiment]`：新 performance.json 的绝对路径和原字节 SHA256。
 
-若以后使用supervisor，把这些项填入 **CD-010 的独立控制配置**；本次采用[最终入口](FINAL_OPTIMIZATION_AND_TRAINING.md)直接启动trainer，不恢复旧协调器。原supervisor接线使用新的root/run/ledger路径。v4 worker会把 trainer 的 `PYTHONPATH` 指向新 root 下的 `repo/`，避免复用venv时从旧editable安装导入模型。若已经确认相同机器的基础环境，不需要为了该实现再设计一套机器检查、19项连续性审计或故障演练。原管理器正常运行所需字段照现有 [运行指南](MODEL_USAGE.md) 提供即可。当前六组CD-010与协调器仍停止；最后一轮短测结束后按用户授权直接从头启动新正式trainer，不恢复旧协调器。旧CD-009账本和代码保留但不再运行。
+若以后使用supervisor，把这些项填入 **CD-010 的独立控制配置**；本次已通过[最终入口](FINAL_OPTIMIZATION_AND_TRAINING.md)直接启动新trainer，旧协调器仍停止。原supervisor接线使用新的root/run/ledger路径。v4 worker会把 trainer 的 `PYTHONPATH` 指向新 root 下的 `repo/`，避免复用venv时从旧editable安装导入模型。若已经确认相同机器的基础环境，不需要为了该实现再设计一套机器检查、19项连续性审计或故障演练。原管理器正常运行所需字段照现有 [运行指南](MODEL_USAGE.md) 提供即可。新的组合补测不调用旧协调器，正常暂停/恢复使用正在运行的冻结checkout及原配置。
 
 H20配置中的`hosts.H20.gpus[GPU].cpus`须包含实际为该任务分配的16个逻辑CPU；旧示例只有8个，需要填入新分配的CPU列表。管理器按`cpu_affinity_count`选核，启动trainer时仍传`--cpu-threads 8`。多组实验的CPU pool继续互不重叠，不能把扩大一个任务资源写成占用另一个任务的核。
 
@@ -381,4 +381,4 @@ H20 B6/B8双图、L20 B4双图发生OOM；各机最大batch的单图设置能运
 | [spatial_index_cpu.cpp](../models/csrc/spatial_index_cpu.cpp) / [fps_cpu.c](../models/csrc/fps_cpu.c) | FP32原生几何与可调候选并行 |
 | [datasets.py](../suction20/datasets.py) / [full_data.py](../suction20/full_data.py) / [runner.py](../suction20/runner.py) | 缓存配置下传与场景重复读取去除 |
 
-这份交付是可运行的新执行路径及其配置/说明。CD-010原路径已有[真实H20/L20短测](performance/CD010_FROM_SCRATCH_RESULTS.md)；几何重叠和12档batch扫描也已有真实结果；新增接触头gather/pose chunk候选尚待两机各一个实验的比较。E2新精度下的完整训练表现、CUDA几何和GPU增强均没有被记为已完成。
+这份交付是可运行的新执行路径及其配置/说明。CD-010资源、几何重叠、原接触头batch扫描和[zone128最终比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已有真实结果；后续[batch/累积组合补测](BATCH_ACCUMULATION_SUPPLEMENT.md)尚待执行。E2新精度下的完整训练表现、CUDA几何和GPU增强均没有被记为已完成。
