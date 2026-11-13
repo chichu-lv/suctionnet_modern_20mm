@@ -4,7 +4,7 @@
 
 **执行入口：`scripts/benchmark_geometry_overlap.py --suite batch-combo`。H20/E5六档、L20/E3六档，一次执行固定列表。此入口只做独立短测和汇总，不调用正式训练的配置选择或启动器，也不自动改动正在运行的六组任务。**
 
-最新已发布的[最终测试报告](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)记录：H20 B4A2/zone128为2.450753帧/s，L20 B1A8/zone128为3.622360帧/s，六组正式任务已启动并产生成功更新。这是该报告的状态快照。本补测尚无新GPU结果；当前代码环境的配置检查不能充当H20/L20实测。
+最新已发布的[最终测试报告](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)记录：H20 B4A2/zone128为2.450753帧/s，L20 B1A8/zone128为3.622360帧/s，六组正式任务已启动并产生成功更新。这是该报告的状态快照。本补测现已完成十二档真实GPU测试，全部正常结束；完整结果见[补测报告](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)。正式配方保持有效batch8。
 
 ## 1. 本轮补上的问题
 

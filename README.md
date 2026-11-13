@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13，北京时间）：** [九档接触头测试及正式启动](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已记录：H20/E5采用B4A2/zone128，2.450753帧/s；L20/E3采用B1A8/zone128，3.622360帧/s，分别较同机有效batch8原路径提高17.79%和29.40%。六组新训练已从头启动并产生成功更新，完整训练尚未完成。按最新要求新增[batch与累积次数组合补测](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：两机各六档，明确包含H20 B4A6和L20 B1A12与zone128的组合，同时比较有效batch24下的microbatch。补测独立运行、仅生成结果，不自动替换正在运行的正式配置；新增十二档尚无GPU结果。以上是已发布记录，不是实时监控。
+**当前状态（2026-11-13，北京时间）：** [九档接触头测试及正式启动](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)已记录：H20/E5采用B4A2/zone128，2.450753帧/s；L20/E3采用B1A8/zone128，3.622360帧/s，分别较同机有效batch8原路径提高17.79%和29.40%。六组新训练已从头启动并产生成功更新，完整训练尚未完成。按最新要求新增[batch与累积次数组合补测](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：两机各六档，明确包含H20 B4A6和L20 B1A12与zone128的组合，同时比较有效batch24下的microbatch。补测独立运行、仅生成结果，不自动替换正在运行的正式配置；十二档已全部完成：[补测结果](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)中H20 B4A6提升12.03%、B4A12提升17.60%，L20 B1A12提升4.54%，均相对本轮同机现行配置；正式任务仍使用有效batch8。以上是已发布记录，不是实时监控。
 
 ## Done（已完成）
 
@@ -33,14 +33,13 @@
 
 - [x] [接触头可选实现](docs/CONTACT_HEAD_OPTIMIZATION.md)：v4 `contact_feature_gather_mode="zone"`按区域一次gather，原`chunk`路径保留。[最终执行入口](docs/FINAL_OPTIMIZATION_AND_TRAINING.md)使用`--suite final`，H20五档、L20四档均为有效batch8；`--run --start-training --training-root`在短测后自动选择并启动各机正式任务，新头未达3%收益则采用最快原路径。
 - [x] [九档接触头实测与六组启动](docs/performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)：全部完成，两机均选zone128，正式训练采用有效batch8；该结果只覆盖本轮有效batch8条件，没有测试B4A6/zone128。
-- [x] [batch/累积组合补测入口](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：`--suite batch-combo`一次执行本机六档，固定zone128与depth2，保留整体及同有效batch的吞吐排名和样本预算换算。配置与汇总代码已实现，真实补测待执行。
+- [x] [batch/累积组合补测入口](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)：`--suite batch-combo`一次执行本机六档，固定zone128与depth2，保留整体及同有效batch的吞吐排名和样本预算换算。[十二档真实补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已全部完成，暂用训练卡的E5/E3已按原配置恢复。
 
 ## TODO（待完成）
 
 - [ ] 完成已经启动的六组正式预训练：各230,400有效样本，当前有效batch8对应28,800次成功更新；warmup1,440次、每2,880次更新一次原定验证，共10个节点。
 - [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
 - [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
-- [ ] 按最新要求，仅用 **H20/E5、L20/E3各一个实验**执行[十二档batch/累积补测](docs/BATCH_ACCUMULATION_SUPPLEMENT.md)，补齐历史最佳组合与新接触头的交叉项。每档48帧预热、240帧计时；不重复旧接触头/线程矩阵，不附加完整验证或恢复审计。测试结果不自动改变正式训练的有效batch。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
