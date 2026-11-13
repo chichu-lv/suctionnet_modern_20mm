@@ -362,15 +362,28 @@ static void select_region(Region &region, Py_ssize_t limit, const double *xyz,
     }
 }
 
+static double reference_dot3(double ax, double ay, double az,
+                             double bx, double by, double bz) {
+    // NumPy's contraction starts with positive zero. Starting at the first
+    // product instead preserves negative zero when all products are -0 (for
+    // example an exact anchor projected onto an all-negative axis). Preserve
+    // the existing nonzero operation order and disabled FMA contraction.
+    double result = 0.;
+    result += ax*bx;
+    result += ay*by;
+    result += az*bz;
+    return result;
+}
+
 static ContactPoint project_point(const Grid &grid, Row row, Row q,
                                   const ContactInputs &in) {
     const auto *center = in.points + 3*q;
     const auto *u = in.u + 3*q, *v = in.v + 3*q, *n = in.axes + 3*q;
     const auto *point = grid.xyz + 3*row;
     const double dx = point[0]-center[0], dy = point[1]-center[1], dz = point[2]-center[2];
-    ContactPoint out{row, (dx*u[0]+dy*u[1])+dz*u[2],
-                         (dx*v[0]+dy*v[1])+dz*v[2],
-                         (dx*n[0]+dy*n[1])+dz*n[2], 0.,
+    ContactPoint out{row, reference_dot3(dx, dy, dz, u[0], u[1], u[2]),
+                         reference_dot3(dx, dy, dz, v[0], v[1], v[2]),
+                         reference_dot3(dx, dy, dz, n[0], n[1], n[2]), 0.,
                          in.scene_instance[row] == in.instances[q]};
     out.rho = std::hypot(out.x, out.y);
     return out;
@@ -439,9 +452,8 @@ static void process_contact(Row q, const Grid &grid, const ContactInputs &in,
             double normal_dot = 0.;
             if (normal_valid) {
                 const auto *observed = in.scene_normals + 3*point.row;
-                normal_dot = (static_cast<double>(observed[0])*normal[0] +
-                              static_cast<double>(observed[1])*normal[1]) +
-                              static_cast<double>(observed[2])*normal[2];
+                normal_dot = reference_dot3(observed[0], observed[1], observed[2],
+                                           normal[0], normal[1], normal[2]);
             }
             auto *geometry = output.geometry + 7*position;
             geometry[0] = static_cast<float>(point.x/radius);

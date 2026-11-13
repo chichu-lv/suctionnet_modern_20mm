@@ -58,6 +58,10 @@ def assert_query_equal(expected, actual):
         for field in ('indices', 'mask', 'geometry', 'counts'):
             np.testing.assert_array_equal(actual[name][field], expected[name][field],
                                           err_msg=f'{name}.{field}')
+            if field == 'geometry':
+                # Numerical equality hides signed-zero drift caught by the real
+                # paired query hashes. Descriptor identity is byte-exact.
+                assert actual[name][field].tobytes() == expected[name][field].tobytes(), name
     np.testing.assert_array_equal(actual['lip_sector_counts'], expected['lip_sector_counts'])
 
 
@@ -137,6 +141,33 @@ def test_native_contact_matches_p2_queries_and_rng(compiled_fps, native_contact)
     selected_validity = np.concatenate([actual[name]['geometry'][actual[name]['mask']][:, 6]
                                         for name in ZONE_NAMES])
     assert np.any(selected_validity == 0) and np.any(selected_validity == 1)
+
+
+@pytest.mark.parametrize('random_roll', [False, True])
+def test_native_contact_anchor_signed_zero_matches_reference_bytes(compiled_fps, native_contact, random_roll):
+    inputs = scene([[.125, -.25, .5]], [1])
+    # A valid unit observed normal with signed-zero components also exercises
+    # the normal-dot descriptor for an orthogonal candidate axis.
+    inputs['normal_obs'] = torch.tensor([[-1., -0., -0.]])
+    index = SpatialIndex.from_inputs(inputs, backend='uniform_grid_cpu')
+    axes = [[x, y, z] for x in (-.1, .1) for y in (-.2, .2) for z in (-1., 1.)]
+    axes += [[0., 1., 0.], [0., -1., 0.], [0., 0., 1.], [0., 0., -1.]]
+    count = len(axes)
+    args = (inputs['xyz_cam_m'].repeat(count, 1), torch.tensor(axes),
+            torch.ones(count, dtype=torch.long), torch.zeros(count, dtype=torch.long),
+            torch.ones(count, dtype=torch.bool))
+    reference = ContactGrouping(FROZEN, fps_fn=compiled_fps)
+    native = ContactGrouping(FROZEN, fps_fn=compiled_fps, contact_query_backend='native_cpu')
+    torch.manual_seed(19)
+    before = torch.get_rng_state()
+    expected = reference.query(index, *args, random_roll=random_roll)
+    after = torch.get_rng_state()
+    torch.set_rng_state(before)
+    actual = native.query(index, *args, random_roll=random_roll)
+    assert torch.equal(torch.get_rng_state(), after)
+    assert_query_equal(expected, actual)
+    assert np.all(expected['core']['geometry'][:, 0, :3].view(np.uint32) == 0)
+    assert np.all(actual['core']['counts'] == 1)
 
 
 def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled_fps, native_contact):
