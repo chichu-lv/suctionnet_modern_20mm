@@ -2,7 +2,7 @@
 
 日期：2026-11-13（北京时间）。基于 `c684aae` 的[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)。
 
-**实测更新（2026-11-13）：** 默认12档已全部尝试，9档完成、3档OOM；H20/E5最快B4A6/depth2为2.259727帧/s，L20/E3保留B1A12/depth2的3.038967帧/s，B2只快0.17%。详见[完整扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。本矩阵已经完成，不再重复；下一项为[接触头gather与pose chunk优化](CONTACT_HEAD_OPTIMIZATION.md)。完整训练继续停止。以下保留原扫描设计和运行入口。
+**实测更新（2026-11-13）：** 默认12档已全部尝试，9档完成、3档OOM；H20/E5最快B4A6/depth2为2.259727帧/s，L20/E3保留B1A12/depth2的3.038967帧/s，B2只快0.17%。详见[完整扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。本矩阵已经完成，不再重复；[接触头改动说明](CONTACT_HEAD_OPTIMIZATION.md)保留，但此前`--suite contact-head`已由[最后测试并开训](FINAL_OPTIMIZATION_AND_TRAINING.md)的`--suite final`替代，最后测试结束后无论新增收益如何都按用户授权立即开训。当前最后发布状态仍为停止。以下保留原扫描设计和运行入口。
 
 **本轮取消人为显存上限，一次运行预先列出的多档 batch，再统一比较吞吐与显存。** H20 只使用 E5，L20 只使用 E3；默认分别 7 档和 5 档，不需要每测一档就人工回传、再生成下一档。入口是 `benchmark_geometry_overlap.py --suite batch-scan`。
 

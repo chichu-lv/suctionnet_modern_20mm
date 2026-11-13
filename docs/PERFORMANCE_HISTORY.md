@@ -4,7 +4,7 @@
 
 ## 1. 先确认我们现在到了哪里
 
-**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)，已有[资源短测](performance/CD010_FROM_SCRATCH_RESULTS.md)、[几何重叠实测](performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)和[无显存上限的12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)。扫描9档完成、3档OOM；H20/E5选择B4/depth2（本轮B4A6为2.259727帧/s），L20/E3保留B1/depth2（B1A12为3.038967帧/s），两机均保留dense64k。下一项[接触头gather/pose chunk优化](CONTACT_HEAD_OPTIMIZATION.md)固定这两组性能对照，不重复batch矩阵；新增候选GPU收益待测。有效batch24/12仍是性能比较条件，完整训练与协调器保持停止。下文保存CD-009历史，包括当时112/36 GiB上限，不把不同阶段提速比例相乘。
+**独立从头训练的后续实现**见[CD-010运行入口](FROM_SCRATCH_PERFORMANCE.md)，已有资源、几何重叠和[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)实测。扫描9档完成、3档OOM，支持H20/E5 B4/depth2、L20/E3 B1/depth2。按最新指令，[最后一轮优化并开训](FINAL_OPTIMIZATION_AND_TRAINING.md)统一正式有效batch8，执行H20五档、L20四档；新接触头比最快已完成原路径至少快3%才采用，否则用原路径。测试结束无论收益如何都直接从头启动六组正式训练，不再追加优化、恢复验收或等待确认。当前最后发布状态仍为停止，实际启动以训练机执行记录为准。下文保存CD-009历史，不把不同阶段提速比例相乘。
 
 **目前已经实际应用的组合是：P1 数据与 FPS 优化 + P2 全点网格/坐标快路径 + P3 原生接触查询/`split` 分块。H20/E5 使用 64k dense chunk，L20/E0、E1、E3、E4 使用 16k。** 较早概述中的“P2 仅测试、P3 尚未测试”已被后续真实 checkpoint、迁移和正常训练日志更新。
 

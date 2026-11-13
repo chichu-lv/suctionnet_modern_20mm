@@ -1,12 +1,12 @@
-# batch 扫描后的选择与接触头优化
+# batch 扫描后的取舍与最后一轮接触头优化
 
 日期：2026-11-13（北京时间）。依据最新[完整显存/batch扫描报告](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)，该报告对应测试源码 `a07659a`、结果提交 `d6a9328`。
 
-**本轮固定 H20/E5 的 microbatch4/depth2、L20/E3 的 microbatch1/depth2，结束扩大 batch 的扫描。下一项只优化 GPU 接触头：把重复的特征 gather 移到区域级，再比较 pose chunk32/64/128。** 已提供可选实现与 `--suite contact-head` 入口；新增接触头方案尚无真实 GPU 吞吐结果，默认仍为已测的 `chunk` gather 路径。完整训练与协调器继续停止。
+**这是最后一轮优化。** 按最新指令，两机统一采用正式有效batch8，使用`--suite final`一次完成H20五档、L20四档比较；随后无论新头是否带来收益，都立即从头启动正式训练。新头只有比同机最快已完成原路径至少快3%时才采用，否则用原路径。完整流程见[最终测试并开训](FINAL_OPTIMIZATION_AND_TRAINING.md)。旧`--suite contact-head`的有效batch24/12方案保留为可复用历史入口，本轮执行指令已由`final`替代。
 
 ## 1. 扫描已经回答的问题
 
-12档均已尝试，9档完成、3档CUDA OOM。当前选择如下；这是性能短测中的配置，还没有确定正式训练的有效batch。
+12档均已尝试，9档完成、3档CUDA OOM。以下为已完成的历史性能对照；最终训练已选有效batch8，因此最后一轮会在该正式条件下比较H20的B2/B4和L20的B1，不能把下表速度直接沿用为有效batch8的实测值。
 
 | 主机 / 实验 | 采用的性能对照 | 有效batch | 帧/s | allocated / reserved 峰值 GiB | 选择依据 |
 |---|---|---:|---:|---:|---|
@@ -36,7 +36,7 @@ H20/B8若要放入两份图，需要减少活跃/临时张量峰值或改变图�
 | H20/B4A6/depth2 | 10.625 s | 4.222 s | 5.470 s | 0.223 s | 3.019 ms |
 | L20/B1A12/depth2 | 3.920 s | 1.938 s | 1.695 s | 0.073 s | 3.323 ms |
 
-几何future等待与更新中位数之比约为2.1%和1.9%，loader等待只有约0.03%和0.08%。这是用已记录中位数说明量级，**不是GPU空闲率，也不是下一轮加速的严格上限**。这些host区间含同步影响，不能机械相加，也不能据此判定某个CUDA kernel已达到算力或带宽上限。[阶段数据](performance/CD010_GEOMETRY_MEMORY_RESULTS.md#3-已有阶段日志揭示的限制)
+几何future等待与更新中位数之比约为2.1%和1.9%，loader等待只有约0.03%和0.08%。这是用已记录中位数说明量级，**不是GPU空闲率，也不是本轮加速的严格上限**。这些host区间含同步影响，不能机械相加，也不能据此判定某个CUDA kernel已达到算力或带宽上限。[阶段数据](performance/CD010_GEOMETRY_MEMORY_RESULTS.md#3-已有阶段日志揭示的限制)
 
 CPU几何仍有实际工作量：采用配置的后台job中位数分别为6.110秒和2.661秒，只是大部分与GPU工作重叠。GPU部分变快后，CPU等待可能重新显现，因此后续继续读取已有future等待即可；当前不增加worker、几何线程或CPU亲和性扫描。
 
@@ -99,20 +99,33 @@ v4性能sidecar新增可选字段：
 
 区域查询、原始点索引、FPS、几何描述、MLP权重、mask、计数、池化与输出定义沿用原实现。改变的是特征索引和梯度累加的组织方式；允许正常浮点归约差异，不增加历史checkpoint的AMP/RNG逐项对齐。代码检查只需要正常样本的输出和梯度检查及已有套件，不追加完整验证或新的恢复流程。
 
-## 6. 下一次只运行每机四档接触头比较
+## 6. 最后一轮在正式有效 batch 8 下比较九档
 
-入口：`benchmark_geometry_overlap.py --suite contact-head`。两机固定当前采用的microbatch、累积次数与depth2，测试四个明确的候选：
+入口为`benchmark_geometry_overlap.py --suite final`。H20在有效batch8下，B4只有两份microbatch，而已测B4A6有六份；因此最后保留B2A4和B4A2两个原路径对照，直接选正式条件下较快的一项。L20继续B1A8/depth2。
 
-| 候选 | gather模式 | pose chunk | 回答的问题 |
-|---|---|---:|---|
-| 原路径对照 | chunk | 32 | 当前已测方式在本次同条件窗口中的速度 |
-| 按区域索引 | zone | 32 | 单独减少重复gather是否有净收益 |
-| 按区域索引与中等分块 | zone | 64 | 减少接触头小块调用是否继续受益 |
-| 按区域索引与较大分块 | zone | 128 | 更大pose chunk的收益与显存代价 |
+| 主机 / 实验 | Microbatch × 累积 | gather模式 | pose chunk | 用途 |
+|---|---|---|---:|---|
+| H20 / E5 | B2A4 / depth2 | chunk | 32 | 正式batch8的原路径对照之一 |
+| H20 / E5 | B4A2 / depth2 | chunk | 32 | 正式batch8的另一原路径对照 |
+| H20 / E5 | B4A2 / depth2 | zone | 32 | 单独减少重复gather |
+| H20 / E5 | B4A2 / depth2 | zone | 64 | 按区gather与中等pose chunk |
+| H20 / E5 | B4A2 / depth2 | zone | 128 | 按区gather与较大pose chunk |
+| L20 / E3 | B1A8 / depth2 | chunk | 32 | 原路径对照 |
+| L20 / E3 | B1A8 / depth2 | zone | 32 | 单独减少重复gather |
+| L20 / E3 | B1A8 / depth2 | zone | 64 | 按区gather与中等pose chunk |
+| L20 / E3 | B1A8 / depth2 | zone | 128 | 按区gather与较大pose chunk |
 
-H20仍为E5/B4A6/有效batch24，L20仍为E3/B1A12/有效batch12。其余保持dense65,536、geometry8、affinity16、Torch8、workers4、FP16与FP32几何、fused AdamW、无人工显存上限，继续原冻结数据和512候选。
+其余固定dense65,536、geometry8、affinity16、Torch8、workers4、FP16与FP32几何、fused AdamW、无人工显存上限、原冻结数据和512候选。每档48帧预热、240帧计时，即step6结束到step36结束；两机每档都是30次计时更新，共288个有效样本。
 
-每档48有效帧预热、240帧计时；H20窗口step2→12，L20为step4→24。每机只比较四档，共八次独立短测。运行器沿用CUDA OOM记录后继续、其他错误停止、完整窗口且正常退出才进入排名的机制。不会重新展开已完成的12档batch扫描，也不加入完整训练、恢复审计或额外trace。
+不再添加batch、worker、allocator、CUDA trace或其他优化矩阵。旧`--suite contact-head`的E24/E12四档方案只保留历史入口，本次使用`final`，不先跑旧方案再跑正式batch方案。
+
+### 选择规则及开训动作
+
+1. 在同机完整计时且正常结束的原路径候选中选最快一项；H20在B2A4/B4A2中选择，L20原路径为B1A8。
+2. 只有新头候选比这个原路径至少快3%时才采用新头；否则保留原路径。3%是用于结束本轮的工程选择阈值，不是统计置信区间。
+3. 选择结束后立即生成新的正式配置并从step0启动训练，无收益也开训。用户已经授权这个动作，不需要再等待确认、补一轮验收或进行额外恢复检查。
+
+用以下入口在训练机执行最后测试与后续启动；GPU、CPU和数据路径取实际分配值：
 
 ```bash
 export PYTHONPATH="$PWD"
@@ -120,21 +133,29 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 taskset --cpu-list "$TRAIN_CPUS" python scripts/benchmark_geometry_overlap.py \
-  --suite contact-head --hardware H20 \
+  --suite final --hardware H20 \
   --no-gpu-memory-limit \
-  --out-dir "$BENCH_ROOT/H20-E5-contact-head" \
+  --out-dir "$BENCH_ROOT/H20-E5-final" \
   --source-root "$DATA_ROOT/input_raw" \
   --label-root "$DATA_ROOT/output" \
   --backbone-root "$BACKBONE_ROOT" \
-  --run
+  --run --start-training --training-root "$FINAL_ROOT"
 ```
 
-L20改为`--hardware L20`与新的`L20-E3-contact-head`输出目录。省略`--run`只生成计划；汇总继续输出`summary.json`/`summary.md`、每档配置和日志。以同机本次原路径对照计算收益，不将不同日期、有效batch或其他模型的速度混为一组。
+L20改为`--hardware L20`与新的`L20-E3-final`输出目录。多卡放置可通过`--resource-map`指定实际GPU/CPU映射，格式和各机启动范围见[最终执行文档](FINAL_OPTIMIZATION_AND_TRAINING.md)。默认只生成计划；`--run --start-training`才会完成最后测试并实际启动训练。
 
-如果zone32不比chunk32快，原路径结果仍保留；再看zone64/128是否因调用粒度获得净收益。若四档没有明确收益，就保持当前已测方式，使用已有前向/反向和future等待定位剩余阶段，不把源码分支数量的减少写成实际提速。
+启动器直接调用原`train_pretrain.py`，保留原生checkpoint、日志和原定验证，不恢复旧协调器或旧训练，也不附加备份daemon。当前聊天环境没有真实H20/L20执行通道；已提供入口不等于训练已经启动，实际进程与启动记录以训练机执行结果为准。
 
-## 7. 性能配置与正式训练配方分开确定
+## 7. 六组正式训练统一有效 batch 8
 
-本轮固定有效batch24/12，是为接续同机性能对照条件。最终正式训练仍需采用明确的有效batch，并保留230,400有效样本及按样本计算的warmup/验证节点；生成器会重新派生更新次数，不自动放大学习率。
+每组仍使用230,400个有效训练样本，换算为28,800次成功更新；warmup11,520样本即1,440次更新；每23,040样本即2,880次更新做一次原定验证，共10个节点。学习率峰值、Adam参数、loss和冻结数据不因有效batch8自动缩放。
 
-特别是H20 B4/depth2要求至少两份microbatch，因此有效batch至少8。若最终采用B4A2/有效batch8，每次更新只有两份任务，与本次B4A6的六份任务相比，流水线填充/收尾占比和更新频率会改变。**不能将B4A6的2.259727帧/s直接标为B4A2的实测速度。** 本轮不提前替其他五组选择最终训练配方，也不启动完整训练。
+| 实验 | 设备 | 正式microbatch / depth | workers | 精度与接触头选择 |
+|---|---|---|---:|---|
+| E0 / E1 | L20 | B1A8 / depth1 | 6 | FP16；无接触分组 |
+| E2 | L20 | B1A8 / depth1 | 4 | BF16 dense / FP32 sparse；无接触分组 |
+| E3 | L20 | B1A8 / depth2 | 4 | FP16；采用本机最后比较的选择 |
+| E4 | L20 | B1A8 / depth2 | 4 | FP16；沿用L20/E3所选接触头，不加E4短测 |
+| E5 | H20 | 所选B2A4或B4A2 / depth2 | 4 | FP16；采用H20最后比较的选择 |
+
+正式任务均从头初始化，不把短测的288帧、优化器状态或checkpoint接入正式预算。历史B4A6的2.259727帧/s属于有效batch24；本轮将在正式batch8条件下做最后比较，之后直接开训并通过原训练日志记录长期吞吐，不再追加性能测试轮次。

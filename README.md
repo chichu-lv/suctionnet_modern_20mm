@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、两种微调、推理及R20评价已实现，旧`dc4ad6b00535`数据继续复用。完整训练与协调器保持停止，最终代码确定前只做优化测试。[12档显存/batch扫描](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已完成：9档完成、3档OOM；H20/E5选择microbatch4/depth2，已测B4A6为2.259727帧/s，L20/E3保留microbatch1/depth2，已测B1A12为3.038967帧/s。有效batch24/12仍只是性能比较条件。下一项[接触头优化](docs/CONTACT_HEAD_OPTIMIZATION.md)减少重复gather并比较pose chunk；新增候选GPU收益待测。六组完整训练与目标域效果实验尚未完成。以上为已发布记录，不是实时监控。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5模型、预训练、微调与R20评价已实现，旧数据继续复用。[12档batch扫描](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已完成：H20支持B4/depth2，L20保留B1/depth2。用户已明确这是[最后一轮优化](docs/FINAL_OPTIMIZATION_AND_TRAINING.md)：两机统一正式有效batch8，共做9档定向短测（H20五档、L20四档），完成后无论新接触头是否提速，都立即采用所选配置从头启动正式训练，不再增加优化轮次或等待确认。仓库最后发布的完整训练状态仍为停止；当前聊天环境没有真实GPU执行通道，不宣称已经启动。
 
 ## Done（已完成）
 
@@ -31,14 +31,14 @@
 - [x] [CPU几何/GPU重叠实现](docs/GEOMETRY_GPU_OVERLAP.md)及[两机实测](docs/performance/CD010_GEOMETRY_OVERLAP_RESULTS.md)：H20/E5与L20/E3分别提速19.90%和33.82%，allocated峰值分别45.28和11.72 GiB。四项短测均正常结束，不再重复串行对照。
 - [x] [显存/batch扫描](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已执行全部12档，9档完成、3档OOM；人工显存上限已取消。H20/E5 microbatch4/depth2为本轮最快，L20/E3 B2只比B1快0.17%，保留microbatch1/depth2。两机的大batch单图方案都更慢，继续保留几何重叠。
 
-- [x] [接触头可选实现与比较入口](docs/CONTACT_HEAD_OPTIMIZATION.md)：v4 `contact_feature_gather_mode="zone"`按区域一次gather，默认`chunk`保持已测路径；`--suite contact-head`在两机采用的batch上各比较chunk32、zone32、zone64、zone128。源码操作减少已落实，新增GPU吞吐待测。
+- [x] [接触头可选实现](docs/CONTACT_HEAD_OPTIMIZATION.md)：v4 `contact_feature_gather_mode="zone"`按区域一次gather，原`chunk`路径保留。[最终执行入口](docs/FINAL_OPTIMIZATION_AND_TRAINING.md)使用`--suite final`，H20五档、L20四档均为有效batch8；`--run --start-training --training-root`在短测后自动选择并启动各机正式任务，新头未达3%收益则采用最快原路径。
 
 ## TODO（待完成）
 
-- [ ] **最终代码确定后：** 启动并完成E0–E5独立预训练，每组230,400有效样本和原10个按样本计的验证节点。当前完整训练停止；有效batch4对应57,600次更新，若显式选择8则为28,800次，不把两者训练轨迹视为等价。
+- [ ] 执行[最后一轮短测并直接启动训练](docs/FINAL_OPTIMIZATION_AND_TRAINING.md)。六组均有效batch8、230,400有效样本、28,800次成功更新；warmup1,440次更新、每2,880次更新一次原定验证，共10个节点。用户已授权测试结束后立即启动，无收益也采用原路径开始训练。
 - [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
 - [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
-- [ ] 仅用 **H20/E5、L20/E3各一个实验**，按[接触头方案](docs/CONTACT_HEAD_OPTIMIZATION.md)完成每机四档定向性能比较。已完成的12档batch扫描不重复，不继续扩大worker/CPU矩阵，不增加恢复审计或完整验证。CUDA接触查询/FPS及GPU增强仍未实现。
+- [ ] 仅用 **H20/E5、L20/E3各一个实验**完成最后9档比较：H20五档、L20四档。该轮结束即关闭优化阶段，不再扩batch/worker/allocator/trace矩阵，不追加恢复审计或训练前完整验证；CUDA几何与GPU增强不再作为本次开训前任务。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -56,7 +56,7 @@
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
-| 独立从头训练的优化 | [CD-010实现与运行](docs/FROM_SCRATCH_PERFORMANCE.md) · [batch扫描实测](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md) · [接触头下一步](docs/CONTACT_HEAD_OPTIMIZATION.md) |
+| 独立从头训练与最后一轮优化 | [最终测试并开训](docs/FINAL_OPTIMIZATION_AND_TRAINING.md) · [batch实测](docs/performance/CD010_GEOMETRY_MEMORY_RESULTS.md) · [接触头改动](docs/CONTACT_HEAD_OPTIMIZATION.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

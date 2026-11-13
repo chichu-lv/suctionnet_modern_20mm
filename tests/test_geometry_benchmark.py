@@ -160,12 +160,35 @@ def test_contact_head_comparison_keeps_selected_batch_and_changes_one_head_optio
         assert (variant['stop_at_successful_step'] - variant['warmup_successful_steps']) * effective == 240
 
 
-@pytest.mark.parametrize('failure,expected_calls,expected_exit', [
-    ('torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00 GiB', 3, 0),
-    ('FileNotFoundError: missing training input', 2, 1),
+@pytest.mark.parametrize('hardware,batches', [('H20', [2, 4, 4, 4, 4]), ('L20', [1, 1, 1, 1])])
+def test_final_comparison_uses_production_batch_and_fixed_nine_candidates(hardware, batches, tmp_path):
+    plan = prepare_plan(hardware, tmp_path, suite='final')
+    assert plan['continue_on_candidate_failure']
+    assert [item['microbatch_size'] for item in plan['variants']] == batches
+    assert sum(item['role'] == 'baseline' for item in plan['variants']) == (2 if hardware == 'H20' else 1)
+    for variant in plan['variants']:
+        config = json.loads(Path(variant['train_config']).read_text())
+        performance = json.loads(Path(variant['performance_config']).read_text())
+        assert config['training']['effective_batch_size'] == 8
+        assert config['training']['microbatch_size'] * config['training']['gradient_accumulation_steps'] == 8
+        assert config['training']['geometry_pipeline_depth'] == 2
+        assert config['runtime']['gpu_memory_limit_gib'] is None
+        assert variant['warmup_successful_steps'] == 6
+        assert variant['stop_at_successful_step'] == 36
+        assert config['model']['pose_chunk_size'] == variant['pose_chunk_size']
+        assert performance['contact_feature_gather_mode'] == variant['contact_feature_gather_mode']
+    assert [(item['contact_feature_gather_mode'], item['pose_chunk_size'])
+            for item in plan['variants'][-3:]] == [('zone', 32), ('zone', 64), ('zone', 128)]
+
+
+@pytest.mark.parametrize('suite,failure,expected_calls,expected_exit', [
+    ('batch-scan', 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.00 GiB', 3, 0),
+    ('batch-scan', 'FileNotFoundError: missing training input', 2, 1),
+    ('final', 'RuntimeError: candidate implementation failed', 5, 0),
 ])
-def test_scan_continues_after_cuda_oom_but_stops_other_errors(failure, expected_calls, expected_exit, tmp_path, monkeypatch):
-    plan = prepare_plan('H20', tmp_path, suite='batch-scan', batch_sizes=[2, 4], effective_batch_size=8)
+def test_scan_failure_policy_finishes_the_fixed_final_list(suite, failure, expected_calls, expected_exit, tmp_path, monkeypatch):
+    settings = {'batch_sizes': [2, 4], 'effective_batch_size': 8} if suite == 'batch-scan' else {}
+    plan = prepare_plan('H20', tmp_path, suite=suite, **settings)
     calls = []
 
     def fake_run(command, *, stdout, **kwargs):
@@ -193,6 +216,6 @@ def test_scan_continues_after_cuda_oom_but_stops_other_errors(failure, expected_
     summary = json.loads((tmp_path / 'summary.json').read_text())
     assert plan['variants'][1]['name'] not in [item['name'] for item in summary['ranking']]
     if expected_exit == 0:
-        assert summary['results'][1]['execution_status'] == 'oom'
+        assert summary['results'][1]['execution_status'] == ('oom' if suite == 'batch-scan' else 'error')
         assert summary['best_variant'] == plan['variants'][-1]['name']
-        assert summary['ranking'][0]['geometry_pipeline_depth'] == 1
+        assert summary['ranking'][0]['geometry_pipeline_depth'] == (1 if suite == 'batch-scan' else 2)

@@ -46,11 +46,11 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 正式公开数据预训练
 
-`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。此前六组CD-010使用从[原CD-009 profile](../configs/runtime_profiles/cd009-v3/manifest.json)派生的新配置；现已全部停止，最终代码确定前只做优化测试。当前状态和停止前记录见[CD-010运行状态](performance/CD010_RUN_STATUS.md)。旧CD-009也停止，其[原策略和身份](CD009_PRETRAINING.md)保留作历史记录。
+`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。此前六组CD-010现已全部停止，见[运行状态](performance/CD010_RUN_STATUS.md)。用户已授权[最后一轮优化](FINAL_OPTIMIZATION_AND_TRAINING.md)结束后立即从头启动正式训练，无收益也采用原路径开训；不再等待确认，旧CD-009不恢复。
 
-每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练当前停止，尚未完成六组与各 10 次开发验证；最终有效batch确定后按同一样本预算派生更新数。
+每组独立seed42初始化，90/10场景划分，230,400有效样本、名义40轮；正式有效batch8对应28,800次成功更新，warmup1,440次，验证间隔2,880次，共10节点。跳步另计，短测样本与checkpoint不接入正式预算。峰值学习率保持原值，完整训练实际进度以训练机日志为准。
 
-正式多机管理复用下方[supervisor入口](#cd-009-persistent-multi-host-pretraining)和[公共模板](implementation/examples/cd009-supervisor.json)，私有控制配置不提交到仓库。六组与协调器当前保持停止，短测不恢复完整训练，不重复首100步、恢复审计或全机检查。性能比较使用下方两机各一个实验的入口。
+本次使用[最终测试并开训入口](FINAL_OPTIMIZATION_AND_TRAINING.md)直接调用`train_pretrain.py`，不恢复旧协调器。现有supervisor和[公共模板](implementation/examples/cd009-supervisor.json)保留为管理接口说明；本次不增加恢复审计、全机检查或测试后验收。
 
 ## CD-010 独立从头训练
 
@@ -58,11 +58,13 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 `--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
 
-[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2；随后[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)已完成，9档完成、3档OOM。H20/E5采用microbatch4/depth2，已测B4A6/有效24为2.259727帧/s；L20/E3保留microbatch1/depth2，已测B1A12/有效12为3.038967帧/s。B2的0.17%差异不支持L20扩大batch，已有扫描不重复。下一步[接触头比较](CONTACT_HEAD_OPTIMIZATION.md)使用`benchmark_geometry_overlap.py --suite contact-head --hardware H20|L20 --out-dir NEW [--run]`，各机在上述设置上比较chunk32、zone32、zone64、zone128四档。每档48帧预热、240帧计时；24/12仍是性能比较设置，不是最终训练配方。独立进程依次执行，CUDA OOM记录后继续，其他错误停止。默认只生成，`--run`才执行短测，不恢复完整训练。
+[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)和[12档batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)均已完成。最后使用`benchmark_geometry_overlap.py --suite final --hardware H20|L20 --out-dir NEW --run --start-training --training-root FINAL_ROOT`：正式有效batch统一8，H20比较B2A4/B4A2原chunk32及B4A2的zone32/64/128共五档，L20比较B1A8的chunk32/zone32/zone64/zone128共四档，均depth2。每档48帧预热、240帧计时，step6→36。选择最快已完成原路径；新头至少提高3%才替换，否则使用原路径。该阈值是工程选择规则，不是统计置信区间。测试结束即从头启动正式训练，无收益也开训，不追加其他优化或确认环节。旧`--suite contact-head`的E24/E12方案保留为历史入口，当前执行指令已经被`final`替代。
 
 新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头，新的定向比较使用32/64/128。`--contact-feature-gather-mode chunk|zone`选择分块内索引或按区域一次索引；默认`chunk`保持已测路径，`zone`候选尚无GPU收益数据。
 
 精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
+
+最终入口生成正式train/performance配置，并可通过`--resource-map`使用指定GPU/CPU映射；L20/E0/E1/E2用B1/depth1，E3/E4用B1/depth2，H20/E5用所选B2或B4/depth2。E0/E1为6 workers，其余4，E2保持BF16 dense/FP32 sparse，E4沿用E3所选接触头而不新增测试。直接启动的trainer继续原生checkpoint、日志与原定验证，不附加备份daemon。
 
 训练和恢复使用原生成的两个配置；独立评价/推理使用新run的 `resolved_config.json`。管理器支持 `selection_status="from_scratch"` 与v4 sidecar，使用独立的CD-010控制配置和账本即可。新运行不执行旧checkpoint四帧AMP/RNG对齐；原预算内的正常日志窗口提供实际吞吐判断。
 

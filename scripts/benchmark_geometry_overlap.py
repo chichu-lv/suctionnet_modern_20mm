@@ -9,6 +9,9 @@ with 48 warmup and 240 timed credited frames. --suite contact-head keeps the
 measured H20 B4A6 / L20 B1A12 depth2 choices and compares per-chunk vs per-zone
 feature gathers and pose chunks32/64/128. New configurations have no
 artificial GPU memory cap. By default only prepare; --run executes the plan.
+--suite final is the last comparison at the formal effective batch8: five
+H20/E5 settings and four L20/E3 settings. --start-training selects the result
+and immediately starts fresh full training for that host after the comparison.
 """
 from __future__ import annotations
 
@@ -57,8 +60,8 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                  batch_sizes=None, effective_batch_size=None, overlap_only=False):
     """Fresh configurations with equal credited-frame windows within a suite."""
     selected = HOSTS[hardware]
-    if suite not in ('overlap', 'memory', 'batch-scan', 'contact-head'):
-        raise ValueError('suite must be overlap, memory, batch-scan or contact-head')
+    if suite not in ('overlap', 'memory', 'batch-scan', 'contact-head', 'final'):
+        raise ValueError('suite must be overlap, memory, batch-scan, contact-head or final')
     if suite != 'batch-scan' and (batch_sizes is not None or effective_batch_size is not None or overlap_only):
         raise ValueError('Batch list, effective batch and overlap-only overrides require --suite batch-scan')
     warmup_frames, timed_frames = WARMUP_FRAMES, TIMED_FRAMES
@@ -101,7 +104,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                if not overlap_only else '') + 'This effective batch is '
             'a throughput-screening setting, not an automatic change to the final training recipe. '
             'BN/loss grouping changes; historical effective-batch4/8 speeds are references only.')
-    else:
+    elif suite == 'contact-head':
         selected_head = CONTACT_HEAD_SETTINGS[hardware]
         microbatch, effective = selected_head['microbatch_size'], selected_head['effective_batch_size']
         head_settings = {'chunk_pose32': ('chunk', 32), 'zone_pose32': ('zone', 32),
@@ -115,6 +118,24 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
             'the contact encoder chunk on that path. Geometry, dense chunk, resources and '
             'frame windows stay fixed. New operator speedups require these GPU measurements; '
             'the scan effective batch is not an automatically selected final training recipe.')
+    else:
+        microbatch = 4 if hardware == 'H20' else 1
+        effective = 8
+        head_settings = {f'b{microbatch}_chunk32': ('chunk', 32),
+                         f'b{microbatch}_zone32': ('zone', 32),
+                         f'b{microbatch}_zone64': ('zone', 64),
+                         f'b{microbatch}_zone128': ('zone', 128)}
+        specifications = [(name, microbatch, effective, 2) for name in head_settings]
+        if hardware == 'H20':
+            specifications.insert(0, ('b2_chunk32', 2, effective, 2))
+        warmup_frames, timed_frames = SCAN_WARMUP_FRAMES, SCAN_TIMED_FRAMES
+        comparison_note = (
+            'Final one-pass selection at production effective batch8. H20 compares B2A4 and '
+            'B4A2 original paths plus the B4A2 contact-head candidates; L20 keeps B1A8. '
+            'Choose the fastest completed original path. Adopt a new head only if at least '
+            '3% faster than that baseline; otherwise retain the baseline. Candidate failure '
+            'does not open another optimization round. Formal training starts from step0 '
+            'with the chosen configuration when --start-training is supplied.')
     memory_limit = gpu_memory_limit_gib
     if no_gpu_memory_limit and memory_limit is not None:
         raise ValueError('Choose unrestricted memory or a numeric limit, not both')
@@ -157,6 +178,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                          'effective_batch_size': effective_batch,
                          'contact_feature_gather_mode': gather_mode,
                          'pose_chunk_size': pose_chunk_size,
+                         'role': 'baseline' if gather_mode == 'chunk' else 'optimization',
                          'warmup_successful_steps': warmup_steps,
                          'stop_at_successful_step': stop_step,
                          'warmup_credited_frames': warmup_frames,
@@ -171,6 +193,7 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
                                                *variant['command']])
     plan = {
         'schema_version': ('suction20.geometry_overlap_benchmark.v1' if suite == 'overlap'
+                           else 'suction20.geometry_overlap_benchmark.v5' if suite == 'final'
                            else 'suction20.geometry_overlap_benchmark.v4' if suite == 'contact-head'
                            else 'suction20.geometry_overlap_benchmark.v3' if suite == 'batch-scan'
                            else 'suction20.geometry_overlap_benchmark.v2'),
@@ -180,7 +203,8 @@ def prepare_plan(hardware, out_dir, *, source_root=None, label_root=None,
         'total_credited_frames_per_variant': warmup_frames + timed_frames,
         'gpu_memory_limit_gib': memory_limit,
         'memory_policy': 'No artificial allocator cap; use available device VRAM' if memory_limit is None else f'Explicit {memory_limit:g} GiB allocator cap',
-        'continue_on_cuda_oom': suite in ('batch-scan', 'contact-head'),
+        'continue_on_cuda_oom': suite in ('batch-scan', 'contact-head', 'final'),
+        'continue_on_candidate_failure': suite == 'final',
         'comparison_note': comparison_note,
         'working_directory': str(ROOT), 'environment': environment,
         'gpu_selection': 'Inherit CUDA_VISIBLE_DEVICES; no device discovery or reassignment',
@@ -294,7 +318,7 @@ def summarize_plan(plan, out_dir):
                   **{key: variant.get(key, plan.get(key)) for key in
                      ('microbatch_size', 'gradient_accumulation_steps', 'effective_batch_size',
                       'geometry_pipeline_depth', 'gpu_memory_limit_gib',
-                      'contact_feature_gather_mode', 'pose_chunk_size')},
+                      'contact_feature_gather_mode', 'pose_chunk_size', 'role')},
                   **summarize_run(variant['run_dir'], warmup_steps=warmup, stop_step=stop)}
         execution_path = Path(variant['run_dir']).parent / 'execution.json'
         if execution_path.exists():
@@ -330,7 +354,9 @@ def summarize_plan(plan, out_dir):
                'memory_policy': plan.get('memory_policy'),
                'scope': plan['measurement_scope'],
                'comparison_note': plan.get('comparison_note'),
-               'conclusion_scope': 'One-pass throughput/capacity screening; only complete windows with observed normal trainer exits enter ranking. Does not measure convergence or automatically change the final training recipe.'}
+               'conclusion_scope': ('One-pass throughput selection at formal effective batch8; only complete windows with observed normal trainer exits enter ranking. The 3% adoption rule selects the final configuration; --start-training immediately launches fresh full training. Does not measure convergence.'
+                                    if plan.get('suite') == 'final' else
+                                    'One-pass throughput/capacity screening; only complete windows with observed normal trainer exits enter ranking. Does not measure convergence or automatically change the final training recipe.')}
     output = Path(out_dir)
     write_json(output / 'summary.json', summary)
     def number(value, digits=3):
@@ -405,6 +431,9 @@ def run_plan(plan, out_dir):
         # Persist progress after every candidate, including CUDA OOM. A new
         # process starts the next candidate with its own allocator/context.
         summary = summarize_plan(plan, out_dir)
+        if completed.returncode != 75 and plan.get('continue_on_candidate_failure', False):
+            print(f'{variant["name"]}: candidate failed; recording it and completing the final fixed list.', flush=True)
+            continue
         if oom and plan.get('continue_on_cuda_oom', False):
             print(f'{variant["name"]}: CUDA OOM; continuing the fixed candidate list.', flush=True)
             continue
@@ -415,14 +444,30 @@ def run_plan(plan, out_dir):
     return 0 if summary['ranking'] else 1
 
 
+def record_final_selection(plan, summary, out_dir):
+    from suction20.final_pretraining import select_final_setting
+    selection = select_final_setting(plan, summary)
+    output = Path(out_dir)
+    write_json(output / 'selection.json', selection)
+    summary['final_selection'] = selection
+    write_json(output / 'summary.json', summary)
+    with (output / 'summary.md').open('a') as stream:
+        stream.write('\n## Final training selection\n\n'
+                     f'Chosen: **{selection["selected_variant"]}**. '
+                     f'{selection["reason"]} See [selection.json](selection.json). '
+                     'The 3% threshold is a one-pass engineering rule, not a statistical confidence claim. '
+                     'Performance optimization ends after this selection.\n')
+    return selection
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hardware', required=True, choices=tuple(HOSTS))
-    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan', 'contact-head'), default='overlap',
-                        help='overlap: serial/depth2 pair; memory: larger-batch pair; batch-scan: full-VRAM scan; contact-head: selected batches with gather/chunk candidates')
+    parser.add_argument('--suite', choices=('overlap', 'memory', 'batch-scan', 'contact-head', 'final'), default='overlap',
+                        help='final: last production-batch comparison and optional immediate full-training launch; earlier suites remain available')
     parser.add_argument('--out-dir', required=True, help='New benchmark directory, or existing one with --summarize-existing')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--run', action='store_true', help='Prepare and sequentially run all planned candidates; batch-scan/contact-head continue after CUDA OOM')
+    mode.add_argument('--run', action='store_true', help='Run the fixed plan; batch-scan/contact-head continue after CUDA OOM, final records failed candidates and completes its list')
     mode.add_argument('--summarize-existing', action='store_true', help='Read plan/logs; launch no process')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')
@@ -434,14 +479,23 @@ def main():
     parser.add_argument('--batch-sizes', type=int, nargs='+', help='batch-scan microbatch list; defaults H20 1 2 3 4 6 8 / L20 1 2 3 4')
     parser.add_argument('--effective-batch-size', type=int, help='batch-scan common effective batch; defaults H20 24 / L20 12')
     parser.add_argument('--overlap-only', action='store_true', help='batch-scan: omit the largest-batch depth1 scheduling comparison')
+    parser.add_argument('--start-training', action='store_true',
+                        help='With --suite final --run: select measured settings and start this host\'s full fresh training, whether the new head wins or not')
+    parser.add_argument('--training-root', help='New root for final full-training configs, runs and launch records')
+    parser.add_argument('--resource-map', type=Path, help='Optional JSON mapping experiment to allocated gpu and cpus; defaults to the last recorded deployment')
     args = parser.parse_args()
+    if args.start_training and (args.suite != 'final' or not args.run or not args.training_root):
+        parser.error('--start-training requires --suite final --run --training-root NEW_ROOT')
     if args.run and not os.environ.get('CUDA_VISIBLE_DEVICES'):
         parser.error('Set CUDA_VISIBLE_DEVICES to the GPU allocated for this short test')
     if args.summarize_existing:
         plan = json.loads((Path(args.out_dir) / 'plan.json').read_text())
         if plan['hardware'] != args.hardware:
             parser.error('Hardware differs from the existing benchmark plan')
-        print(json.dumps(summarize_plan(plan, args.out_dir), indent=2, ensure_ascii=False))
+        summary = summarize_plan(plan, args.out_dir)
+        if plan.get('suite') == 'final':
+            record_final_selection(plan, summary, args.out_dir)
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
         return
     plan = prepare_plan(args.hardware, args.out_dir, source_root=args.source_root,
                         label_root=args.label_root, backbone_root=args.backbone_root, cpu_list=args.cpu_list,
@@ -449,7 +503,19 @@ def main():
                         no_gpu_memory_limit=args.no_gpu_memory_limit, batch_sizes=args.batch_sizes,
                         effective_batch_size=args.effective_batch_size, overlap_only=args.overlap_only)
     if args.run:
-        sys.exit(run_plan(plan, args.out_dir))
+        code = run_plan(plan, args.out_dir)
+        if args.suite == 'final' and code == 0:
+            summary = json.loads((Path(args.out_dir) / 'summary.json').read_text())
+            selection = record_final_selection(plan, summary, args.out_dir)
+            print(json.dumps({'final_selection': selection}, indent=2, ensure_ascii=False))
+            if args.start_training:
+                from suction20.final_pretraining import finalize_pretraining
+                resource_map = json.loads(args.resource_map.read_text()) if args.resource_map else None
+                report = finalize_pretraining(plan, summary, args.training_root,
+                                              resource_map=resource_map, launch=True)
+                write_json(Path(args.out_dir) / 'training-start.json', report)
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+        sys.exit(code)
     print(json.dumps({'status': 'prepared; no training launched', **plan}, indent=2, ensure_ascii=False))
 
 
