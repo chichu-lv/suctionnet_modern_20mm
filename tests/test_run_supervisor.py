@@ -611,6 +611,7 @@ def test_from_scratch_profile_passes_v4_sidecar_to_trainer(config, coordinator):
     path, _ = selected_v3(config, effective=4)
     source = Path(__file__).parents[1] / 'configs/runtime_profiles/cd009-v3/H20-E5.json'
     fresh, performance = from_scratch_config(json.loads(source.read_text()))
+    config['hosts']['H20']['gpus']['0']['cpus'] = list(range(16, 32))
     s.atomic_json(path, fresh)
     sidecar = path.with_name('fresh-performance.json')
     s.atomic_json(sidecar, performance)
@@ -621,6 +622,9 @@ def test_from_scratch_profile_passes_v4_sidecar_to_trainer(config, coordinator):
     command = s.trainer_command(config, assignment)
     assert assignment['runtime_profile']['selection_status'] == 'from_scratch'
     assert assignment['budget']['target_updates'] == 57600
+    assert assignment['cpus'] == list(range(16, 32))
+    assert assignment['runtime']['cpu_affinity_count'] == 16
+    assert command[command.index('--cpu-threads') + 1] == '8'
     assert command[command.index('--performance-config') + 1] == str(sidecar)
     assert '--init-checkpoint' not in command
 

@@ -4,7 +4,9 @@
 
 **结论：从头训练可以启用共享体素头、重新选择 dense chunk、改变广播梯度归约和几何精度，不再把旧 checkpoint 的四帧 AMP 梯度/RNG 对齐作为准入条件。已实现配置生成器、两级分段广播反向、FP32 原生几何、可调线程与 worker、静态缓存、显式精度、融合 AdamW、按更新读回 loss，以及可选的局部编译。** CUDA 全点接触查询/FPS 和 GPU 数据增强本轮没有实现，理由与后续接口见第 8 节。
 
-本轮默认选择 **B1A4、dense 65,536、FP16、4 个数据 worker、4 个原生几何线程、FP32 几何、segment 广播**；无实例的 E0/E1/E3 自动开启共享体素头。BF16 已实现为显式选项：当前 spconv 2.3.6 下密集层使用 BF16、稀疏骨干使用 FP32，不能直接称为更快的全模型 BF16。E2 可优先使用这个选项处理已有的 FP16 投影溢出。
+生成器按主机选择**未测资源候选**：H20 使用 **128k dense、8 个几何线程、16 个逻辑核 affinity**；L20 使用 **64k dense、4 个几何线程、8 个逻辑核 affinity**。两边先保留 B1A4、PyTorch CPU线程8、数据worker4、FP16、FP32几何和segment广播；无实例的E0/E1/E3自动开启共享体素头。具体候选表和少量定向测试见下文，尚未宣称这些数值是各主机最优值。
+
+BF16已实现为显式选项：当前spconv 2.3.6下密集层使用BF16、稀疏骨干使用FP32，不能直接称为更快的全模型BF16。E2可优先使用这个选项处理已有的FP16投影溢出。
 
 代码发布不改变现有 CD-009 训练。新配置、新 run 目录和新管理器账本分别使用 CD-010 命名；已有数据、标签和冻结物理定义继续复用。
 
@@ -57,11 +59,28 @@ flowchart TB
 
 E5 继续带原辅助头。B1A4 表示 microbatch=1、累积4次、有效 batch=4；沿用它是已有吞吐结果支持的起点，显存空闲本身不足以选择更大 batch。新算子投入后可以重新判断 B2，但本次没有增加 batch/线程/worker 交叉测试矩阵。
 
+### H20 / L20 分开选择资源
+
+| 参数 | H20候选 | L20候选 | 选择依据 |
+|---|---:|---:|---|
+| dense chunk | 131,072 | 65,536 | H20有更宽裕的显存，可尝试更大的单次密集计算；实际收益由吞吐决定 |
+| 原生几何线程 | 8 | 4 | H20为当前重接触/实例的E5提供更多候选并行能力 |
+| CPU affinity数量 | 16 | 8 | H20为几何与后台生产留出更多并行资源；具体CPU ID来自实际分配 |
+| PyTorch CPU线程 | 8 | 8 | 与affinity解耦，不因扩大资源池同时扩大Torch线程 |
+| 数据worker | 4 | 4 | 是否增加到6看暴露的loader等待，不按显存大小决定 |
+| allocator上限 | 112 GiB | 36 GiB | 沿用当前两台设备的资源上限口径，不等同于实际占用或整卡容量 |
+| microbatch × accumulation | 1×4 | 1×4 | 先评估算子与资源组合，再决定是否重测H20的B2A2 |
+| scene/object缓存 | 90/88 | 90/88 | 对应现有静态场景/物体范围，无需因H20内存更多而再加倍 |
+
+以上是可生成、待测的起点，`selection_status`仍是`from_scratch`。没有接触模块的实验不会创建8个无用几何工作线程。用户显式CLI参数优先于preset，`--hardware-preset reference`保留原共同的64k/geometry4/affinity8起点供比较；其GPU内存上限继承源profile。
+
+资源差异不改变实验定义。H20显存较多适合更大的chunk或以后重新评估microbatch，但不会使CPU几何自然并行，也不会自动提高loader吞吐。
+
 ## 3. GPU 密集路径的实现
 
-### 3.1 64k 与共享体素头
+### 3.1 按主机选择 chunk 与共享体素头
 
-配置生成器同时写入 `model.dense_chunk_size=65536` 和 sidecar 的 `dense_chunk_size_override=65536`，继续使用 `chunk_input_mode="split"`，新运行的配置含义与实际执行一致。生成器支持 `--dense-chunk-size`，例如 131072，但更大数值不自动代表更快。
+配置生成器将选定值同时写入`model.dense_chunk_size`和sidecar的`dense_chunk_size_override`：H20候选为131072，L20为65536，继续使用`chunk_input_mode="split"`。生成器支持`--dense-chunk-size`覆盖；H20的128k须与相同几何配置的64k比较，更大数值不自动代表更快。
 
 E0/E1/E3 的 backbone 特征与场景重力在同一网络体素内相同，且不存在逐点实例相对位置输入，因此既有体素头实现可以复用。执行顺序为：
 
@@ -129,7 +148,7 @@ module.compile(dynamic=True, mode="default")
 | 参数 | 旧默认 | 新配置默认 | 含义 |
 |---|---|---|---|
 | `geometry_precision` | `float64` | `float32` | 网格坐标、查询距离、局部投影、区域 FPS 及距离缓冲的精度；候选 FPS 也使用相同精度 |
-| `geometry_threads` | 2 | 4 | 原生候选并行数，受可用 CPU affinity 和有效候选数约束，可显式选6或8 |
+| `geometry_threads` | 2 | H20=8，L20=4 | 原生候选并行数，受可用CPU affinity和有效候选数约束，可显式覆盖 |
 | `query_workers` | 1 | 1 | 历史 NumPy/SciPy 路径的设置；不是原生候选线程数 |
 | `spatial_index.cell_size_m` | 0.02 | 0.02 | 全点均匀网格单元边长，**不是网络体素或几何下采样尺度** |
 
@@ -142,7 +161,7 @@ module.compile(dynamic=True, mode="default")
 - 20 mm半径、区域边界、候选轴的含义和各区既有采样数保持。
 - 随机旋转与增强仍按当前样本计算，邻域依赖本次预测轴，不能跨训练轮次缓存一套固定邻域。
 
-线程继续使用现有 `std::thread` 分配候选任务。默认4线程与4个数据 worker 共用8核亲和性是一个实际可执行的起点；E3/E5 是否需要8个原生线程取决于正常日志中的几何时间。`torch.set_num_threads(8)` 不会替代这个参数。
+线程继续使用现有`std::thread`分配候选任务。L20候选为4几何线程、4个数据worker共用8核亲和性；H20候选为8几何线程、4个数据worker共用16核亲和性。`torch.set_num_threads(8)`不会替代这些参数。新增`runtime.cpu_affinity_count`只控制管理器从已分配CPU pool中选取多少个逻辑核，`runtime.cpu_threads`仍独立控制Torch线程；旧配置无新字段时保留原有行为。
 
 编译保持 `-O3 -fno-fast-math -ffp-contract=off`，C++ 继续带 `-pthread`。现有实现已使用 O3，不需要额外引入 OpenMP。没有用 `-march=native` 强制绑定某台 CPU 的指令集，也没有把 `fast-math` 混入本次数值策略。
 
@@ -188,7 +207,7 @@ python scripts/prepare_from_scratch.py \
   --backbone-root /path/to/graspness_modern
 ```
 
-生成器只写 `train.json` 和 `performance.json`，打印训练命令和 supervisor 映射，不启动训练。E5 使用 `configs/runtime_profiles/cd009-v3/H20-E5.json`；其他实验选对应的原 profile。原 profile 在这里提供实验定义、B1A4 和硬件内存上限，其历史吞吐值不复制为新配置证据。
+生成器只写`train.json`和`performance.json`，打印训练命令、`resource_request`和supervisor映射，不启动训练。默认`--hardware-preset auto`从源profile的host选择H20或L20候选；E5使用`configs/runtime_profiles/cd009-v3/H20-E5.json`即可自动生成128k/geometry8/affinity16。原profile提供实验定义与B1A4，其历史吞吐值不复制为新配置证据。
 
 E2 的 BF16 候选例子：
 
@@ -203,13 +222,13 @@ python scripts/prepare_from_scratch.py \
   --backbone-root /path/to/graspness_modern
 ```
 
-此例继承 L20 profile 的 GPU 内存上限；若实际在 H20 跑 E2，应以实际 H20/E2 配置为源，或在启动前明确修改新配置的 host/GPU 内存字段。不要把 H20/E5 直接当成 E2 的实验配置。
+此例选择L20资源候选。若在H20跑E2，仍用E2的base config，并增加`--hardware-preset H20`，同时选择新的H20配置/run目录；生成器会设置H20资源与host字段，保持E2模型/损失/预算。不要把H20/E5直接当成E2的实验配置。
 
-支持的调节项：`--dense-chunk-size`、`--workers`、`--geometry-threads`、`--geometry-precision`、`--precision`、`--scene-cache-size`、`--object-cache-size`、`--instance-broadcast-mode`。`--compile-dense-heads` 显式开启局部编译；`--no-voxel-heads`、`--no-fused-optimizer` 关闭相应项。
+支持的调节项：`--hardware-preset`、`--dense-chunk-size`、`--workers`、`--geometry-threads`、`--cpu-affinity-count`、`--cpu-threads`、`--gpu-memory-limit-gib`、`--geometry-precision`、`--precision`、`--scene-cache-size`、`--object-cache-size`、`--instance-broadcast-mode`。显式数值覆盖对应preset。`--compile-dense-heads`显式开启局部编译；`--no-voxel-heads`、`--no-fused-optimizer`关闭相应项。
 
 ### 6.2 v4 性能配置示例
 
-E3 生成的 `performance.json`：
+L20/E3 生成的 `performance.json`：
 
 ```json
 {
@@ -258,7 +277,7 @@ python scripts/train_pretrain.py \
   --run-dir /srv/cd010/runs/E3_seed42
 ```
 
-选择当前任务实际分配的 GPU；本例的1只是命令示意。需要保持8逻辑核预算时，用目标主机实际分配的 `taskset` CPU 列表启动。配置中的 `cpu_threads=8` 控制 PyTorch 线程数，不代替进程 affinity。
+选择当前任务实际分配的GPU；本例的1只是命令示意。直接启动时，在该命令前加`taskset --cpu-list "$TRAIN_CPUS"`，其中`TRAIN_CPUS`填写实际分配的CPU ID：L20候选8个、H20候选16个。生成器不猜测0–15是否空闲。`cpu_affinity_count`声明资源数量，由supervisor或taskset落实；配置中的`cpu_threads=8`只控制PyTorch线程数。
 
 正常暂停后的恢复仍使用**最初生成的两个配置**：
 
@@ -293,6 +312,8 @@ python scripts/evaluate.py \
 
 把这些项填入 **CD-010 的独立控制配置**，并使用新的 root/run/ledger 路径。v4 worker会把 trainer 的 `PYTHONPATH` 指向新 root 下的 `repo/`，避免复用venv时从旧editable安装导入模型。若已经确认相同机器的基础环境，不需要为了该实现再设计一套机器检查、19项连续性审计或故障演练。原管理器正常运行所需字段照现有 [运行指南](MODEL_USAGE.md) 提供即可。CD-009 的账本和 live checkout 继续按原身份运行。
 
+H20配置中的`hosts.H20.gpus[GPU].cpus`须包含实际为该任务分配的16个逻辑CPU；旧示例只有8个，需要填入新分配的CPU列表。管理器按`cpu_affinity_count`选核，启动trainer时仍传`--cpu-threads 8`。多组实验的CPU pool继续互不重叠，不能把扩大一个任务资源写成占用另一个任务的核。
+
 ## 7. 验证范围与测量方式
 
 ### 已完成的代码检查
@@ -305,11 +326,45 @@ python scripts/evaluate.py \
 - E3/E5 各一次真实小模型 forward、原 loss、backward、AdamW 更新，联合覆盖 BF16、native FP32、segment、split 和 E3 共享体素头。
 - 配置生成、已有缓存读取、正式预算、supervisor 接入和自身恢复；复用原测试套件。
 
-本地 C/C++ 扩展构建成功，测试结果为 **380 passed / 1 skipped**；本地沙箱不支持预取测试所需的Unix socket，`tests/test_prefetch.py` 留给原GitHub完整CI运行，未修改或放宽该测试。1项既有跳过需要真实release路径。这些检查使用CPU小模型，不构成真实spconv CUDA/BF16/Inductor/fused AdamW的硬件性能证明。本环境无H20/L20、CUDA编译器或真实冻结数据，因此没有执行正式训练或产生新速度数字。
+初次实现的本地C/C++扩展构建成功，完整[GitHub CI](https://github.com/chichu-lv/suctionnet_modern_20mm/actions/runs/43390906646)为 **381 passed / 1 skipped**，包括本地沙箱不支持的Unix socket预取测试。1项既有跳过需要真实release路径。主机preset/CPU解耦补充使用现有配置与supervisor正常路径检查。这些是CPU小模型/接线检查，不构成真实spconv CUDA/BF16/Inductor/fused AdamW的硬件性能证明。本环境无H20/L20、CUDA编译器或真实冻结数据，因此没有执行正式训练或产生新速度数字。
 
-### 真机上只保留一个正常窗口
+### 少量顺序比较，分别确定主机参数
 
-在新训练的原预算内使用已有日志观察20–50次成功更新即可；不要求旧模型与新模型四帧梯度、RNG、浮点归约顺序对齐。优先读取以下已有字段：
+使用生产`train_pretrain.py`的独立候选运行：每候选以相同seed42和样本计划从头运行到第30次成功更新，前10次用于预热，比较第11–30次。它实际执行当前精度、fused AdamW、v4 loss读回和持续预取。被选中的候选可从自己的30步checkpoint继续原预算；其他候选只作为参数比较，不把它们的样本计入最终运行。
+
+不使用旧`benchmark_batch_cpu.py`作为v4端到端测量：它硬编码FP16 scaler/autocast、不做Adam更新、每microbatch读回loss，且16帧有限队列可能掩盖数据饥饿。无需再写一套性能框架或扩展旧脚本的历史含义。
+
+**H20/E5：先做下面3个顺序候选，不交叉扫描。**
+
+| 候选 | dense chunk | geometry线程 | affinity / Torch线程 | worker | 目的 |
+|---|---:|---:|---|---:|---|
+| H0 | 65,536 | 4 | 16 / 8 | 4 | 同一资源池中的参照 |
+| H1 | 65,536 | 8 | 16 / 8 | 4 | 单独评估几何候选并行 |
+| H2 | 131,072 | 采用H0/H1较快值 | 16 / 8 | 4 | 单独评估更大dense chunk |
+
+两次比较分别只改变几何线程和chunk。默认H20 preset对应H2且geometry8；若H0更快，用`--geometry-threads 4`生成H2。这里的16核是H20候选资源安排，不需要再为“8→16”单开一项纯Torch线程测试。
+
+H0/H1的生成参数分别为`--hardware-preset H20 --dense-chunk-size 65536 --geometry-threads 4`和`--hardware-preset H20 --dense-chunk-size 65536 --geometry-threads 8`；H2使用H20默认chunk。每个候选使用不同out/run目录，并传入同一实际数据与骨干路径。执行命令沿用第6节，并增加：
+
+```bash
+--pause-at-step 30
+```
+
+这是正常暂停，CLI退出码75，保存自己的checkpoint，不执行额外完整验证。之后用既有工具导出日志：
+
+```bash
+python scripts/export_training_logs.py \
+  --run-dir /srv/cd010/candidates/H20-E5-H0 \
+  --output-dir /srv/cd010/reports/H20-E5-H0
+```
+
+**L20按瓶颈增加一个对照即可：**
+
+- E0或E1先用L20默认配置；若正常窗口仍明显等数据，再单独比较worker4和6。先在其中一组判断，不要求两组重复扫描。
+- E3或E4先用L20默认配置；若几何仍主导，再比较`--geometry-threads 8 --cpu-affinity-count 16`这个额外资源组合，Torch仍8。它是组合资源收益，不能拆成纯线程效应；没有可分配的额外核时保留原8核方案。
+- H20的128k胜出后，只有仍有明确密集分块开销时才考虑256k。H20的B2A2也只在上述执行路径确定后做一个可选对照；B4/B8不列为本轮任务。B2A2在新配置中设microbatch2/accumulation2，保持有效batch4，不假定BN与损失归约数值等价。
+
+这些候选都不要求与旧checkpoint做四帧梯度、RNG或归约顺序对齐。优先读取以下已有字段：
 
 | 关注点 | 现有记录 | 判断用途 |
 |---|---|---|
@@ -320,7 +375,7 @@ python scripts/evaluate.py \
 | 实际配置 | `execution.model_execution`、`precision`、`optimizer_execution` | 确认实际走的分支与精度 |
 | 普通训练状态 | loss、有效监督、梯度范数、成功步 | 确认模型正在正常学习；后续指标沿用原开发验证节点 |
 
-默认不扩展新的测试矩阵。如果 E0/E1 仍明显等待数据，才把4 worker改为6；如果 E3/E5 仍主要耗在原生几何，才比较4与8线程；若选择 BF16 后总时间变差，先检查 FP32 sparse 的代价。所有执行配置应在该新运行启动前固定；本次不增加运行中任意切换配置的机制。
+以同一主机/同一实验的第11–30步窗口墙钟计算有效帧吞吐，同时看loader等待、几何和峰值显存；不比较H20/E5与L20/E0来断言硬件快慢。如果只有约1%–2%且不稳定的差别，保留较少资源的设置即可，不为确定微小差异安排多轮重复。精度和compile开关在本轮资源比较中固定。所有候选执行配置在各自启动前固定，不在同一run中切换配置；最终选择写入该主机的配置及测量记录。
 
 ## 8. 本轮没有实现的部分，以及真正需要的后续工作
 

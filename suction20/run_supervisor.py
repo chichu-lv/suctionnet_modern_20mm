@@ -395,10 +395,16 @@ def selected_profile(config, experiment, host):
     threads, memory = runtime.get("cpu_threads"), runtime.get("gpu_memory_limit_gib")
     if type(threads) is not int or threads < 1 or isinstance(memory, bool) or not isinstance(memory, (int, float)) or not 0 < memory < 1000:
         raise Refused("selected profile must specify positive CPU threads and GPU memory limit")
+    selected_runtime = {"cpu_threads": threads, "gpu_memory_limit_gib": memory}
+    if "cpu_affinity_count" in runtime:
+        affinity_count = runtime["cpu_affinity_count"]
+        if type(affinity_count) is not int or affinity_count < 1:
+            raise Refused("selected profile CPU affinity count must be a positive integer")
+        selected_runtime["cpu_affinity_count"] = affinity_count
     return {"config_path": str(path), "config_sha256": selection["config_sha256"],
             "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "runtime_profile": profile, "budget": budget,
-            "runtime": {"cpu_threads": threads, "gpu_memory_limit_gib": memory}}
+            "runtime": selected_runtime}
 
 
 def selected_performance(config, experiment, host):
@@ -530,14 +536,15 @@ class Coordinator:
             raise Refused("superseded experiment requires a separate version namespace")
         selected = selected_profile(self.config, experiment, host)
         gpu = self.config["hosts"][host]["gpus"][str(index)]
-        threads = selected.get("runtime", {}).get("cpu_threads", len(gpu["cpus"]))
-        if threads > len(gpu["cpus"]):
-            raise Refused("profile CPU threads exceed device affinity pool")
+        runtime = selected.get("runtime", {})
+        affinity_count = runtime.get("cpu_affinity_count", runtime.get("cpu_threads", len(gpu["cpus"])))
+        if affinity_count > len(gpu["cpus"]):
+            raise Refused("profile CPU affinity count exceeds device affinity pool")
         for other in self.state["assignments"].values():
             if other["host"] == host and other["gpu_uuid"] == gpu["uuid"]:
                 raise Refused("device already reserved (unknown owners also reserve it)")
         assignment = {"experiment": experiment, "host": host, "gpu_index": index,
-                      "gpu_uuid": gpu["uuid"], "cpus": gpu["cpus"][:threads], "token": uuid.uuid4().hex,
+                      "gpu_uuid": gpu["uuid"], "cpus": gpu["cpus"][:affinity_count], "token": uuid.uuid4().hex,
                       "created_unix": time.time(), "state": "launch_unknown", "resume": resume,
                       "prefix_passed": prefix_passed}
         assignment.update(selected)

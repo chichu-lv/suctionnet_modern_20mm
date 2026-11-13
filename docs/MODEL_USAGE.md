@@ -54,7 +54,9 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## CD-010 独立从头训练
 
-从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的 `train.json`、v4 `performance.json` 和运行命令，默认64k + split、4 worker、FP32原生几何4线程、segment实例广播，以及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
+从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的`train.json`、v4 `performance.json`和运行命令。自动按host选择未测候选：H20为128k/geometry8/affinity16，L20为64k/geometry4/affinity8；Torch线程均8、worker均4。继续split、FP32原生几何、segment实例广播及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
+
+`--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。真实吞吐尚未测量，按文档的少量顺序候选确定最终主机配置；旧16帧零更新benchmark不代表新v4路径。
 
 精度默认FP16。`--precision bf16` 显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，所以该选择不能预先认定更快。融合AdamW默认开启，局部MLP编译通过 `--compile-dense-heads` 选择。现有训练没有自动应用这些设置。
 

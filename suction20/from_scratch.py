@@ -1,7 +1,7 @@
 """Build an independent fresh-start configuration from an existing experiment.
 
-The old profile is a source of the experiment definition and hardware limits,
-not a measured-throughput endorsement of the new execution settings.
+The old profile supplies the experiment and source host. Hardware presets are
+unmeasured resource candidates, not a throughput endorsement of those settings.
 """
 from __future__ import annotations
 
@@ -11,13 +11,44 @@ from .performance import SCHEMA_VERSION_V4, validate_performance_config
 from .pretrain_budget import resolve_config
 
 
-def from_scratch_config(base, *, precision='fp16', dense_chunk_size=65536,
-                        workers=4, geometry_threads=4, geometry_precision='float32',
+HARDWARE_PRESETS = {
+    'H20': {'dense_chunk_size': 131072, 'workers': 4, 'geometry_threads': 8,
+            'cpu_affinity_count': 16, 'cpu_threads': 8, 'gpu_memory_limit_gib': 112,
+            'gpu_model': 'NVIDIA H20-3e'},
+    'L20': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 4,
+            'cpu_affinity_count': 8, 'cpu_threads': 8, 'gpu_memory_limit_gib': 36,
+            'gpu_model': 'NVIDIA L20'},
+    'reference': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 4,
+                  'cpu_affinity_count': 8, 'cpu_threads': 8},
+}
+
+
+def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_chunk_size=None,
+                        workers=None, geometry_threads=None, geometry_precision='float32',
+                        cpu_affinity_count=None, cpu_threads=None, gpu_memory_limit_gib=None,
                         scene_cache_size=90, object_cache_size=88,
                         voxel_heads=True, instance_broadcast_mode='segment',
                         compile_dense_heads=False, fused_optimizer=True):
     """Return new training/performance dictionaries; never mutate the source."""
     config = deepcopy(base)
+    old_profile, old_runtime = config.get('runtime_profile', {}), config.get('runtime', {})
+    source_host = old_profile.get('host', 'custom')
+    preset_name = hardware_preset or (source_host if source_host in ('H20', 'L20') else 'reference')
+    if preset_name not in HARDWARE_PRESETS:
+        raise ValueError('Hardware preset must be H20, L20 or reference')
+    preset = HARDWARE_PRESETS[preset_name]
+    dense_chunk_size = preset['dense_chunk_size'] if dense_chunk_size is None else dense_chunk_size
+    workers = preset['workers'] if workers is None else workers
+    geometry_threads = preset['geometry_threads'] if geometry_threads is None else geometry_threads
+    cpu_affinity_count = preset['cpu_affinity_count'] if cpu_affinity_count is None else cpu_affinity_count
+    cpu_threads = preset['cpu_threads'] if cpu_threads is None else cpu_threads
+    if gpu_memory_limit_gib is None:
+        gpu_memory_limit_gib = preset.get('gpu_memory_limit_gib', old_runtime.get('gpu_memory_limit_gib', 64))
+    for key, value in (('cpu_affinity_count', cpu_affinity_count), ('cpu_threads', cpu_threads)):
+        if type(value) is not int or value < 1:
+            raise ValueError(f'{key} must be a positive integer')
+    if type(gpu_memory_limit_gib) not in (int, float) or not 0 < gpu_memory_limit_gib < 1000:
+        raise ValueError('GPU memory limit must be positive GiB')
     experiment = config.get('experiment', config.get('model', {}).get('experiment'))
     if experiment not in ('E0', 'E1', 'E2', 'E3', 'E4', 'E5'):
         raise ValueError('From-scratch configuration requires an E0–E5 experiment')
@@ -54,20 +85,20 @@ def from_scratch_config(base, *, precision='fp16', dense_chunk_size=65536,
     config['optimizer']['fused'] = bool(fused_optimizer)
     config['data']['scene_cache_size'] = int(scene_cache_size)
     config['data']['object_cache_size'] = int(object_cache_size)
-    old_profile = config.get('runtime_profile', {})
-    host = old_profile.get('host', 'custom')
+    host = preset_name if preset_name in ('H20', 'L20') else source_host
     config['runtime_profile'] = {
-        'profile_id': f'cd010-fresh-{host}-{experiment}-dense{dense_chunk_size}-{precision}',
+        'profile_id': (f'cd010-fresh-{host}-{experiment}-dense{dense_chunk_size}'
+                       f'-cpu{cpu_affinity_count}-geo{geometry_threads}-w{workers}-{precision}'),
         'training_version': 'v3',
         'selection_status': 'from_scratch',
-        'selection_basis': 'Independent fresh-start candidate; GPU throughput is not yet measured.',
+        'selection_basis': f'{preset_name} resource candidate; GPU throughput is not yet measured.',
+        'hardware_preset': preset_name,
         'source_profile_id': old_profile.get('profile_id'),
         'host': host,
-        'gpu_model': old_profile.get('gpu_model'),
+        'gpu_model': preset.get('gpu_model', old_profile.get('gpu_model')),
         'experiment': experiment,
     }
-    config['runtime'] = {key: value for key, value in config.get('runtime', {}).items()
-                         if key in ('cpu_threads', 'gpu_memory_limit_gib')}
-    config['runtime'].setdefault('cpu_threads', 8)
+    config['runtime'] = {'cpu_threads': cpu_threads, 'cpu_affinity_count': cpu_affinity_count,
+                         'gpu_memory_limit_gib': gpu_memory_limit_gib}
     # Retain the scientific sample budget, optimizer/loss settings and schedule.
     return resolve_config(config), performance

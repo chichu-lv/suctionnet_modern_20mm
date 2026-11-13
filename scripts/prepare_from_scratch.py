@@ -18,11 +18,16 @@ def main():
                         help='Existing E0–E5 profile supplies experiment and hardware limits')
     parser.add_argument('--out-dir', required=True, help='New directory for train.json and performance.json')
     parser.add_argument('--run-dir', required=True, help='New, independent training run directory')
+    parser.add_argument('--hardware-preset', choices=('auto', 'H20', 'L20', 'reference'), default='auto',
+                        help='Unmeasured resource candidate; auto uses the source profile host')
     parser.add_argument('--precision', choices=('fp32', 'fp16', 'bf16'), default='fp16',
                         help='BF16 uses an FP32 sparse backbone on spconv 2.3.6; select explicitly')
-    parser.add_argument('--dense-chunk-size', type=int, default=65536)
-    parser.add_argument('--workers', type=int, default=4)
-    parser.add_argument('--geometry-threads', type=int, default=4)
+    parser.add_argument('--dense-chunk-size', type=int, help='Override host preset dense chunk')
+    parser.add_argument('--workers', type=int, help='Override host preset loader worker count')
+    parser.add_argument('--geometry-threads', type=int, help='Override host preset native geometry threads')
+    parser.add_argument('--cpu-affinity-count', type=int, help='Number of allocated logical CPUs; actual IDs come from supervisor/taskset')
+    parser.add_argument('--cpu-threads', type=int, help='PyTorch CPU threads, independent of affinity count')
+    parser.add_argument('--gpu-memory-limit-gib', type=float, help='Override host preset allocator limit')
     parser.add_argument('--geometry-precision', choices=('float32', 'float64'), default='float32')
     parser.add_argument('--scene-cache-size', type=int, default=90)
     parser.add_argument('--object-cache-size', type=int, default=88)
@@ -35,8 +40,11 @@ def main():
     parser.add_argument('--backbone-root')
     args = parser.parse_args()
     config, performance = from_scratch_config(load_config(args.base_config),
+        hardware_preset=None if args.hardware_preset == 'auto' else args.hardware_preset,
         precision=args.precision, dense_chunk_size=args.dense_chunk_size,
         workers=args.workers, geometry_threads=args.geometry_threads,
+        cpu_affinity_count=args.cpu_affinity_count, cpu_threads=args.cpu_threads,
+        gpu_memory_limit_gib=args.gpu_memory_limit_gib,
         geometry_precision=args.geometry_precision, scene_cache_size=args.scene_cache_size,
         object_cache_size=args.object_cache_size, voxel_heads=not args.no_voxel_heads,
         instance_broadcast_mode=args.instance_broadcast_mode,
@@ -66,6 +74,11 @@ def main():
                               'config_path': str(performance_file),
                               'config_sha256': hashlib.sha256(performance_file.read_bytes()).hexdigest()}}}},
                       'precision': config['training']['precision'],
+                      'resource_request': dict(config['runtime'],
+                          hardware_preset=config['runtime_profile']['hardware_preset'],
+                          dense_chunk_size=performance['dense_chunk_size_override'],
+                          geometry_threads=performance['geometry_threads'],
+                          data_workers=performance['loader']['num_workers'], measured=False),
                       'status': 'prepared; no training launched'}, indent=2, ensure_ascii=False))
 
 
