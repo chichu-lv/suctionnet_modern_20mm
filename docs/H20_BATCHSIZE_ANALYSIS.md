@@ -1,231 +1,179 @@
-# P2 后 H20 的 batch size：可行性、显存与实际限制
+# P2 后 H20/L20 的 batch size：显存容量、吞吐与当前选择
 
-**后续进展（2026-11-13）：** [P3 原生接触几何](PERFORMANCE_PHASE3.md) 已实现并记录本地 CPU 对照。本文保留 P2 时的 batch 分析；P3 的真实训练和 batch 收益需要依据其实际运行记录判断。
+2026-11-13 更新。本文依据已经完成的 [H20 / E5 P2 batch 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)和 [L20 / E5 P2 batch 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)，替换此前“P2 尚未测 B2，先重新比较”的建议。两份诊断的测量代码为 P2 `e73d62e`，对应发布快照 `4e9c9f5`；不是本次整合的 P3。**按用户最新运行说明，P2 仅测试、尚未实际应用，P3 尚未在训练机测试；报告中的历史部署措辞不作为当前应用状态。**
 
-2026-11-12（北京时间）。依据 `cd009/full-pretraining` 的 [`60e55a2`](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/60e55a263d6dd8a0b753341fd4993848222fbde4) 和 [P2 真实反馈](performance/P2_REAL_RESULTS.json)。实际训练部署仍是本地 `e73d62e`，同树 GitHub 发布 `4e9c9f5`；本文是后续分析，没有执行新的 H20 测试或修改训练配置。
+**当前两卡均保留 B1A4。** L20 的 dense chunk 65,536 已在 P2 外部候选配置中测过，但尚未应用到正式 profile；[P3 整合配置](../configs/performance/cd009-p3-integrated.json)已在仓库提供，训练机尚未测量其整步收益。本地 CPU 证据不能当作正式训练已经提速。
 
-## 1. 结论
+## 1. 最新结论：显存装得下，不代表扩大 batch 更快
 
-**增加 microbatch 仍然可行，值得在 P2 上重新对比一次 H20/E5 的 B1A4 与 B2A2。** 当前没有模型结构或硬件上的“只能 batch 1”限制；P1 时 H20 的 B2、B4 都完成过前反向。P2 尚未重新测量它们，因此不能将 P1 的吞吐结论当成永久限制。
+| P2 / E5 对照 | B1A4 帧/秒 | B2A2 帧/秒 | B2 相对 B1 | 当前选择 |
+| --- | ---: | ---: | ---: | --- |
+| H20，dense chunk 65,536 | 0.451160 | 0.461086 | +2.20% | 保留 B1A4 |
+| L20，dense chunk 16,384 | 0.352710 | 0.274569 | −22.15% | 保留 B1A4 |
+| L20，dense chunk 65,536 | 0.452896 | 0.410654 | −9.33% | 保留 B1A4；采用更大 dense chunk 的方向已有依据 |
 
-H20 的显存余量确实存在，但更多容量不会自动缩短逐候选 CPU 几何，也不会自动扩大被固定 chunk 拆开的 GPU 算子。当前需要回答的是：**相同四帧的全部工作，能否因重新组批而更高效完成**。
+H20 的 B2 三个测量块都略快，但只有一次短测、三个块，没有稳定生产收益的证据。L20 将 dense chunk 从 16,384 改为 65,536 后，B1 吞吐提高 **28.40%**，B2 提高 49.56%，然而 B2 仍慢于对应的 B1。因此当前无需继续扩展 B4/B8 扫描，也无需重复已经完成的 P2 B1/B2 对照。
 
-最小行动只有一项：使用已有 P2 代码和 benchmark，先比较 B1A4 与 B2A2。B4A1 仅在 B2 已显示明确收益时再考虑；不扩展 CPU 核数、worker、精度和算子版本矩阵。
+两卡都有容纳更大 microbatch 的记录，没有“模型只能 batch 1”的限制。选择 B1A4 是当前吞吐证据支持的执行配置，不是显存容量强制的结果。显存余量允许保存更多激活；它不会自动减少逐候选 CPU 几何、固定 chunk 的总计算量或当前实现中的反向累加成本。
 
-## 2. 最新反馈实际改变了什么
+上述测试均使用相同 16 帧和增强种子，4 帧预热、12 帧测量，fresh 初始化、零 optimizer 更新，不读取正式权重。它们用于比较执行效率，不包含 Adam moments、保存和验证，不能直接换算完整训练 ETA 或收敛结果。来源：[H20 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)。
 
-| 项目 | 当前事实 |
+## 2. 已测试和本次待应用的内容
+
+| 项目 | 状态与含义 |
 | --- | --- |
-| 原生全点 CPU 网格 | 已启用 |
-| 骨干坐标同存储快路径 | 已启用 |
-| 无实例 voxel fusion/q0 | 真实 AMP 梯度对照未通过，部署关闭；E5 的实例融合分支原本也不适用整层 voxel 复用 |
-| H20/E5 正常窗口中位 update | P1 10.879 s → P2 8.590 s |
-| L20/E3 正常窗口中位 update | P1 11.891 s → P2 9.590 s |
-| L20/E0 正常窗口中位 update | P1 4.276 s → P2 4.285 s，无明确收益 |
-| P2 后重新测 batch | **尚未执行** |
+| P2 全点 CPU grid、骨干坐标同存储快路径 | 两份诊断的测试进程已启用；正式训练仍列为待应用 |
+| 无实例 voxel fusion/q0 | 真实 AMP 梯度对照未通过，保持关闭；E5 的实例融合分支也不能直接整层复用到 voxel |
+| P2 B1A4 / B2A2 | H20、L20 均已测量，结论见上表 |
+| L20 dense chunk 65,536 | P2 定向测试已完成；仅外部候选配置改变，正式 profile 未因此修改 |
+| P3 原生接触几何 | 已实现，有本地 CPU 对照；本次 H20/L20 诊断没有部署或测量它 |
+| P3 `chunk_input_mode=split` | 已实现可选路径并完成小型 CPU 输出/梯度对照；训练机尚未测量 |
+| P3 整合 sidecar | 目标为原生几何、P2 grid/坐标快路径、dense override 65,536 和 split；尚不能报告真实训练加速比例 |
+| 实例特征广播反向改写 | 下一候选，当前不实施；没有把它计入 P3 整合收益 |
 
-前后是不同自然帧窗口，P1 细计时关闭、P2 开启。P2 的三个 30 步窗口在截取时为 live/uncommitted；这些数字能说明观察到的性能变化，不代表此刻进度或相同帧的严格因果倍率。
+历史 P1 batch 记录和 P2 自然训练窗口仍可查阅，但当前 batch 选择以同帧的两份新诊断为依据。不同自然帧窗口、不同计时开关的 update 数字，不用于替代本次配对证据。来源：[P2 实施记录](PERFORMANCE_PHASE2.md)、[P3 实施记录](PERFORMANCE_PHASE3.md)、[split CPU 结果](performance/P3_SPLIT_CPU_RESULTS.json)。
 
-P1 后的 H20/E5 对照仍有参考意义：
+## 3. 为什么 30 多 G / 140 G 不是“只用了四分之一算力”
 
-| 历史 P1 配置 | 帧/秒 | 相对 B1A4 | allocated / reserved 峰值 |
-| --- | ---: | ---: | ---: |
-| B1A4 | 0.3386 | 基线 | 11.53 / 17.07 GiB |
-| B2A2 | 0.3436 | +1.48% | 22.42 / 34.46 GiB |
-| B4A1 | 0.3380 | −0.20% | 43.39 / 64.87 GiB |
+显存容量表示能保存多少激活、参数、索引和工作区；算力表示每秒能完成多少运算；显存带宽表示每秒能搬运多少数据。不能按显存占用比例互相推算。少量数据也可能被频繁读写，但只有内存占用本身同样不能证明某个 kernel 已经饱和。
 
-当时 B2/B4 都能装下，但没有稳定吞吐收益。P2 减少了 CPU 几何及坐标映射成本，执行比例和 batch 扩展代价可能改变，需要更新这条证据。与此同时，“CPU 更快了”也不意味着 B2 的 GPU 部分会自动更高效。来源：[P1_BATCH_CPU_RESULTS.json](performance/P1_BATCH_CPU_RESULTS.json)。
+### 3.1 本次 H20 的实际显存口径
 
-## 3. 为什么 30 多 G / 140 G 不能代表只用了约四分之一算力
+| 指标 | B1A4 | B2A2 | 含义 |
+| --- | ---: | ---: | --- |
+| Torch 可见物理容量 | 139.80 GiB | 139.80 GiB | 设备容量 |
+| PyTorch allocator cap | 112 GiB | 112 GiB | 当前进程分配器的上限，不是预分配目标 |
+| allocated 峰值 | 11.5317 GiB | 22.4130 GiB | PyTorch 活跃 tensor 的统计峰值 |
+| reserved 峰值 | 17.0684 GiB | 34.4648 GiB | 缓存分配器持有的峰值，包含空闲缓存 |
 
-显存容量表示能保存多少激活、参数、索引和工作区；算力表示每秒能完成多少运算；显存带宽表示每秒能搬运多少数据。三者相关，但不能按显存占用比例互相推算。少量已分配数据可以被频繁读写，也可以让某个 kernel 的计算或带宽达到上限。
+用户看到的 30 多 G 可能是另一时点或另一统计口径；本次 B2 的 reserved 峰值本身就约 34.46 GiB。它离 112 GiB cap 很远，**不是需要增大 batch 的吞吐理由，也不是阻止扩大 batch 的硬限制**。提高 cap 不会消除约 5.14 秒的串行 CPU query，程序也不会主动申请到 cap 来提高利用率。
 
-这里的稀疏资源采样也不足以证明某一个 GPU kernel 已经饱和或一直空闲。P2 E5 只有四个利用率样本，不能将其均值或中位数当作连续时间的 GPU 忙闲比例。
+不能用“30 G × 4”推算 B4 峰值：参数和优化器有固定部分，激活通常随 microbatch 增长，稀疏索引、工作区和缓存也会改变。本次零更新 benchmark 不含完整优化器状态，因此这里的峰值仅描述这次执行。来源：[H20 诊断的显存记录](performance/H20_P2_BATCH_DIAGNOSIS.md)。
 
-### 3.1 最新提交中的显存口径
+L20 虽然 B2 更接近 36 GiB cap，但配对 trace 的 allocation retries、OOM、缓存段释放和 allocator all-stream sync 增量均为零。这次退化已有切片梯度 kernel 增长的直接证据，不能以“触发上限后反复清缓存”解释，也没有必要为这条猜测继续提高 cap。该观察不扩展为所有未来输入都不会接近上限。来源：[L20 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)。
 
-P2 E5 的 1031–1060 窗口记录如下：
+### 3.2 梯度累积为什么不同时保留四帧激活
 
-| 指标 | 数值 | 用途 |
-| --- | ---: | --- |
-| Torch 可见物理容量 | 139.80 GiB | 设备容量 |
-| 训练配置 allocator cap | 112 GiB | 当前进程的 PyTorch 分配器上限 |
-| allocated 峰值最大值 | 11.91 GiB | PyTorch 统计到的活跃 tensor 峰值 |
-| reserved 峰值最大值 | 25.36 GiB | 缓存分配器持有的峰值，包含空闲缓存 |
-| NVML 进程内存采样均值 | 24.15 GiB | 3 个有效进程样本，不是峰值或连续均值 |
-| NVML 进程内存采样最大值 | 25.87 GiB | 该窗口采到的最大进程占用 |
+B1A4 依次前向/反向四帧，累加参数梯度，已反向的计算图通常可以释放。B4A1 同时保留四帧的前向激活直到一次反向，所以峰值更高。两者每次更新都处理四帧；额外显存首先让更多计算图能够同时存在，是否更快还取决于算子和调度。
 
-用户随后看到的 30 多 G 可以属于另一时点或另一口径；这份公开记录不足以解释它的具体来源。无论采用哪一个，都离当前 112 GiB cap 较远。cap 不是预分配目标，程序不会主动申请到 112 GiB 来提高利用率。
+## 4. P2 执行路径为什么没有随 batch 明显加速
 
-不能用“30 G × 4”推算 B4 峰值：模型/优化器有固定部分，激活通常随 microbatch 增长，稀疏索引、工作区和缓存还会改变。P1 的 B4 成功记录提供了容量可行性的历史证据，最终仍读取 P2 实际峰值。
+### 4.1 一帧已有约 84 万原始点和 512 个候选
 
-PyTorch 对 allocated、reserved 及 `nvidia-smi` 差异的定义见 [2.5.1 官方源码](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/cuda/memory.py)。
+两份诊断的 12 个测量帧各组都包含 10,089,031 个原始点、1,568,314 个活跃 voxel、6,144 个有效候选，平均每帧约 **84 万原始点、13.1 万活跃 voxel、512 个候选**。候选用于后续接触区域提取，场景编码仍使用完整观测点云。
 
-### 3.2 梯度累积为什么不需要同时保留四帧激活
+spconv 输入特征是 `[活跃 voxel 数, 通道数]`，坐标中的帧号区分场景。B1 已经向 GPU 提供大量稀疏行；B2 可能改善部分较小算子或固定调用成本，但不能直接套用“小图像 batch 1 一定填不满 GPU”的直觉。行数很大也不证明所有层已饱和。来源：[H20 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)、[模型编码](../models/suction20net.py)。
 
-B1A4 依次前向/反向四帧，保留并累加参数梯度，已反向的计算图通常可以释放。B4A1 同时保留四帧的前向激活直到一次反向，所以峰值更高。
+### 4.2 microbatch 变大，多数 dense 块并没有变大
 
-二者都处理四帧。更多显存首先让多帧计算图能够同时存在；是否更快，还取决于代码是否能把这批工作组织成更有效的算子和调度。
+H20 测试的 `dense_chunk_size=65536`；L20 的首轮为 16,384，定向复测为 65,536。`Suction20Net._chunks` 沿点维逐块执行 fusion、q0 和 axis。B2 将更多点放进同一个循环，但每个满块仍受同一 chunk 上限约束。
 
-## 4. 源码中的四个实际限制
+接触特征使用 `pose_chunk_size=32`，五个区域各自按候选分块执行 MLP/pooling；selected-point local projection 还有自己的 chunk。增加帧 batch 不会修改这些参数。
 
-### 4.1 一帧已经是很大的 GPU 工作量
+以每帧约 84 万点、512 个有效候选、dense chunk 65,536 估算，每次更新处理四帧：
 
-P2 E5 窗口每帧平均约 **841,878 个原始点、133,912 个活跃 voxel、512 个候选名额**。spconv 输入特征是 `[活跃 voxel 数, 通道数]`，坐标中的帧号区分不同场景；B1 并不是只给 GPU 一条向量。
-
-因此，B2 可能改善某些较小深层算子、减少固定调用成本，但不能直接套用“小图像 batch 1 一定填不满 GPU”的直觉。行数大也不能反向证明所有层都已饱和。具体 kernel 的 compute、bandwidth 或 launch 占比，现有 host 计时没有给出。
-
-### 4.2 batch 变大，很多 GPU 块的大小没有变
-
-当前 H20 `dense_chunk_size=65536`。`Suction20Net._chunks` 调用 `chunk_apply`，沿点维逐块执行 fusion、q0 和 axis。B2 会把更多点放进这一循环，但每个满块仍是 65,536 行。
-
-接触特征另使用 `pose_chunk_size=32`，五个区域各自按 32 个候选执行 MLP/pooling。局部 selected-point projection 还有自己的默认 chunk。增加帧 batch 不会修改这些参数。
-
-以每帧约 84 万点、512 个有效候选估算，固定每次 update 四帧：
-
-| 配置 | 每次 forward 的 dense 块数，单个 dense 网络 | forward 次数/update | dense 块总数/update | 五区 pose 块总数/update |
+| 组批方式 | 每次 forward 的 dense 块，单个网络 | forward 次数 | dense 块总数 | 五区 pose 块总数 |
 | --- | ---: | ---: | ---: | ---: |
 | B1A4 | 约 13 | 4 | 约 52 | 约 320 |
 | B2A2 | 约 26 | 2 | 约 52 | 约 320 |
-| B4A1 | 约 52 | 1 | 约 52 | 约 320 |
+| B4A1，仅作结构说明 | 约 52 | 1 | 约 52 | 约 320 |
 
-实际点数、候选有效数和尾块会有少量变化；表格说明主要结构。**Python 层 forward 次数减半，不等于全部 MLP 调用或 GPU kernel 数量减半。**
+实际点数和尾块会改变计数：H20 捕获四帧中 fusion、q0、axis 各有 **54 块**；L20 16,384 的 B1/B2 各有 **208/207 块**。两份诊断的 local projection 都是 16 块，五区编码都是 320 块。**forward 次数减半，不等于全部 MLP 或 GPU kernel 数减半。**
 
-真正被合并的部分包括：一个更大的 `SparseConvTensor`、实例 pooled MLP、未分块的最终 pose/q/辅助头，以及部分整次 forward/backward 的固定开销。这些仍可能受益，是重新尝试 B2 的依据。
+一个更大的 `SparseConvTensor`、实例 pooled MLP、未分块的最终 pose/q/辅助头以及部分固定调用确实会合并；它们可能获益，但两份实测说明总收益没有抵消当前主要成本。来源：[H20 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)、[分块实现](../models/heads.py)、[接触分组](../models/contact_grouping.py)。
 
-源码：[suction20net.py](../models/suction20net.py)、[heads.py](../models/heads.py)、[contact_grouping.py](../models/contact_grouping.py)、[H20 profile](../configs/runtime_profiles/cd009-v3/H20-E5.json)。
+### 4.3 CPU 接触 query 的工作量几乎没有减少
 
-### 4.3 CPU 几何仍然逐帧、逐候选执行
+P2 的 grid 按帧建立索引，接触查询仍逐候选处理四个球和五个区域。原生球查询和 FPS 释放 GIL，不等于调用者已经把完整候选流程并行化。B1A4 和 B2A2 每四帧仍需处理约 2,048 个候选。
 
-`CpuGridIndex._build` 用逐帧列表推导建立各帧索引；当前 `query_chunk_size=null`，接触 query 仍逐候选处理四个球和五个区域。原生 grid 和 FPS 的单次调用会释放 GIL，但当前调用者没有因此自动启动候选并行。
+| 未插桩区间，秒/四帧 | B1A4 | B2A2 |
+| --- | ---: | ---: |
+| H20 CPU query，dense 65,536 | 5.1443 | 5.1388 |
+| H20 空间索引 | 0.1857 | 0.1844 |
+| L20 CPU query，dense 16,384 | 5.4491 | 5.4304 |
+| L20 CPU query，dense 65,536 | 5.4176 | 5.3779 |
 
-B1A4、B2A2、B4A1 每次参数更新仍处理四帧和约 2,048 个候选。改成 B2 后，几何任务被分成两次各两帧，通常仍要完成近似相同总量的 CPU 工作。
+H20 的独立 trace 中，query 区间并集为 5.139426 秒，与记录到的 CUDA 工作重叠仅约 0.0000495 秒；L20 配对 trace 也近乎串行。增大 batch 没有缩短这部分总工作。query 和索引包含在 forward 内，不能再与 forward 相加；已经被预取隐藏的数据准备时间也不能再加到 wall time。
 
-P2 E5 同一个 30 步窗口的均值为：
+本段描述的是**实际测量的 P2 路径**。P3 原生接触流程把区域筛选、FPS 衔接和打包一起纳入编译路径，正是针对这个成本；其训练机收益仍未测量。来源：[两卡诊断中的时间线](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 时间线](performance/L20_P2_BATCH_DIAGNOSIS.md)、[P3 实施记录](PERFORMANCE_PHASE3.md)。
 
-| 区间 | 秒/update |
-| --- | ---: |
-| 空间索引整体 | 0.184 |
-| 整段 query | 4.719 |
-| 上述两项合计 | **4.904** |
-| query 内的区域筛选 | 2.025 |
-| query 内的 FPS | 1.350 |
-| query 内的球查询 | 1.104 |
+### 4.4 新 trace 已把 GPU 代价定位到更具体的反向路径
 
-query 内的小段已经包含在 query 总计中，不再次相加。CPU 几何可以因未来的并行/融合而变化，但“batch 从 1 改为 2”本身没有实现这种调度。
+**L20 的主要 batch 退化来自切片反向。** 已关联到 `SliceBackward0` 的 add 与 zeros/fill，累计从 B1 的 3.180685 秒升到 B2 的 6.364260 秒，增加 3.183575 秒。调用数量几乎不变，但一次 microbatch 的整输入更大。最大的调用经 autograd 序列号关联到模型顶层的前向 `aten::slice`；P2 `chunk_apply` 在每个回调前独立执行 `t[start:end]`。trace 与源码共同支持“逐块切片反复构造整输入梯度并累加”的解释。
 
-源码：[spatial_index.py](../models/spatial_index.py)、[contact_grouping.py](../models/contact_grouping.py)。
+上述增量约占**那一对插桩运行** backward host 增量的 95.8%，不能当成未插桩基准的精确因果百分比。该 trace 没有逐 ATen 输入形状或 Python stack，未直接测量每个梯度张量的完整字节数，也没有证明带宽饱和或整个训练严格按 B² 增长。来源：[L20 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md)。
 
-### 4.4 有些逐实例扫描会随 batch 放大
+**H20 的突出 GPU 热点是实例融合范围内的 indexing backward。** `indexing_backward_kernel<float, 4>` 累计约 1.513 秒，其中 54 个长调用合计 1.4676 秒，经 External ID 和 autograd 序列号关联到 `encode_scene.fuse`。结合源码，具体表达式推断为 `instance_blocks` 中的 `stats['instance_features'][slots]`；没有 Python stack，所以表达式级归属仍是源码支持的推断。不能仅凭时长断言原子操作、带宽或计算饱和，也不能把它归因于四次 voxel-to-point gather。来源：[H20 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[实例广播实现](../models/instance_fusion.py)。
 
-E5 的 `InstanceFusion.forward` 对整批每一个实例执行：
+两张卡的热点比例不同，dense chunk 设置也不同。L20 的实例广播 indexing 时间在 B1/B2 间几乎不变，不能把 H20 的热点比例套到 L20。P3 的 split 改动针对已确认的切片反向机制；实例广播改写保留为下一候选，当前不实施。
+
+### 4.5 逐实例全批扫描是源码因素，不能冒充实测首因
+
+`InstanceFusion.forward` 对每个实例执行：
 
 ```python
 rows = torch.where(point_instance == slot)[0]
 ```
 
-这会为该实例扫描整批点。若每帧约 P 个点、I 个实例，B 帧一次 forward 约有 BI 个实例，每次扫描 BP 个元素，因此**仅这一类 mask 扫描**的规模约为 `B²IP`。固定四帧/update、累积次数为 `4/B` 时，其累计扫描量约为 `4BIP`。
+若每帧约 P 个点、I 个实例，B 帧一次 forward 约有 BI 个实例，每次扫描 BP 个元素，**仅这类 mask 扫描**的工作量约为 `B²IP`。固定四帧、累积次数 `4/B` 时，累计约为 `4BIP`。候选采样和 loss 中也有在全批数组上按帧/实例生成 mask 的路径。
 
-候选采样和分层 loss 中也存在逐帧/实例在全批数组上生成 mask 的类似模式。不能据此声称整个训练耗时按 B² 增长，但可以确认：较大 batch 不只是省调用，它也会放大一部分当前实现中的扫描成本。这是需要与潜在 GPU 合批收益一起考虑的真实代码因素。
+这能解释较大 batch 为什么不只是节省调用，却不能据此认定本次退化来自这些扫描。新 trace 已给出切片反向等更直接证据，因此当前不把实例分组重构加入实施前置工作。来源：[实例 pooling](../models/instance_fusion.py)、[候选采样](../models/candidate_sampler.py)、[分层损失](../suction20/losses.py)。
 
-若后续确认它影响吞吐，可以用已有帧 offsets 限定扫描范围，并复用 `(frame, instance)` 的分组行号。它不是本次 B2 小对照的前置重构，也没有必要为此重新构建数据集。
+## 5. 当前优化选择：固定 B1A4，处理有证据的成本
 
-源码：[instance_fusion.py](../models/instance_fusion.py)、[candidate_sampler.py](../models/candidate_sampler.py)、[losses.py](../suction20/losses.py)。
+L20 65,536 的结果已经说明：**直接调整 dense chunk 比扩大帧 batch 更有效**。B1 backward 与 loss 回读从 4.8328 秒降到 2.4779 秒，而 CPU query 基本不变。H20 原来就使用 65,536，本次 override 对它不再构成同样的 chunk 扩大收益。来源：[L20 定向复测](performance/L20_P2_BATCH_DIAGNOSIS.md)。
 
-## 5. 数量级：增大 batch 的收益受到哪一部分限制
+本次 [P3 整合 sidecar](../configs/performance/cd009-p3-integrated.json)的目标如下：
 
-采用 E5 P2 **同一个 30 步窗口的均值，包含首步**：
+| 配置字段 | 目标值 | 对应作用 |
+| --- | --- | --- |
+| 顶层 `dense_chunk_size_override` | `65536` | 保留已冻结正式 profile 原字节，通过显式运行配置采用较大的 dense chunk |
+| 顶层 `chunk_input_mode` | `split` | 每个输入一次 `torch.split`，复用多输出视图的反向拼接，避免每个独立 slice 构造整输入梯度 |
+| `contact_query_backend` | `native_cpu` | 使用完整原生接触 query 路径处理球查询、五区筛选、FPS 衔接和描述量打包 |
+| `spatial_index.backend` | `uniform_grid_cpu` | 保留 P2 全原始点网格索引 |
+| `backbone_coordinate_fastpath` | `true` | 纳入已测量、尚待正式应用的骨干坐标快路径 |
+| `no_instance_voxel_heads` | `false` | 保持此前未通过真实 AMP 梯度对照的路径关闭 |
 
-- 总 elapsed：`T = 9.089 s/update`；
-- index + query：`C = 4.904 s/update`；
-- 剩余：`R = T-C = 4.185 s/update`。
+split 保持每个满块的大小、点顺序、MLP 参数和 checkpoint 调用方式；它不是把模型算到更少的点上，也没有改变 2 mm 体素、每帧 512 候选或监督定义。小型 CPU 融合子图中，逐块 slice 的 9 个 `SliceBackward`、9 次整输入 zeros 和 8 次整点梯度 add，在 split 路径都消失；FP32/FP64 输出及所有测量梯度相同。这是机制和数值证据，**不是 CUDA/AMP 或完整模型真实损失的验收结果**。来源：[分块实现](../models/heads.py)、[CPU 结果](performance/P3_SPLIT_CPU_RESULTS.json)。
 
-这是用于估计量级的近似分解。R 包含其他 CPU、GPU、同步和启动工作，不是纯 GPU kernel 时间；少量索引工作可能与此前 GPU 工作重叠。不能把去首步后的总均值 8.661 秒与含首步的几何均值混算，也不能把各段中位数直接相加。
-
-假设 batch 只改善 R，几何量和串行调度保持不变：
-
-`T_new ≈ C + R/s`
-
-| 假设，不是实测 | 推算总时间 | 整体吞吐倍数 |
-| --- | ---: | ---: |
-| R 快 25%（s=1.25） | 8.252 s | 1.10× |
-| R 快一倍（s=2） | 6.996 s | 1.30× |
-| R 完全消失 | 4.904 s | 1.85×，仅为此模型中的数学上限 |
-
-batch 翻倍不等于 R 减半，固定 chunk 和逐实例扫描还会限制改善。该表说明为什么“显存还有约 100 G”不能换算成几倍训练速度，也说明一成左右的实际收益仍有价值。
-
-未来若把 CPU/GPU 的微批次阶段交错执行，或真正并行 CPU 几何，这个固定串行模型就需要重算；1.85× 不是整套模型所有未来优化的全局上限。
+实例特征整次前向广播也有小型 CPU 原型，但一次大归约仍需处理所有点的梯度，且会持有额外全点特征。不能从调用数减少推算 GPU 时长消失；本次不把这项候选接入产品或宣称其收益。
 
 ## 6. microbatch、有效 batch 和训练行为
 
 | 方案 | microbatch | 累积 | 有效 batch | 从头按当前样本预算派生的总更新/预热/验证间隔 |
 | --- | ---: | ---: | ---: | --- |
 | 当前 B1A4 | 1 | 4 | 4 | 57,600 / 2,880 / 5,760 |
-| 候选 B2A2 | 2 | 2 | 4 | 同上 |
-| 后续候选 B4A1 | 4 | 1 | 4 | 同上 |
+| 已测 B2A2 | 2 | 2 | 4 | 同上 |
+| B4A1，仅说明预算关系 | 4 | 1 | 4 | 同上 |
 | B8A1，或 B2A4 | 8 或 2 | 1 或 4 | 8 | 28,800 / 1,440 / 2,880 |
 
-B2A2 保持每次更新四帧、总有效样本数及更新次数，适合先回答执行效率问题。B8A1 或只改 B=2 而保留 A=4 会改变有效 batch；同样的 230,400 帧需要更少更新，但每次处理更多帧，不能据此直接推导训练时间减半。
+B2A2 保持每次更新四帧以及总有效样本预算。B8A1 或只改 B=2 而保留 A=4 会改变有效 batch；同样的 230,400 帧虽然更新次数更少，每次却处理更多帧，不能据此推导训练时间减半。当前没有采用这类改变。来源：[样本预算实现](../suction20/pretrain_budget.py)。
 
-当前优化器本身的 host 区间中位约 0.0123 秒/update，远小于几何与反向。减少 Adam 更新次数不会自动省掉主要训练成本。
+### 6.1 相同有效 batch 不保证相同 BN 或训练轨迹
 
-### 6.1 BN 变化是可记录的训练配置变化，不是禁止尝试的理由
+骨干 BatchNorm 在每次 forward 的活跃 voxel 行上计算统计。B1 来自一帧，B2 来自两帧；每四帧的 running-stat 更新次数也从四次变为两次。候选随机操作的交错可能随组批改变。因此两份诊断没有以 B1/B2 输出或梯度逐项相同为通过条件，它们是执行配置对照，不是等价算子替换。
 
-骨干的 BatchNorm 在每次 forward 的所有活跃 voxel 行上计算统计。B1 的统计来自一帧的许多 voxel；B2 来自两帧，并且每四帧的 BN running-stat 更新次数从四次变成两次。
+损失仍按原实例→帧→batch 规则归约，不能为了加速改成全点平均。当前保持 B1A4，也没有新增冻结 BN、替换归一化或重跑全部消融的任务。来源：[两卡测试设置](performance/H20_P2_BATCH_DIAGNOSIS.md)、[分层损失](../suction20/losses.py)。
 
-所以相同有效 batch 并不保证相同训练轨迹；候选随机操作的交错也可能改变。损失仍应按原有效监督集合和实例→帧规则归约，不能为了加速改成全点平均。一般正常帧全部有监督时可继续沿用现有缩放；缺项分项的权重不应被无意改写。
+### 6.2 保持正式训练预算与接续状态
 
-**不能把“B1/B2 的输出或梯度逐项相同”作为 batch 对照的通过条件。** 这是 microbatch 配置选择，不是原先要求数值等价的算法替换。保持正常 loss/梯度有限性与已有训练监控即可，不新增冻结 BN、换归一化或重跑全部消融的前置任务。
+正式 profile 的 microbatch、accumulation 和样本预算属于训练语义。现有恢复检查会比较这些字段，性能配置变化应走已有的显式迁移和记录方式，不能直接覆盖旧 profile 后当作原配置普通恢复。
 
-BatchNorm 定义：[PyTorch 2.5.1 源码](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/nn/modules/batchnorm.py)。预算：[pretrain_budget.py](../suction20/pretrain_budget.py)。
+本次仍为 B1A4、230,400 有效帧；P3 目标通过性能 sidecar 声明，不因速度测试另加训练预算、验证节点或更改样本游标。来源：[训练恢复实现](../suction20/training.py)、[P3 实施说明](PERFORMANCE_PHASE3.md)。
 
-### 6.2 当前 profile 的限制属于部署记录
+## 7. 下一步采用已有 P3 接续流程，不重开 batch 矩阵
 
-正式 profile 固定了 microbatch 和 accumulation，`validate_resume_config` 会比较这些语义字段；当前性能迁移只允许相应代码/performance 身份变化。因此若 B2 值得采用，需要记录新的执行 profile 并显式接续现有 run，不能直接编辑旧 profile 后普通 resume。
+已经完成的 P2 B1/B2 对照和 trace 足够支持当前选择：两卡保持 B1A4，L20 的 65,536 作为待应用配置，并使用本次已实现的 split 与原生几何路径。真实整步收益以 [P3 实施说明](PERFORMANCE_PHASE3.md)中的既有接续安排和正常训练日志为准。
 
-这与硬件能否运行 B2 是两回事。保持 E=4 时不用重新训练或重置样本游标；具体接续需要保留现有学习状态，并记录配置切换点。若改为 E=8，旧 `global_step × E` 样本账本不能原值直接套用，应另行处理预算定义，不作为本次首先尝试的路线。
+本文件不另设一次 profiler、B4/B8 扫描或新的组合矩阵。没有把 P3 本地 CPU 倍率相乘来预测训练速度，也没有声称训练机已部署这些改动。未来若正常日志显示瓶颈明显改变，再依据那时的实际问题决定是否调整 batch；当前无需为这种可能性预先追加工作。
 
-## 7. 最小下一步：只重新比较一次 H20 的 B1A4 与 B2A2
+更多显存也不要求立即引入跨微批次流水线、并行独立实验或更大 pose chunk。当前单卡单实验的安排保持，重点是完成已选实现并读正常运行结果。
 
-复用已有 [benchmark_batch_cpu.py](../scripts/benchmark_batch_cpu.py)，使用**实际 P2 部署代码**和 `configs/performance/cd009-p2.json`，其余保持当前 H20/E5 配置：
+## 8. 来源
 
-| 控制项 | 两个候选的设置 |
-| --- | --- |
-| microbatch / accumulation | 1/4 对 2/2 |
-| 数据 | 同 16 帧、相同增强 seed；原脚本 4 帧预热 + 12 帧计时 |
-| CPU / data workers | 8 / 2 |
-| dense / pose chunk | 65,536 / 32 |
-| 体素 / 候选 | 2 mm / 每帧 512 |
-| AMP / BN | 沿用当前开启 AMP、BN train |
-| allocator cap | 112 GiB |
-| 输出 | 每四帧 block wall、帧/秒、峰值 allocated/reserved、现有 forward/backward/query/wait |
-
-原脚本只前向/反向，无 optimizer 更新且不加载正式 checkpoint；它可低成本筛选是否有明显吞吐收益，不能直接给出完整训练 ETA。当前代码已经接受性能 sidecar 参数，不需要另写一套 benchmark。
-
-现有脚本要求 GPU 空闲。实际执行时，在 E5 的正常 checkpoint 边界暂停，沿用现有 GPU 锁完成两组对照后，从原 checkpoint 恢复正式训练。
-
-如果 B2 明显领先，例如约一成且不是单个异常块造成，再考虑 B4A1 或把 B2 接入正常训练窗口。若仍只是约 1%–2% 的差别，当前短测不足以支持更改正式配置；保留 B1A4即可。这里的一成是工程取舍示例，不是统计显著性阈值。
-
-只在候选被采用后读取原预算内正常窗口，确认包含 Adam/正常日志后的 wall time。无需新的 H20/L20 大矩阵、B8 扫描、故障注入、额外完整验证或严格逐梯度等价检查。本分析没有连接训练主机，因此没有声称上述新对照已经完成。
-
-## 8. 如果 B2 仍不快，显存余量还可以用在哪里
-
-下面是有针对性的后续方向，不是本次测试的额外清单：
-
-1. **直接扩大算子 chunk。** `dense_chunk_size` 和 `pose_chunk_size` 比帧 batch 更直接控制这些网络的一次计算规模。例如 pose chunk 32→128 可以减少区域编码调用次数；dense chunk 65,536→131,072 可以减少 dense 分块次数。原 dense 块已较大，是否改善仍看实际耗时，不假定加倍就快。选择一个由现有计时或一次必要 trace 支持的改动即可。
-2. **减少/并行 CPU 几何。** 继续 P2 中筛选、FPS 衔接与打包的融合。已有网格不是这条路径的终点，当前约 4.9 秒仍值得处理。
-3. **在同一个 accumulation 内交错微批次阶段。** 用额外显存暂存少量 B1 前向图，当 CPU 查询一帧时让 GPU处理另一帧，所有梯度准备完成后再执行原来一次 optimizer step。这样可以利用多余显存改善重叠，而不必把 BN 的帧 batch 改大。它需要代码调度改动、保持更新边界和 RNG 顺序；不是单纯修改 batch 参数即可得到的收益，也不安排为当前小对照的前置工程。
-
-如果日后并行多个独立实验，目标是六组总体完成时间，和缩短单组 E5 时间又不同；当前继续按一张卡一组实验的既定安排。
-
-## 9. 来源
-
-- [最新 P2 部署与实测](PERFORMANCE_PHASE2.md#12-实施与真实验收记录2026-11-12)、[P2_REAL_RESULTS.json](performance/P2_REAL_RESULTS.json)。
-- [历史 P1 batch/CPU 对照](performance/P1_BATCH_CPU_RESULTS.json)。
-- [当前 H20/E5 profile](../configs/runtime_profiles/cd009-v3/H20-E5.json)、[P2 sidecar](../configs/performance/cd009-p2.json)。
-- [模型与 chunk 调度](../models/suction20net.py)、[分块实现](../models/heads.py)、[空间索引](../models/spatial_index.py)、[接触分组](../models/contact_grouping.py)。
-- [实例 pooling](../models/instance_fusion.py)、[候选采样](../models/candidate_sampler.py)、[分层损失](../suction20/losses.py)。
-- [训练配置恢复](../suction20/training.py)、[按样本预算](../suction20/pretrain_budget.py)、[现有 batch benchmark](../scripts/benchmark_batch_cpu.py)。
-- [PyTorch 2.5.1 显存统计](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/cuda/memory.py)、[BatchNorm](https://github.com/pytorch/pytorch/blob/v2.5.1/torch/nn/modules/batchnorm.py)。
-- [NVIDIA 矩阵乘法性能原理](https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html)：矩阵大小、算术强度、tile 和并行效率。
-- [NVIDIA CUDA 性能指南](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)：计算/访存与并行限制、Amdahl 条件估计；不使用它替代本项目 kernel 实测。
+- [H20 / E5：P2 batch 与 CPU/CUDA 瓶颈实测](performance/H20_P2_BATCH_DIAGNOSIS.md)。
+- [L20 / E5：P2 batch、切片反向与 65,536 定向复测](performance/L20_P2_BATCH_DIAGNOSIS.md)。
+- [P2 实施记录](PERFORMANCE_PHASE2.md)、[P3 实施记录](PERFORMANCE_PHASE3.md)、[split CPU 证据](performance/P3_SPLIT_CPU_RESULTS.json)。
+- [P3 整合 sidecar](../configs/performance/cd009-p3-integrated.json)、[H20/E5 正式 profile](../configs/runtime_profiles/cd009-v3/H20-E5.json)。
+- [模型编码](../models/suction20net.py)、[chunk 调度](../models/heads.py)、[接触分组](../models/contact_grouping.py)、[空间索引](../models/spatial_index.py)。
+- [实例 pooling](../models/instance_fusion.py)、[候选采样](../models/candidate_sampler.py)、[分层损失](../suction20/losses.py)、[预算](../suction20/pretrain_budget.py)、[恢复检查](../suction20/training.py)。

@@ -12,6 +12,7 @@ from models.candidate_sampler import fps_indices
 from models.contact_grouping import ContactGrouping, SpatialIndex, ZONE_NAMES
 from models.geometry_ops import fps_backend_identity, make_fps_backend
 from suction20.cpu_geometry import CpuGeometry, SamplerTargetsCPU
+from suction20.performance import load_performance_config
 from test_contact_grouping import FROZEN, scene
 from test_model import TinyTestBackbone, model_inputs
 
@@ -153,6 +154,16 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
                                       'contact_query_backend': 'native_cpu',
                                       'spatial_index': {'backend': 'uniform_grid_cpu', 'cell_size_m': .02}}).train()
     native.load_state_dict(copy.deepcopy(reference.state_dict()))
+    settings = load_performance_config(Path(__file__).parents[1] / 'configs/performance/cd009-p3-integrated.json')
+    settings['dense_chunk_size_override'] = 9  # Small ordinary scene still spans multiple chunks.
+    integrated = Suction20Net(cfg, FROZEN, TinyTestBackbone(), performance=settings).train()
+    integrated.load_state_dict(copy.deepcopy(reference.state_dict()))
+    assert cfg['dense_chunk_size'] == 5 and integrated.model_config == cfg
+    assert integrated.execution_settings == {
+        'profile_dense_chunk_size': 5, 'effective_dense_chunk_size': 9,
+        'dense_chunk_override_source': 'performance_sidecar', 'chunk_input_mode': 'split'}
+    assert integrated.contact_grouping.chunk_size == 2
+    assert integrated.contact_grouping.chunk_input_mode == 'split'
     # Reference retains pre-optimization scalar query and duplicate local geometry.
     reference.contact_grouping.query = reference.contact_grouping.query_reference
     inputs = model_inputs()
@@ -162,7 +173,7 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
     sampler_targets = SamplerTargetsCPU.from_targets(targets)
     rng = torch.get_rng_state()
     outputs, gradients, rngs = [], [], []
-    for model in (reference, optimized, native):
+    for model in (reference, optimized, native, integrated):
         torch.set_rng_state(rng)
         context = {} if model is reference else dict(cpu_geometry=geometry, sampler_targets_cpu=sampler_targets)
         # CPU targets remain outside encode_scene and are sufficient for sampling.
@@ -171,16 +182,20 @@ def test_cpu_context_compiled_model_preserves_outputs_gradients_and_rng(compiled
         outputs.append(output)
         gradients.append({n: None if p.grad is None else p.grad.clone() for n, p in model.named_parameters()})
         rngs.append(torch.get_rng_state())
-    for i, model in enumerate((optimized, native), start=1):
+    for i, model in enumerate((optimized, native, integrated), start=1):
         assert torch.equal(rngs[0], rngs[i])
         assert reference.state_dict().keys() == model.state_dict().keys()
         for key in outputs[0]:
-            torch.testing.assert_close(outputs[0][key], outputs[i][key], rtol=0, atol=0)
+            # Changing GEMM chunk shapes can change floating-point reduction
+            # order; existing geometry-only comparisons remain exact.
+            tolerance = dict(rtol=1e-4, atol=1e-6) if model is integrated else dict(rtol=0, atol=0)
+            torch.testing.assert_close(outputs[0][key], outputs[i][key], **tolerance)
         for name, grad in gradients[0].items():
             if grad is None:
                 assert gradients[i][name] is None
             else:
-                torch.testing.assert_close(grad, gradients[i][name], rtol=1e-6, atol=1e-7)
+                tolerance = dict(rtol=1e-4, atol=1e-6) if model is integrated else dict(rtol=1e-6, atol=1e-7)
+                torch.testing.assert_close(grad, gradients[i][name], **tolerance)
     assert optimized.last_grouping_timings['q0_d2h_host_s'] >= 0
     assert optimized.last_grouping_timings['sampler_cpu_s'] >= 0
     assert 'native_query_wall_s' in native.last_grouping_timings

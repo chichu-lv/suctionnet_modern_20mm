@@ -86,7 +86,7 @@ def verify_performance_migration(run_dir, reference, identity, *, _visited=None)
     if receipt.get('schema_version') != 'suction20.performance-migration.v1' or receipt.get('target_identity') != identity:
         raise ValueError('Performance migration target identity mismatch')
     from .performance import (approved_migration_source, load_performance_config,
-                              SCHEMA_VERSION_V2, SCHEMA_VERSION_V3)
+                              validate_migration_target)
     source = receipt['source_identity']
     source_kind = approved_migration_source(source)
     changed = sorted(key for key in set(source) | set(identity) if source.get(key) != identity.get(key))
@@ -104,10 +104,7 @@ def verify_performance_migration(run_dir, reference, identity, *, _visited=None)
     settings = load_performance_config(receipt_path.parent / 'performance-config.json')
     if settings['schema_version'] != identity['performance']['schema_version']:
         raise ValueError('Performance migration sidecar schema mismatch')
-    if source_kind == 'p1' and settings['schema_version'] != SCHEMA_VERSION_V2:
-        raise ValueError('Approved P1 source requires a v2 performance target')
-    if source_kind == 'p2' and settings['schema_version'] != SCHEMA_VERSION_V3:
-        raise ValueError('Approved P2 source requires a v3 performance target')
+    validate_migration_target(source_kind, settings['schema_version'])
     manifest = read_json(receipt_path.parent / 'source-manifest.json')
     current = manifest['current']
     if (current['sha256'] != receipt['files']['source.pt']['sha256'] or

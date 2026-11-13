@@ -4,7 +4,7 @@
 Pause every trainer using this checkout, wait for worker exit/final backup, install
 and verify the target build, then run on its owning host with the frozen profile:
   python scripts/migrate_performance_checkpoint.py --config PROFILE.json \
-    --performance-config configs/performance/cd009-p3.json --run-dir RUN \
+    --performance-config configs/performance/cd009-p3-integrated.json --run-dir RUN \
     --control-dir CONTROL/attempts/TOKEN --expected-source-sha256 SHA
 Use --source-root/--label-root/--backbone-root exactly as the supervisor does.
 No optimizer is constructed and no model, RNG, sampler or training counter changes.
@@ -21,8 +21,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from suction20.performance import (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, approved_migration_source,
-                                  attach_performance, build_runtime_identity)
+from suction20.performance import (approved_migration_source, attach_performance,
+                                  build_runtime_identity, validate_migration_target)
 from suction20.pretrain_budget import resolve_config, resolve_budget, validate_resume_progress
 from suction20.pretrain_runtime import (CheckpointStore, RunLock, atomic_json, file_digest,
     fsync_directory, read_json, verify_performance_migration)
@@ -68,10 +68,7 @@ def migrate(config, run_dir, performance_path, control_dir, expected_source_sha2
         if previous.get('pending_validation') is not None or state['global_step'] != current['global_step'] or status.get('global_step') != state['global_step']:
             raise ValueError('Source checkpoint/status transaction mismatch')
         config = resolve_config(attach_performance(config, performance_path))
-        if source_kind == 'p1' and config['runtime']['performance']['schema_version'] != SCHEMA_VERSION_V2:
-            raise ValueError('Approved P1 source requires a v2 performance target')
-        if source_kind == 'p2' and config['runtime']['performance']['schema_version'] != SCHEMA_VERSION_V3:
-            raise ValueError('Approved P2 source requires a v3 performance target')
+        validate_migration_target(source_kind, config['runtime']['performance']['schema_version'])
         source_data = json.loads((Path(config['data']['label_root']) / 'config_frozen.json').read_bytes())
         target_identity = build_runtime_identity(config, source_data)
         validate_resume_config(state['training_config'], config)

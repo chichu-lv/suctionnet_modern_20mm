@@ -141,7 +141,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     execution = {"torch": torch.__version__, "cuda": torch.version.cuda, "device": str(device),
                  "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
                  "gpu_uuid": normalize_gpu_uuid(torch.cuda.get_device_properties(device).uuid) if device.type == "cuda" else None,
-                 "math_settings": math_settings, "runtime": config.get("runtime", {})}
+                 "math_settings": math_settings, "runtime": config.get("runtime", {}),
+                 "model_execution": getattr(model, "execution_settings", {})}
     if migration_receipt:
         execution["performance_diagnostic_window"] = {
             "start_step": migration_receipt["global_step"],

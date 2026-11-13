@@ -25,7 +25,7 @@ ZONE_LIMITS = {'core': 32, 'lip': 64, 'cup': 32, 'mount': 32, 'approach': 32}
 class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
                  query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None,
-                 contact_query_backend='numpy'):
+                 contact_query_backend='numpy', chunk_input_mode='slice'):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -45,6 +45,7 @@ class ContactGrouping(nn.Module):
         if self.chunk_size <= 0:
             raise ValueError('pose_chunk_size must be positive')
         self.checkpointed = checkpointed
+        self.chunk_input_mode = chunk_input_mode
         self.fps_fn = fps_fn
         self.spatial_index_config = dict(spatial_index or {})
         if contact_query_backend not in ('numpy', 'native_cpu'):
@@ -347,6 +348,7 @@ class ContactGrouping(nn.Module):
                                          for name in ZONE_NAMES]))
         used_rows = torch.as_tensor(used, dtype=torch.long, device=device)
         projected = chunk_apply(self.local_projection, local[used_rows],
+                                input_mode=self.chunk_input_mode,
                                 checkpointed=self.checkpointed and self.training)
         # Extra zero feature is the only padding row; no real point is duplicated.
         projected = torch.cat((projected, projected.new_zeros((1, 64))))
@@ -377,6 +379,7 @@ class ContactGrouping(nn.Module):
                 return output * (count > 0)[:, None]
             features[name] = chunk_apply(encode_zone, q['indices'], q['mask'], q['geometry'], q['counts'],
                                          chunk_size=self.chunk_size,
+                                         input_mode=self.chunk_input_mode,
                                          checkpointed=self.checkpointed and self.training)
         finished = time.perf_counter()
         self.last_timings = {**setup_timings, **self.last_query_timings,

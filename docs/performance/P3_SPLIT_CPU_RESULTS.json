@@ -1,0 +1,146 @@
+{
+  "purpose": "CPU autograd subgraph evidence for P3 shared split views; not a GPU throughput or production-loss result",
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.5.1+cpu",
+    "device": "cpu",
+    "cuda_available": false,
+    "torch_num_threads": 1,
+    "platform": "Linux",
+    "machine": "x86_64"
+  },
+  "fixture": {
+    "points": 2049,
+    "frames": 2,
+    "foreground_instance_slots": 6,
+    "background_slot": true,
+    "chunk_size": 256,
+    "chunks": 9,
+    "fusion": "393 -> 256 -> 256; Linear, LayerNorm, ReLU; identical parameters and chunk sizes",
+    "objective": "fixed synthetic upstream gradient, not production source_losses",
+    "checkpointed": false
+  },
+  "results": [
+    {
+      "dtype": "torch.float64",
+      "variant": "slices_chunk_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 9,
+        "SplitBackward0": 0,
+        "IndexBackward0": 9
+      },
+      "backward_profile": {
+        "slice_zeros_count": 9,
+        "slice_zeros_requested_bytes": 37767168,
+        "full_point_gradient_add_count": 8
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 0.0,
+      "instance_gradient_relative_l2": 0.0,
+      "parameter_gradient_max_abs": 0.0
+    },
+    {
+      "dtype": "torch.float64",
+      "variant": "split_chunk_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 0,
+        "SplitBackward0": 1,
+        "IndexBackward0": 9
+      },
+      "backward_profile": {
+        "slice_zeros_count": 0,
+        "slice_zeros_requested_bytes": 0,
+        "full_point_gradient_add_count": 0
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 0.0,
+      "instance_gradient_relative_l2": 0.0,
+      "parameter_gradient_max_abs": 0.0
+    },
+    {
+      "dtype": "torch.float64",
+      "variant": "split_once_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 0,
+        "SplitBackward0": 2,
+        "IndexBackward0": 1
+      },
+      "backward_profile": {
+        "slice_zeros_count": 0,
+        "slice_zeros_requested_bytes": 0,
+        "full_point_gradient_add_count": 0
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 1.9081958235744878e-17,
+      "instance_gradient_relative_l2": 6.25463350571058e-16,
+      "parameter_gradient_max_abs": 0.0
+    },
+    {
+      "dtype": "torch.float32",
+      "variant": "slices_chunk_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 9,
+        "SplitBackward0": 0,
+        "IndexBackward0": 9
+      },
+      "backward_profile": {
+        "slice_zeros_count": 9,
+        "slice_zeros_requested_bytes": 18883584,
+        "full_point_gradient_add_count": 8
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 0.0,
+      "instance_gradient_relative_l2": 0.0,
+      "parameter_gradient_max_abs": 0.0
+    },
+    {
+      "dtype": "torch.float32",
+      "variant": "split_chunk_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 0,
+        "SplitBackward0": 1,
+        "IndexBackward0": 9
+      },
+      "backward_profile": {
+        "slice_zeros_count": 0,
+        "slice_zeros_requested_bytes": 0,
+        "full_point_gradient_add_count": 0
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 0.0,
+      "instance_gradient_relative_l2": 0.0,
+      "parameter_gradient_max_abs": 0.0
+    },
+    {
+      "dtype": "torch.float32",
+      "variant": "split_once_broadcast",
+      "autograd_nodes": {
+        "SliceBackward0": 0,
+        "SplitBackward0": 2,
+        "IndexBackward0": 1
+      },
+      "backward_profile": {
+        "slice_zeros_count": 0,
+        "slice_zeros_requested_bytes": 0,
+        "full_point_gradient_add_count": 0
+      },
+      "output_max_abs": 0.0,
+      "local_gradient_max_abs": 0.0,
+      "instance_gradient_max_abs": 9.313225746154785e-09,
+      "instance_gradient_relative_l2": 3.3241616392842843e-07,
+      "parameter_gradient_max_abs": 0.0
+    }
+  ],
+  "interpretation": [
+    "Replacing independent slices with one torch.split per input removed SliceBackward, its full-input zero allocations, and full-point gradient adds in this CPU subgraph.",
+    "The split-only variant preserved every output and every measured input/parameter gradient exactly in FP32 and FP64.",
+    "The additional once-per-forward broadcast prototype reduced IndexBackward nodes from 9 to 1, with only instance-feature gradient reduction-order differences. It is a separate prototype and is not implemented by the chunk_apply change.",
+    "slice_zero_requested_bytes is the sum of requested bytes from profiled aten::zeros events under SliceBackward; it is not peak live memory or a GPU memory estimate.",
+    "No CUDA, AMP, real-data, full-model-loss, or wall-time speedup conclusion is made by this experiment."
+  ]
+}

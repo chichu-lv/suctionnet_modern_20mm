@@ -43,15 +43,28 @@ def approved_migration_source(identity):
     raise ValueError('Performance migration source is not approved')
 
 
+def validate_migration_target(source_kind, target_schema):
+    """Allow a direct upgrade while retaining historical receipt transitions."""
+    allowed = {
+        'original': (SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3),
+        'p1': (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3),
+        'p2': (SCHEMA_VERSION_V3,),
+    }
+    if target_schema not in allowed.get(source_kind, ()):
+        raise ValueError(f'Unsupported performance migration target {target_schema!r} for {source_kind!r}')
+
+
 def validate_performance_config(value):
     keys = {'schema_version', 'fps_backend', 'query_chunk_size', 'query_workers', 'loader', 'detailed_cpu_timing'}
+    optional_keys = set()
     if not isinstance(value, dict) or value.get('schema_version') not in (SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3):
         raise ValueError('Unsupported performance configuration fields/schema')
     if value['schema_version'] in (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3):
         keys |= {'spatial_index', 'no_instance_voxel_heads', 'backbone_coordinate_fastpath'}
     if value['schema_version'] == SCHEMA_VERSION_V3:
         keys.add('contact_query_backend')
-    if set(value) != keys:
+        optional_keys = {'dense_chunk_size_override', 'chunk_input_mode'}
+    if not keys.issubset(value) or set(value) - keys - optional_keys:
         raise ValueError('Unsupported performance configuration fields/schema')
     if value['schema_version'] in (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3):
         spatial = value['spatial_index']
@@ -75,6 +88,11 @@ def validate_performance_config(value):
         if contact == 'native_cpu' and (value['spatial_index']['backend'] != 'uniform_grid_cpu' or
                 value['fps_backend'] != 'compiled' or chunk is not None or value['query_workers'] != 1):
             raise ValueError('Native contact query requires uniform_grid_cpu, compiled FPS and scalar query settings')
+        dense_chunk = value.get('dense_chunk_size_override')
+        if dense_chunk is not None and (type(dense_chunk) is not int or dense_chunk <= 0):
+            raise ValueError('Performance dense chunk override must be null or a positive integer')
+        if 'chunk_input_mode' in value and value['chunk_input_mode'] not in ('slice', 'split'):
+            raise ValueError('Performance chunk input mode must be slice or split')
     if type(value['detailed_cpu_timing']) is not bool:
         raise ValueError('Performance detailed_cpu_timing must be boolean')
     loader = value['loader']

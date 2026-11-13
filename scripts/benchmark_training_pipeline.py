@@ -202,6 +202,7 @@ def child(args):
               'sampler_after': schedule.state_dict(), 'amp': bool(amp), 'optimizer_updates': 0,
               'gradient_scale': scaler.get_scale(),
               'diagnostic_performance': performance,
+              'model_execution': getattr(model, 'execution_settings', {}),
               'performance_config_sha256': digest(args.performance_config) if performance else None}
     (out / f'{args.phase}.json').write_text(json.dumps(report, indent=2) + '\n')
 

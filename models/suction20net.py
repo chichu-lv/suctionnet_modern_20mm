@@ -61,7 +61,20 @@ class Suction20Net(nn.Module):
             nn.init.zeros_(self.task_success_head[-1].bias)
         self.sampler = CandidateSampler(model_config.get('seed_count', model_config.get('num_seeds', 512)),
                                         fps_fn=fps_fn)
-        self.chunk_size = int(model_config.get('dense_chunk_size', 16384))
+        # Execution-only overrides live in the performance sidecar. Keep the
+        # frozen model/profile configuration unchanged for checkpoint resume.
+        profile_chunk_size = int(model_config.get('dense_chunk_size', 16384))
+        chunk_override = performance.get('dense_chunk_size_override')
+        self.chunk_size = profile_chunk_size if chunk_override is None else int(chunk_override)
+        self.chunk_input_mode = performance.get('chunk_input_mode', 'slice')
+        if self.chunk_input_mode not in ('slice', 'split'):
+            raise ValueError('chunk_input_mode must be slice or split')
+        self.execution_settings = {
+            'profile_dense_chunk_size': profile_chunk_size,
+            'effective_dense_chunk_size': self.chunk_size,
+            'dense_chunk_override_source': 'profile' if chunk_override is None else 'performance_sidecar',
+            'chunk_input_mode': self.chunk_input_mode,
+        }
         self.checkpoint_dense = bool(model_config.get('checkpoint_dense', True))
         if self.chunk_size <= 0 or self.sampler.num_seeds <= 0:
             raise ValueError('dense_chunk_size and seed_count must be positive')
@@ -75,6 +88,7 @@ class Suction20Net(nn.Module):
                                   query_workers=performance.get('query_workers', 1),
                                   spatial_index=performance.get('spatial_index'),
                                   contact_query_backend=performance.get('contact_query_backend', 'numpy'),
+                                  chunk_input_mode=self.chunk_input_mode,
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
         if self.use_aux_heads:
@@ -89,6 +103,7 @@ class Suction20Net(nn.Module):
 
     def _chunks(self, fn, *args):
         return chunk_apply(fn, *args, chunk_size=self.chunk_size,
+                           input_mode=self.chunk_input_mode,
                            checkpointed=self.checkpoint_dense and self.training)
 
     def encode_scene(self, batch_input, *, cpu_geometry=None):

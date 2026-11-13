@@ -54,9 +54,9 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
-**P3 几何代码已提供：** [构建、同四帧配对与 P2→P3 接续](PERFORMANCE_PHASE3.md) 使用独立 `configs/performance/cd009-p3.json`。当前公开部署证据仍对应下述 P2；P3 的本地 CPU 结果不表示训练机已完成切换。
+**2026-11-13 当前状态：P2 仅测试、尚未实际应用，P3 尚未在训练机测试。** [调整后的构建、同四帧配对与接续](PERFORMANCE_PHASE3.md) 使用 `configs/performance/cd009-p3-integrated.json`，将待应用的 P2 grid/坐标快路径、P3 原生几何、split 分块与 64k dense chunk 执行覆盖合并。旧 `cd009-p3.json` 保留作几何版本记录；本地 CPU 结果不表示训练机已完成切换。
 
-当前 P2 的全点 CPU 网格及坐标快路径已通过原容差四帧真实配对并部署到 E5/E0/E3；voxel heads 因真实 AMP 梯度未通过而关闭。三组在1030/2462/1058步保持学习状态迁移。历史 P1 和失败证据保留；[P2 实施报告](PERFORMANCE_PHASE2.md) 区分数值验收、普通训练耗时与资源观测。
+P2 的全点 CPU 网格及坐标快路径已有原容差四帧真实配对记录；voxel heads 因真实 AMP 梯度未通过而继续关闭。历史报告中的1030/2462/1058步迁移和窗口保留作原始记录，不作为当前部署状态依据。接续时读取当前 committed checkpoint，已批准的 original/P1/P2 可一次迁到目标 v3；无需先应用一次 P2。下面 P1/P2 命令保留为历史使用说明，当前整合方案按 [P3 操作步骤](PERFORMANCE_PHASE3.md) 执行。
 
 ### 本机扩展与独立性能配置
 
@@ -76,12 +76,14 @@ python -c 'import json; from models.spatial_index import spatial_index_backend_i
 
 [configs/performance/cd009-p2.json](../configs/performance/cd009-p2.json) 是当前额外 JSON sidecar，保持原六份正式 profile 字节和哈希。`--performance-config PATH` 在预训练入口加载它，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。v2 保留下面的严格 v1 字段契约，并增加空间索引和两个布尔开关：
 
-- 当前 `schema_version:"suction20.performance.v2"`；旧 `suction20.performance.v1` 仍严格兼容。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
+- 当前整合目标为 `schema_version:"suction20.performance.v3"`；既有 v1/v2 与原 v3 字段集仍兼容，不自动补写字段或改变 sidecar 原字节哈希。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
 - `query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前真实帧测量选择 `null / 1`，因此提供的 P1 文件采用该配置；这不等于已验证整步训练加速。
 - `loader` 含 `num_workers:2`、`prefetch_factor:2`、`persistent_workers:true`、`pin_memory:true`、`multiprocessing_context:"spawn"`。`num_workers:0` 仅供显式 CPU/reference 路径；不引入另一套训练进度。
 - `detailed_cpu_timing:false` 为常规值。未知键、错误类型和范围被拒绝。
 
 P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`backbone_coordinate_fastpath:true`、`no_instance_voxel_heads:false`。空间网格和FPS的源码/编译器/flags/ABI/二进制摘要分别绑定到当前身份；原始全点几何和排序不变。不要启用未通过真实梯度验收的voxel路径。
+
+整合 v3 另加顶层 `dense_chunk_size_override:65536` 与 `chunk_input_mode:"split"`。前者只覆盖模型实际执行值，不回写 `model.dense_chunk_size` 或 profile 字节；后者用一次 `torch.split` 连接同一输入的所有块，保留逐块前向及 checkpoint 顺序。训练 attempt 的 `execution.model_execution`、配对报告的 `identities.*.model_execution`、batch benchmark 的 `identity.model_execution` 会同时显示原 profile 值和实际值。L20 64k 目前的真实性能证据来自 E5，不能自动写成其他实验已测收益。
 
 主进程在 pinning 后建立 `CpuGeometry` 与独立 `SamplerTargetsCPU`，上传 GPU 消费字段；观测上下文不含标签、不进入 state_dict。worker 只准备 CPU 数据；独立 DataLoader generator 不消耗模型 RNG。已发出 ticket 与已完成 backward 的消费游标分开，checkpoint 只持久化消费游标；AMP 跳步保留实际帧消费，但不推进成功更新预算。
 
@@ -104,7 +106,7 @@ P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`ba
 
 ### 从原冻结代码或批准的P1迁移并正常恢复
 
-转换器只接受已核实的源 revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。也接受批准的 P1 revision `996421c664a5a0b84c308aa4ca47c31eaff4035b`、源码摘要 `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` 与原 P1 sidecar `08d2247c…`，且该来源只能转入v2。P1来源已有的迁移链必须验证通过。这不是通用的改配置恢复工具；batch、loss、预算、数据、依赖和数学设置不能借此改变。
+转换器接受已核实的 original revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`，以及批准的 P1 revision `996421c664a5a0b84c308aa4ca47c31eaff4035b`、源码摘要 `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` 与原 P1 sidecar `08d2247c…`；P2 批准身份见 [P3 接续说明](PERFORMANCE_PHASE3.md)。允许 original→v1/v2/v3、P1→v2/v3、P2→v3，保留历史 receipt 的合法迁移关系。P1 来源原有迁移链继续沿用；源身份按实际 checkpoint 读取。具名 dense chunk 执行覆盖位于 sidecar，不改变冻结 profile、batch、loss、预算、数据、依赖或数学设置。
 
 1. 用 supervisor `pause EXPERIMENT --reason ...` 在完整更新边界暂停同一 checkout/venv 的全部任务。旧 worker/trainer 必须已正向确认退出，状态为 `paused`、exit75，完成原 final backup，且没有 pending validation；若已有 pending，先用旧版本完成原定验证。
 2. 冻结并验证目标代码与本机扩展，在拥有该 run 的主机执行转换。`--control-dir` 指向刚退出的旧 attempt，源 hash 取已核验 manifest 的 current。数据与主干覆盖参数必须与原 supervisor 一致。
@@ -131,7 +133,7 @@ python scripts/migrate_performance_checkpoint.py \
 
 ### 真实诊断结果的正确使用
 
-以下380/833/441及相应窗口为历史P1记录。当前P2的四帧、1030/2462/1058迁移和30步窗口见 [P2报告](PERFORMANCE_PHASE2.md)；原AMP容差未放宽，voxel失败保留。
+以下380/833/441及相应窗口为历史P1记录。P2报告中的四帧、1030/2462/1058迁移和30步历史窗口见 [P2报告](PERFORMANCE_PHASE2.md)；原AMP容差未放宽，voxel失败保留。当前应用状态以上方用户最新说明为准。
 
 `scripts/benchmark_training_pipeline.py` 的独立旧/新进程结果保持失败，旧代码自身重复运行也出现骨干数值变化。随后 `scripts/benchmark_paired_pipeline.py` 从同一第 380 步 checkpoint、相同四帧与增强种子出发，共享每帧一次真实骨干输出，再比较两条实际下游路径及其完整骨干 VJP；四帧零失败，容差保持 `atol=2e-4, rtol=2e-3`。完整离散几何、描述符和 RNG 精确核对；该配对结果不覆盖原失败，也不证明独立 CUDA 运行逐位相同。
 

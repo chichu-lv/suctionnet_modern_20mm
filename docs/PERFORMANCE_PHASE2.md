@@ -1,12 +1,12 @@
 # CD-009 P2：基于 P1 实测的第二轮训练提速方案
 
-**后续几何实现：** [P3 原生接触查询](PERFORMANCE_PHASE3.md) 已接入融合筛选/FPS/打包与候选并行，单独记录 CPU 检查和训练机接续步骤；本文保留 P2 的设计与已部署反馈。
+**2026-11-13 状态修正：按用户最新运行说明，P2 仅测试、尚未实际应用，P3 尚未在训练机测试。** 本文第12节与原始 JSON 保留历史报告的身份、迁移和窗口，不据此推断当前 checkpoint 已是 P2。当前待应用组合、测试和直接迁移步骤统一见 [调整后的 P3](PERFORMANCE_PHASE3.md)。
 
-**实施状态：三项产品路径与迁移接线已实现，316 项 CPU 测试通过、1 项既有 opt-in 跳过；真实 AMP 验收发现 voxel heads 梯度差异，因此部署配置关闭该项，grid 与坐标快路径已通过相同四帧的原容差验收，并已在三组正式训练部署、完成正常窗口观察。** 本文审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**。迁移来源为正式 P1 部署版本 `996421c`。本文中的合成 CPU 时间不代表正式训练速度；实际部署与正常窗口在第12节记录。
+**实现与测试：三项产品路径与迁移接线已实现，历史 CPU 测试为316 passed / 1 skipped；真实 AMP 对照发现 voxel heads 梯度差异，因此候选配置关闭该项，grid 与坐标快路径已有相同四帧的原容差通过记录。** 本文原设计审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**，当时迁移来源为 P1 `996421c`。第12节是随后上传的历史实施报告；当前应用状态以上方说明为准。
 
-**原 P2 设计包含三项改动：原生 CPU 空间网格查询、无实例分支的体素级 fusion/q0、骨干输出坐标的同存储快路径。** 实际部署启用的两项与关闭的 voxel heads 见第12节。当前继续使用 microbatch 1 × 梯度累积 4、8 个逻辑核、2 个数据 worker。
+**原 P2 设计包含三项改动：原生 CPU 空间网格查询、无实例分支的体素级 fusion/q0、骨干输出坐标的同存储快路径。** 本轮待应用的是 grid 与坐标快路径，voxel heads 继续关闭；使用 microbatch 1 × 梯度累积 4、8 个逻辑核、2 个数据 worker。
 
-**P2 上线后的 batch 判断：** [H20 显存与 batch size 分析](H20_BATCHSIZE_ANALYSIS.md) 区分容量、固定 chunk、CPU 几何和逐实例扫描代价。P2 尚未重新测 B2/B4；建议仅先对比 H20 B1A4 与 B2A2，不能将下文历史 P1 结论理解为永久排除更大 microbatch。
+**P2 测试后的 batch 判断：** [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 已补齐 B1/B2 诊断。H20 B2 仅 +2.20%，L20 64k 下 B2 仍慢于 B1；本轮保留 B1A4，不再安排 batch 扫描。L20/E5 的 64k 吞吐 +28.40% 已纳入 P3 候选执行配置，详见 [更新后的 batch 分析](H20_BATCHSIZE_ANALYSIS.md)。
 
 本文是 [P1 方案与完成记录](PERFORMANCE_OPTIMIZATION.md) 的后续。两者的当前状态不同：P1 已实施；本文保留 P2 设计规格，并在第12节记录实施结果与未通过项。数据、模型和预训练的正式定义继续以 [CD-009 说明](CD009_PRETRAINING.md) 为准。
 
@@ -488,6 +488,8 @@ GPU 版本仍须支持所有 raw points、完整半径集合、原区域边界�
 - SciPy 1.11.4 的球查询参数、排序与返回值定义：[官方文档](https://docs.scipy.org/doc/scipy-1.11.4/reference/generated/scipy.spatial.cKDTree.query_ball_point.html)。
 
 ## 12. 实施与真实验收记录（2026-11-12）
+
+**历史报告范围：** 以下保留当时上传的部署、迁移和自然窗口措辞。按 2026-11-13 用户最新说明，P2 尚未实际应用，P3 尚未在训练机测试；本节不用于推定当前 checkpoint 身份或当前运行状态。现在的操作按 [P3 整合方案](PERFORMANCE_PHASE3.md) 执行。
 
 产品实现的第一候选为本地 `0b1b01f`。CPU 全套316 passed/1 skipped，独立代码复核通过；原生扩展在 H20/L20 的独立 checkout 构建。P1 baseline显式配置CPU context，E3主配对复用上轮相同四帧和增强种子、同一次真实backbone及两个VJP；骨干坐标在原始sparse output、projection之前核对。
 

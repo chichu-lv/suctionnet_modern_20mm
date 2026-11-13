@@ -181,6 +181,10 @@ def run_trial(args, report):
         detailed_cpu_timing_override=False, sampler_regime_epoch=args.sampler_epoch,
         effective_profile_sha256=content_digest(dict(config=config, loader=loader_settings)))
     model = make_model(config, dataset.data_cfg, device).train()
+    report['identity']['model_execution'] = getattr(model, 'execution_settings', {
+        'profile_dense_chunk_size': config['model'].get('dense_chunk_size', 16384),
+        'effective_dense_chunk_size': model.chunk_size,
+        'dense_chunk_override_source': 'profile', 'chunk_input_mode': 'slice'})
     model.set_epoch(args.sampler_epoch)
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(decay_groups(model, weight_decay=config.get('optimizer', {}).get('weight_decay', 1e-4)))

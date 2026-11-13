@@ -228,8 +228,52 @@ def test_v3_sidecar_binds_native_contact_abi_without_changing_v2(monkeypatch):
         old['backend_builds']['spatial_index'], contact_abi_version=1)
 
 
-@pytest.mark.parametrize('p2_start', ['fresh', 'migrated'])
-def test_p2_to_p3_preserves_normal_continuation_and_archive(tmp_path, harness, monkeypatch, p2_start):
+def test_v3_optional_execution_fields_preserve_profile_and_payload_identity(tmp_path):
+    base = Path(__file__).parents[1] / 'configs'
+    p1 = load_performance_config(base / 'performance/cd009-p1.json')
+    p2 = load_performance_config(base / 'performance/cd009-p2.json')
+    legacy_v3 = dict(p2, schema_version=performance.SCHEMA_VERSION_V3,
+                     contact_query_backend='native_cpu')
+    profile_path = base / 'runtime_profiles/cd009-v3/L20-E1.json'
+    profile = training.load_config(profile_path)
+    profile['runtime']['raw_config_sha256'] = runtime.file_digest(profile_path)
+    original = copy.deepcopy(profile)
+    digests = []
+    variants = [legacy_v3, dict(legacy_v3, dense_chunk_size_override=None),
+                dict(legacy_v3, chunk_input_mode='slice'),
+                dict(legacy_v3, dense_chunk_size_override=65536, chunk_input_mode='split')]
+    for index, settings in enumerate(variants):
+        path = tmp_path / f'performance-{index}.json'
+        path.write_text(json.dumps(settings))
+        attached = attach_performance(profile, path)
+        assert attached['runtime']['performance'] == settings
+        assert attached['runtime']['performance_config_sha256'] == runtime.file_digest(path)
+        assert attached['runtime']['raw_config_sha256'] == original['runtime']['raw_config_sha256']
+        assert training.semantic_config(attached) == training.semantic_config(original)
+        assert attached['model']['dense_chunk_size'] == 16384
+        digests.append(attached['runtime']['performance_config_sha256'])
+    assert profile == original
+    assert len(set(digests)) == len(variants)
+    for invalid in (dict(legacy_v3, dense_chunk_size_override=0),
+                    dict(legacy_v3, dense_chunk_size_override=True),
+                    dict(legacy_v3, chunk_input_mode='unsupported'),
+                    dict(p1, dense_chunk_size_override=None), dict(p2, chunk_input_mode='split')):
+        with pytest.raises(ValueError):
+            performance.validate_performance_config(invalid)
+
+
+def test_migration_target_allows_direct_upgrades_and_historical_receipts():
+    v1, v2, v3 = performance.SCHEMA_VERSION, performance.SCHEMA_VERSION_V2, performance.SCHEMA_VERSION_V3
+    for source, targets in (('original', (v1, v2, v3)), ('p1', (v2, v3)), ('p2', (v3,))):
+        for target in targets:
+            performance.validate_migration_target(source, target)
+    for source, target in (('p1', v1), ('p2', v2)):
+        with pytest.raises(ValueError, match='Unsupported performance migration target'):
+            performance.validate_migration_target(source, target)
+
+
+@pytest.mark.parametrize('source_start', ['fresh_p2', 'migrated_p2', 'migrated_p1'])
+def test_approved_source_to_p3_preserves_normal_continuation_and_archive(tmp_path, harness, monkeypatch, source_start):
     from types import SimpleNamespace
     from models import geometry_ops, spatial_index
     from suction20 import prefetch
@@ -254,6 +298,8 @@ def test_p2_to_p3_preserves_normal_continuation_and_archive(tmp_path, harness, m
     run, control = tmp_path / 'run', tmp_path / 'run/control'
     base = Path(__file__).parents[1] / 'configs/performance'
     p1_path, p2_path, p3_path = [base / f'cd009-p{version}.json' for version in (1, 2, 3)]
+    if source_start == 'migrated_p1':
+        p3_path = base / 'cd009-p3-integrated.json'
     p2_config = attach_performance(cfg, p2_path)
 
     def select_code(revision, worktree):
@@ -272,25 +318,27 @@ def test_p2_to_p3_preserves_normal_continuation_and_archive(tmp_path, harness, m
     continuous = tmp_path / 'continuous'
     entry.train(p2_config, continuous, torch.device('cpu'))
     references = []
-    if p2_start == 'migrated':
+    if source_start != 'fresh_p2':
         select_code(SOURCE_REVISION, SOURCE_WORKTREE_SHA256)
         entry.train(copy.deepcopy(cfg), run, torch.device('cpu'), pause_at_step=1)
         source = paused_source()
         select_code(performance.P1_SOURCE_REVISION, performance.P1_SOURCE_WORKTREE_SHA256)
         references.append(converter.migrate(cfg, run, p1_path, control, source['sha256'])['receipt'])
-        entry.train(attach_performance(cfg, p1_path), run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=2)
-        source = paused_source()
-        select_code(performance.P2_SOURCE_REVISION, performance.P2_SOURCE_WORKTREE_SHA256)
-        references.append(converter.migrate(cfg, run, p2_path, control, source['sha256'])['receipt'])
-        entry.train(p2_config, run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=3)
+        p1_pause = 2 if source_start == 'migrated_p2' else 3
+        entry.train(attach_performance(cfg, p1_path), run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=p1_pause)
+        if source_start == 'migrated_p2':
+            source = paused_source()
+            select_code(performance.P2_SOURCE_REVISION, performance.P2_SOURCE_WORKTREE_SHA256)
+            references.append(converter.migrate(cfg, run, p2_path, control, source['sha256'])['receipt'])
+            entry.train(p2_config, run, torch.device('cpu'), resume=run / 'last.pt', pause_at_step=3)
     else:
         entry.train(p2_config, run, torch.device('cpu'), pause_at_step=3)
 
     source = paused_source()
     before = state(run)
     manifest_before = runtime.read_json(run / 'checkpoint-manifest.json')
-    assert performance.approved_migration_source(before['runtime_state']['identity']) == 'p2'
-    assert bool(before['runtime_state'].get('performance_migration')) == (p2_start == 'migrated')
+    assert performance.approved_migration_source(before['runtime_state']['identity']) == ('p1' if source_start == 'migrated_p1' else 'p2')
+    assert bool(before['runtime_state'].get('performance_migration')) == (source_start != 'fresh_p2')
     select_code('test-p3-build', 'test-p3-worktree')
     result = converter.migrate(cfg, run, p3_path, control, source['sha256'])
     references.append(result['receipt'])

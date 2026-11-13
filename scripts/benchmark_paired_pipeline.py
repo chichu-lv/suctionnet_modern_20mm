@@ -9,6 +9,8 @@ No optimizer is constructed, no update occurs, and no formal run state is writte
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
 from contextlib import contextmanager
 import hashlib
 import importlib
@@ -65,6 +67,19 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             result.update(block)
     return result.hexdigest()
+
+
+def shared_backbone_dependencies(roots):
+    # The shared backbone imports only mlp from heads.py. chunk_apply belongs
+    # to each separately executed suffix and is intentionally different in P3.
+    hashes = []
+    for root in roots:
+        tree = ast.parse((root.root / 'models/heads.py').read_text())
+        mlp = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'mlp')
+        hashes.append(hashlib.sha256(ast.dump(mlp, include_attributes=False).encode()).hexdigest())
+    if hashes[0] != hashes[1]:
+        raise ValueError('Shared-backbone dependency changed: models/heads.py::mlp')
+    return {'models/heads.py::mlp_ast': hashes[0]}
 
 
 def fingerprint(value):
@@ -188,28 +203,84 @@ def add_gradients(total, values):
 
 
 def install_query_capture(model, destination):
+    import torch
     grouping = getattr(model, 'contact_grouping', None)
     if grouping is None:
         return
     original = grouping.query
 
-    def capture(*args, **kwargs):
-        value = original(*args, **kwargs)
-        destination.append(value)  # CPU arrays only; no model graph or RNG changes.
+    def capture(index, points, normals, instances, batch, valid, *, random_roll=False):
+        args = tuple(value.detach().cpu().clone()
+                     for value in (points, normals, instances, batch, valid))
+        kwargs = dict(random_roll=random_roll)
+        rng_before = torch.get_rng_state().clone()
+        value = original(index, points, normals, instances, batch, valid, **kwargs)
+        # The index and bound query live only for this frame, never in saved evidence.
+        destination.append(dict(index=index, query=original, grouping=grouping,
+            args=args, kwargs=kwargs, rng_before=rng_before,
+            rng_after=torch.get_rng_state().clone(), value=value))
         return value
     grouping.query = capture
+
+
+def compare_query_captures(baseline, candidate, comparisons, path):
+    """Check actual selections, then isolate geometry under identical pose/RNG."""
+    import torch
+    comparisons.check(len(baseline), len(candidate), path + '.count', exact=True)
+    if len(baseline) != len(candidate):
+        return []
+    checks = []
+    for number, (left, right) in enumerate(zip(baseline, candidate)):
+        prefix = f'{path}.{number}'
+
+        def parts(value):
+            discrete = {name: {key: array for key, array in zone.items() if key != 'geometry'}
+                        if isinstance(zone, dict) else zone for name, zone in value.items()}
+            geometry = {name: torch.from_numpy(zone['geometry']) for name, zone in value.items()
+                        if isinstance(zone, dict) and 'geometry' in zone}
+            return discrete, geometry
+
+        left_discrete, left_geometry = parts(left['value'])
+        right_discrete, right_geometry = parts(right['value'])
+        comparisons.check(fingerprint(left_discrete), fingerprint(right_discrete),
+                          prefix + '.actual.discrete', exact=True)
+        comparisons.check(left_geometry, right_geometry, prefix + '.actual.geometry')
+        inputs_equal = fingerprint((left['args'], left['kwargs'])) == fingerprint((right['args'], right['kwargs']))
+        rng_equal = torch.equal(left['rng_before'], right['rng_before'])
+        if inputs_equal and rng_equal:
+            fixed, fixed_rng_after = right['value'], right['rng_after']
+            mode = 'actual_same_input'
+        else:
+            grouping = right['grouping']
+            timings = {name: copy.deepcopy(getattr(grouping, name))
+                       for name in ('last_query_timings', 'last_timings') if hasattr(grouping, name)}
+            try:
+                # Query draws roll only from CPU Torch RNG. The actual suffix RNG,
+                # outputs and gradients remain untouched by this geometry replay.
+                with torch.no_grad(), torch.random.fork_rng(devices=[]):
+                    torch.set_rng_state(left['rng_before'])
+                    fixed = right['query'](right['index'], *left['args'], **left['kwargs'])
+                    fixed_rng_after = torch.get_rng_state().clone()
+            finally:
+                for name, value in timings.items():
+                    setattr(grouping, name, value)
+            mode = 'replay_baseline_query'
+        left_fingerprint, fixed_fingerprint = fingerprint(left['value']), fingerprint(fixed)
+        comparisons.check(left_fingerprint, fixed_fingerprint, prefix + '.fixed_input', exact=True)
+        comparisons.check(left['rng_after'], fixed_rng_after, prefix + '.fixed_input_rng_after', exact=True)
+        checks.append(dict(fixed_input_mode=mode, actual_input_equal=inputs_equal,
+            actual_rng_before_equal=rng_equal, fixed_input_output_exact=left_fingerprint == fixed_fingerprint,
+            fixed_input_rng_after_exact=torch.equal(left['rng_after'], fixed_rng_after)))
+    return checks
 
 
 def run(args, report):
     import torch
     roots = [Checkout(args.baseline_repo), Checkout(args.candidate_repo)]
-    unchanged_sources = {}
-    for relative in ('models/heads.py',):
-        hashes = [digest(root.root / relative) for root in roots]
-        if hashes[0] != hashes[1]:
-            raise ValueError(f'Shared-backbone dependency changed: {relative}')
-        unchanged_sources[relative] = hashes[0]
-    report['shared_backbone_source_sha256'] = unchanged_sources
+    report['shared_backbone_source_sha256'] = shared_backbone_dependencies(roots)
+    report['heads_source_sha256'] = {
+        label: digest(root.root / 'models/heads.py')
+        for label, root in zip(('baseline', 'optimized'), roots)}
     report['backbone_wrapper_source_sha256'] = {
         label: digest(root.root / 'models/backbones/spconv_resunet14.py')
         for label, root in zip(('baseline', 'optimized'), roots)}
@@ -263,6 +334,10 @@ def run(args, report):
             queries = []
             install_query_capture(model, queries)
             identity = dict(repo=str(checkout.root), code_revision=training.code_revision(), worktree_sha256=training.worktree_digest())
+            identity['model_execution'] = getattr(model, 'execution_settings', {
+                'profile_dense_chunk_size': config['model'].get('dense_chunk_size', 16384),
+                'effective_dense_chunk_size': model.chunk_size,
+                'dense_chunk_override_source': 'profile', 'chunk_input_mode': 'slice'})
             if performance is not None:
                 identity['performance'] = performance_module.performance_identity(config)
             bundles.append(dict(phase=phase, checkout=checkout, training=training, datasets=datasets,
@@ -371,7 +446,7 @@ def run(args, report):
                     loss_kwargs=dict(quality_target=item['config']['model']['quality_target'],
                         beta=item['config'].get('loss', {}).get('smooth_l1_beta', .05),
                         weights=item['config'].get('loss', {}).get('weights')))
-                result['queries'] = item['queries'][:]
+                result['queries'] = [record['value'] for record in item['queries']]
                 result['rng_after'] = item['training'].capture_rng()
                 for label, values in (('boundary', [result['cotangent']]),
                                       ('suffix', result['suffix_gradients'].values())):
@@ -385,8 +460,9 @@ def run(args, report):
                 del branch_inputs, targets, kwargs
         for key in ('outputs', 'losses', 'cotangent', 'suffix_gradients', 'suffix_buffers'):
             comparisons.check(evidence[0][key], evidence[1][key], f'frame.{frame_index}.{key}')
-        comparisons.check(fingerprint(evidence[0]['queries']), fingerprint(evidence[1]['queries']),
-                          f'frame.{frame_index}.queries', exact=True)
+        with roots[1].active():
+            frame['query_checks'] = compare_query_captures(baseline['queries'], optimized['queries'],
+                comparisons, f'frame.{frame_index}.queries')
         comparisons.check(fingerprint(rng_after[0]), fingerprint(rng_after[1]), f'frame.{frame_index}.rng_after', exact=True)
         # No suffix graph remains. Apply both actual cotangents to the SAME real
         # retained backbone graph. Release that graph after the second VJP.
@@ -430,7 +506,7 @@ def main(argv=None):
     parser.add_argument('--config', required=True)
     parser.add_argument('--performance-config', required=True)
     parser.add_argument('--baseline-performance-config',
-                        help='Explicit baseline sidecar; pass P1 when comparing P1 to P2')
+                        help='Sidecar of the actual checkpoint source (P1/P2); omit for original source when comparing to integrated P3')
     parser.add_argument('--source-root')
     parser.add_argument('--label-root')
     parser.add_argument('--backbone-root')

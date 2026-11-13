@@ -1,6 +1,19 @@
 # 模型验证与当前训练状态
 
-## P3 几何实现：本地 CPU 验证（2026-11-13）
+## P3 调整：P2 诊断反馈与待应用组合（2026-11-13）
+
+用户最新运行说明为 **P2 仅测试、尚未实际应用；P3 尚未在训练机测试**。本次读取 [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 反馈，目标是一次应用通过的 P2/P3 组合；原报告中的部署措辞、版本与窗口保留作历史证据。
+
+- 整合配置为 `configs/performance/cd009-p3-integrated.json`：P2 grid/坐标快路径、既有 P3 原生几何、dense chunk 执行覆盖 65536、一次 split 分块；voxel heads 保持关闭。
+- [split CPU 子图记录](performance/P3_SPLIT_CPU_RESULTS.json)：2,049 点、9 块的真实 fusion MLP，独立 SliceBackward 9→0、整输入梯度清零 9→0、累加 8→0；仅 split 的 FP32/FP64 输出与全部测量梯度相同。额外一次广播仅为探索原型，未纳入应用代码。
+- 普通 CPU E5 集成对照同时覆盖原生几何、不同 dense chunk、split 和全部参数梯度；checkpoint 分块路径也有现有测试覆盖。模型、样本和冻结 profile 不变。
+- 已批准的 P1 可直接迁到 v3，沿用既有历史回执和学习状态；不要求先生成中间 P2 checkpoint。
+
+训练机仍执行 [P3 文档](PERFORMANCE_PHASE3.md) 的同四帧配对与正常续训窗口。L20/E5 的 64k 已有真实短测 **吞吐 +28.40%（每块耗时约 −22.1%）**，但整合方案尚无 CUDA/AMP 或正式 optimizer 更新结果；不把局部 CPU 结果换算为整步加速。
+
+最终本地既有 CPU 套件 **333 passed、1 skipped（14.94 s）**；因本地 Unix socket 限制排除 `tests/test_prefetch.py`，没有改动该测试，完整套件由提交的 GitHub CI 执行。配对工具保留相同姿态下的几何精确比较，并将不同 chunk 导致的实际浮点描述量按既有 AMP 容差比较；实际离散索引仍须相同，未改变实际输出或梯度。
+
+## 原 P3 几何实现：本地 CPU 验证（2026-11-13，整合调整前）
 
 基于 GitHub `0bda78b` 实现融合原生接触查询和两个候选线程，模型及训练定义不变。[完整实现与接续说明](PERFORMANCE_PHASE3.md) 和 [CPU 原始结果](performance/P3_CPU_RESULTS.json) 记录本轮范围。
 
@@ -10,7 +23,7 @@
 - 新增 P3 配置及两条正常 P2→P3 迁移测试 **3 passed**，覆盖从 P2 开始和带旧迁移链的保存、恢复、预算及归档接续。
 - 本地既有套件 **324 passed、1 skipped**；另一个既有 `test_prefetch.py` 因环境禁止 Unix socket 而无法完成，未改写该测试，由原 CI 全量执行。跳过项需要真实 release 路径。
 
-环境：Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0。没有执行真实训练帧或 GPU optimizer 更新，也未部署到训练机；当前已公开的实际部署仍是 P2 `e73d62e`。CPU 局部加速比不作为 H20/L20 整步提速或完整训练 ETA。
+环境：Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0。没有执行真实训练帧或 GPU optimizer 更新，也未部署到训练机；P2 报告中的 `e73d62e` 是测量身份，不据此认定当前已应用 P2。CPU 局部加速比不作为 H20/L20 整步提速或完整训练 ETA。
 
 ## CD-009 v3：初始部署记录（2026-11-12，性能优化前）
 
