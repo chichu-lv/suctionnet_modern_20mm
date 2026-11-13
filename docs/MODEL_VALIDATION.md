@@ -1,17 +1,23 @@
 # 模型验证与当前训练状态
 
-## P3 调整：P2 诊断反馈与待应用组合（2026-11-13）
+## P3 整合：真实配对与正常续训（2026-11-13）
 
-用户最新运行说明为 **P2 仅测试、尚未实际应用；P3 尚未在训练机测试**。本次读取 [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 反馈，目标是一次应用通过的 P2/P3 组合；原报告中的部署措辞、版本与窗口保留作历史证据。
+根据 [最新 P3 结果](performance/P3_INTEGRATED_RESULTS.md)，本轮实际源 checkpoint 已确认为 P2 `e73d62e`。**H20/E5 的 64k 与 L20/E3 的 16k 组合已通过真实四帧配对；H20/E5、L20/E0、E1、E3 均已迁移续训并取得首 25 次正常更新窗口。** 方案调整与各阶段证据见 [性能优化全程总览](PERFORMANCE_HISTORY.md)，原 [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) / [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 诊断保留其历史范围。
 
-- 整合配置为 `configs/performance/cd009-p3-integrated.json`：P2 grid/坐标快路径、既有 P3 原生几何、dense chunk 执行覆盖 65536、一次 split 分块；voxel heads 保持关闭。
+- H20 使用 [64k sidecar](../configs/performance/cd009-p3-integrated.json)，L20 使用 [16k sidecar](../configs/performance/cd009-p3-l20-16k.json)。两者保留 P2 grid/坐标快路径，启用 split 与原生接触查询；E0/E1 不使用 contact grouping。voxel heads 保持关闭，B1A4、完整观测、2 mm 体素、512 候选和原训练预算不变。
+- 原生正负零字节差异已修复。修复后的 H20/E5 64k 与 L20/E3 16k 配对均为 `passed=true`、0 失败；原 AMP 容差 `atol=2e-4, rtol=2e-3`、离散结果和固定输入几何字节标准未放宽。
+- L20 原 16k→64k 组合有 148 项失败，除正负零外还有 scaled 梯度失败。用户选择保留 16k；原 64k 失败报告和此前 E5 零更新短测的吞吐 +28.40% 均保留，不能把短测收益写成当前 16k 组合收益。
+- 正常窗口分别为 H20/E5 的 8,331–8,355，L20/E0 的 17,076–17,100、E1 的 2,722–2,746、E3 的 7,602–7,626。每组 25 次尝试均成功、无跳步，100 个物理帧及 100 个有效帧，首个慢步计入。具体墙钟、自然帧差异和持久化范围见 [正常窗口记录](performance/P3_INTEGRATED_RESULTS.md)；日志末步不等于当时已保存的 checkpoint 步。
+- 这些窗口的训练代码为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，worktree 为 `0d44b123d9b15d312b64b05aafe992c3e454f7f6c1805eb94e4b070915b2cea1`。后续 GitHub HEAD 或独立 `control_repo` 的 supervisor 身份不替换该训练身份。
+
+[P3 文档](PERFORMANCE_PHASE3.md) 保留正常接续流程；已完成的配对与窗口直接引用上述记录，不重复安排。批准的 original/P1/P2 仍可直接迁到目标 v3，沿用历史回执和学习状态。E2 的既有 FP16 投影溢出未在本轮恢复，六组完整训练、最终评估及收敛结论仍未完成。
+
+### 整合发布前的本地检查（历史）
+
 - [split CPU 子图记录](performance/P3_SPLIT_CPU_RESULTS.json)：2,049 点、9 块的真实 fusion MLP，独立 SliceBackward 9→0、整输入梯度清零 9→0、累加 8→0；仅 split 的 FP32/FP64 输出与全部测量梯度相同。额外一次广播仅为探索原型，未纳入应用代码。
-- 普通 CPU E5 集成对照同时覆盖原生几何、不同 dense chunk、split 和全部参数梯度；checkpoint 分块路径也有现有测试覆盖。模型、样本和冻结 profile 不变。
-- 已批准的 P1 可直接迁到 v3，沿用既有历史回执和学习状态；不要求先生成中间 P2 checkpoint。
+- 普通 CPU E5 集成对照覆盖原生几何、不同 dense chunk、split 和全部参数梯度；checkpoint 分块路径也有现有测试覆盖。该 CPU 结果不代替上述真实 AMP 配对。
 
-训练机仍执行 [P3 文档](PERFORMANCE_PHASE3.md) 的同四帧配对与正常续训窗口。L20/E5 的 64k 已有真实短测 **吞吐 +28.40%（每块耗时约 −22.1%）**，但整合方案尚无 CUDA/AMP 或正式 optimizer 更新结果；不把局部 CPU 结果换算为整步加速。
-
-最终本地既有 CPU 套件 **333 passed、1 skipped（14.94 s）**；因本地 Unix socket 限制排除 `tests/test_prefetch.py`，没有改动该测试，完整套件由提交的 GitHub CI 执行。配对工具保留相同姿态下的几何精确比较，并将不同 chunk 导致的实际浮点描述量按既有 AMP 容差比较；实际离散索引仍须相同，未改变实际输出或梯度。
+整合发布前的本地既有 CPU 套件为 **333 passed、1 skipped（14.94 s）**；因当时本地 Unix socket 限制排除 `tests/test_prefetch.py`，没有改动该测试，完整套件由该提交的 GitHub CI 执行。配对工具保留相同姿态下的几何精确比较，并将不同 chunk 导致的实际浮点描述量按既有 AMP 容差比较；实际离散索引仍须相同，未改变实际输出或梯度。这些历史测试数字不改记为后续正零修复或训练机验证的测试数。
 
 ## 原 P3 几何实现：本地 CPU 验证（2026-11-13，整合调整前）
 
@@ -23,7 +29,7 @@
 - 新增 P3 配置及两条正常 P2→P3 迁移测试 **3 passed**，覆盖从 P2 开始和带旧迁移链的保存、恢复、预算及归档接续。
 - 本地既有套件 **324 passed、1 skipped**；另一个既有 `test_prefetch.py` 因环境禁止 Unix socket 而无法完成，未改写该测试，由原 CI 全量执行。跳过项需要真实 release 路径。
 
-环境：Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0。没有执行真实训练帧或 GPU optimizer 更新，也未部署到训练机；P2 报告中的 `e73d62e` 是测量身份，不据此认定当前已应用 P2。CPU 局部加速比不作为 H20/L20 整步提速或完整训练 ETA。
+历史测量环境：Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0。该轮 CPU 验证没有执行真实训练帧或 GPU optimizer 更新，当时也未部署 P3 到训练机；随后确认的 P2 源 checkpoint、P3 真机配对和部署状态见本文首节。CPU 局部加速比不作为 H20/L20 整步提速或完整训练 ETA。
 
 ## CD-009 v3：初始部署记录（2026-11-12，性能优化前）
 

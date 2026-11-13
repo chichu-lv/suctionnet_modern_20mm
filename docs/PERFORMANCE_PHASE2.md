@@ -1,14 +1,14 @@
 # CD-009 P2：基于 P1 实测的第二轮训练提速方案
 
-**2026-11-13 状态修正：按用户最新运行说明，P2 仅测试、尚未实际应用，P3 尚未在训练机测试。** 本文第12节与原始 JSON 保留历史报告的身份、迁移和窗口，不据此推断当前 checkpoint 已是 P2。当前待应用组合、测试和直接迁移步骤统一见 [调整后的 P3](PERFORMANCE_PHASE3.md)。
+**2026-11-13 状态更新：后续真实 checkpoint 已确认 P3 的实际来源为 P2 `e73d62e`。H20/E5 的 64k 组合，以及 L20/E0、E1、E3 的 16k 组合，均已迁移接续并记录各自首 25 次正常更新。** L20 的原 64k 候选未通过梯度门槛，当前保留 16k。详细时序见 [性能优化完整回顾](PERFORMANCE_HISTORY.md)，最新配置、配对与窗口证据见 [P3 实际结果](performance/P3_INTEGRATED_RESULTS.md) 和 [P3 说明](PERFORMANCE_PHASE3.md)。本文保留 P2 阶段的设计、原测量数字与试验范围，不以历史窗口代表当前进度。
 
 **实现与测试：三项产品路径与迁移接线已实现，历史 CPU 测试为316 passed / 1 skipped；真实 AMP 对照发现 voxel heads 梯度差异，因此候选配置关闭该项，grid 与坐标快路径已有相同四帧的原容差通过记录。** 本文原设计审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**，当时迁移来源为 P1 `996421c`。第12节是随后上传的历史实施报告；当前应用状态以上方说明为准。
 
-**原 P2 设计包含三项改动：原生 CPU 空间网格查询、无实例分支的体素级 fusion/q0、骨干输出坐标的同存储快路径。** 本轮待应用的是 grid 与坐标快路径，voxel heads 继续关闭；使用 microbatch 1 × 梯度累积 4、8 个逻辑核、2 个数据 worker。
+**原 P2 设计包含三项改动：原生 CPU 空间网格查询、无实例分支的体素级 fusion/q0、骨干输出坐标的同存储快路径。** 通过验收并保留在当前 P3 中的是 grid 与坐标快路径，voxel heads 继续关闭；使用 microbatch 1 × 梯度累积 4、8 个逻辑核、2 个数据 worker。
 
-**P2 测试后的 batch 判断：** [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 已补齐 B1/B2 诊断。H20 B2 仅 +2.20%，L20 64k 下 B2 仍慢于 B1；本轮保留 B1A4，不再安排 batch 扫描。L20/E5 的 64k 吞吐 +28.40% 已纳入 P3 候选执行配置，详见 [更新后的 batch 分析](H20_BATCHSIZE_ANALYSIS.md)。
+**P2 测试后的 batch 判断：** [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) 与 [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 已补齐 B1/B2 诊断。H20 B2 仅 +2.20%，L20 64k 下 B2 仍慢于 B1；当前两卡保留 B1A4。L20/E5 的 64k 吞吐 +28.40% 是 fresh-model、零更新短测的历史结果；随后 L20/E3 实际 checkpoint 的 16k→64k 组合未通过原梯度门槛，最终采用 16k + split + native。不能把 +28.40% 当成当前 16k 组合的收益，详见 [batch 分析](H20_BATCHSIZE_ANALYSIS.md)。
 
-本文是 [P1 方案与完成记录](PERFORMANCE_OPTIMIZATION.md) 的后续。两者的当前状态不同：P1 已实施；本文保留 P2 设计规格，并在第12节记录实施结果与未通过项。数据、模型和预训练的正式定义继续以 [CD-009 说明](CD009_PRETRAINING.md) 为准。
+本文是 [P1 方案与完成记录](PERFORMANCE_OPTIMIZATION.md) 的后续。第 1–11 节保留 P2 当时的设计判断与候选方案，第 12 节记录该阶段的实施结果与未通过项；其中的阶段性“当前”不替代上方最新结果。数据、模型和预训练的正式定义继续以 [CD-009 说明](CD009_PRETRAINING.md) 为准。
 
 ## 1. 现在真正需要解决什么
 
@@ -16,16 +16,18 @@
 
 以下是 P2 实施前、针对 **P1 代码**作出的配置选择；P2 后的可行性和最小对照见上方新分析。
 
-| 已有证据 | 本轮决策 |
+| 已有证据 | P2 设计阶段决策 |
 | --- | --- |
 | L20 B2A2：E0 吞吐下降 41.76%，E3 下降 18.73%；E0 B4A1 预热 OOM | 保留 B1A4，不继续扩大 batch 搜索 |
 | H20 E5 B2A2 仅增加 1.48%，B4A1 下降 0.20%，每配置只有三个计时块 | 没有稳定收益证据，保留 B1A4 |
 | CPU8→16：E0/E3/E5 吞吐仅增加 1.01% / 0.16% / 0.31% | 增加 affinity 不会自动并行候选循环，保留 8 核 |
-| 用户最新正常窗口汇总的数据等待约 1–2 ms/update，三组报告占比为 0.0092%–0.0240% | 两个 worker 已经够用，暂不增加 worker、存储转换或缓存工程；该汇总不是每一步等待的上界 |
+| 当时正常窗口汇总的数据等待约 1–2 ms/update，三组报告占比为 0.0092%–0.0240% | 当时两个 worker 已经够用，暂不增加 worker、存储转换或缓存工程；该汇总不是每一步等待的上界 |
 | 增大 batch 后 L20 主要增加的是反向完成区间，前向没有相应增加 | 不把退化解释为 CPU 搬运不足，也不据此断言显存带宽瓶颈 |
 | 逐候选共享查询比已测 batch64/w1、batch64/w4 更快 | 保留 scalar 调度；下一步替换索引及结果表示 |
 
 11 个配置的原始聚合数据见 [P1_BATCH_CPU_RESULTS.json](performance/P1_BATCH_CPU_RESULTS.json)。数据准备每四帧自身仍需约 3.8–4.0 秒，但已经在后台完成；这部分不能再次从主线程 wall time 中减去。
+
+后续 P3 缩短反向后，L20/E0、E1 新窗口的 loader 等待中位数分别变为 0.64262 / 0.56827 s，E3 仍约 0.00101 s。上表的“等待接近零”只描述 P1/P2 当时，不作为所有当前运行的结论；这次状态同步不增加 worker 扫描或新训练任务。来源：[P3 正常窗口](performance/P3_INTEGRATED_RESULTS.md#l20-16k-正常续训与性能窗口)。
 
 ### 1.2 正常训练基线与短测量分开使用
 
@@ -188,6 +190,8 @@ hi_cell = floor((center + R) / cell_size)
 `tree_build_s` 对 grid 应迁移为明确的 `index_build_s` 并记录 backend；旧日志字段保留其历史含义。`spatial_index_seconds`、`query_cpu_seconds` 和其余细分沿用。不能把 grid 构建伪称为 KD-tree 建树，也不增加每段 CUDA synchronize。
 
 ## 4. 第二项：E0/E1/E3 的 fusion 与 q0 按 voxel 计算
+
+**本节保留原候选设计。** 下述实数推导与 CPU 原型不等于真实 AMP 验收；第 12 节记录了 374 项梯度比较失败，该路径至今保持关闭。
 
 ### 4.1 为什么可以这样改
 
@@ -489,7 +493,7 @@ GPU 版本仍须支持所有 raw points、完整半径集合、原区域边界�
 
 ## 12. 实施与真实验收记录（2026-11-12）
 
-**历史报告范围：** 以下保留当时上传的部署、迁移和自然窗口措辞。按 2026-11-13 用户最新说明，P2 尚未实际应用，P3 尚未在训练机测试；本节不用于推定当前 checkpoint 身份或当前运行状态。现在的操作按 [P3 整合方案](PERFORMANCE_PHASE3.md) 执行。
+**历史报告范围：** 以下保留 P2 阶段的部署身份、迁移和自然窗口。后续 [P3 实际结果](performance/P3_INTEGRATED_RESULTS.md) 已通过源 checkpoint 确认 P2 起点，并记录 H20 64k、L20 16k 的 P3 接续。本节步区间和 ETA 只属于当时测量，不是当前进度；完整时序见 [性能优化回顾](PERFORMANCE_HISTORY.md)。
 
 产品实现的第一候选为本地 `0b1b01f`。CPU 全套316 passed/1 skipped，独立代码复核通过；原生扩展在 H20/L20 的独立 checkout 构建。P1 baseline显式配置CPU context，E3主配对复用上轮相同四帧和增强种子、同一次真实backbone及两个VJP；骨干坐标在原始sparse output、projection之前核对。
 
@@ -503,7 +507,7 @@ voxel共享将逐点Jacobian作用后的汇总改为先汇总cotangent再作用�
 
 ### 12.1 已部署身份、设备与设置
 
-正式部署固定在 `e73d62e`，GitHub 同树源码为 [`4e9c9f5`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/4e9c9f53e638b9cefd34a12da6d85d9f2cb39b64)，源码 CI 通过。后续报告提交不覆盖运行 checkout。完整聚合值及来源摘要见 [P2_REAL_RESULTS.json](performance/P2_REAL_RESULTS.json)。
+该 P2 阶段部署固定在 `e73d62e`，GitHub 同树源码为 [`4e9c9f5`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/4e9c9f53e638b9cefd34a12da6d85d9f2cb39b64)，源码 CI 通过。后续报告提交不覆盖运行 checkout。完整聚合值及来源摘要见 [P2_REAL_RESULTS.json](performance/P2_REAL_RESULTS.json)。
 
 | 主机 | GPU / Torch可见容量 | CPU / 可见逻辑核 | 系统可见内存 | 本任务配置 |
 | --- | --- | --- | --- | --- |

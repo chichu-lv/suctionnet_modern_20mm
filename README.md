@@ -4,7 +4,7 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。**按用户最新运行说明，P2 仅测试、尚未实际应用，P3 尚未在训练机测试。** 固定配置和历史身份见 [当前预训练](docs/CD009_PRETRAINING.md)，本轮测试与待应用清单统一见 [调整后的 P3](docs/PERFORMANCE_PHASE3.md)。
+**当前状态（2026-11-13）：** 数据制作、只读适配、E0–E5 模型、预训练、两种微调、推理及 R20 评价已实现并完成代码复核。用户已用旧 `dc4ad6b00535` 方法完成训练数据制作，现有标签通过 adapter 直接复用。CD-009 v3 完整预训练正在分阶段运行；六组训练、完整开发验证及目标域效果实验尚未完成。**最新实际 checkpoint 与日志已确认 P2 为本轮来源，H20/E5 的 P3 64k 组合、L20/E0/E1/E3 的 P3 16k 组合已接续，并各记录首 25 次正常更新。** L20 原 64k 候选未通过原梯度门槛，当前保留 16k。完整演进见 [性能优化全程](docs/PERFORMANCE_HISTORY.md)，配置和历史身份见 [当前预训练](docs/CD009_PRETRAINING.md)，实际记录见 [P3 配对与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。这些是已发布窗口，不是实时监控。
 
 ## Done（已完成）
 
@@ -14,21 +14,24 @@
 - [x] E0–E5 模型与配置：稀疏主干、实例融合、五区接触特征、姿态与质量头及辅助监督。
 - [x] 预训练、checkpoint 保存与恢复、无标签推理、NMS 和按实际姿态重算的 R20 评价。
 - [x] `dense_proxy` / `attempt_success` 微调：200+800 步阶段、源域回放、固定查询验证及独立成功头。
-- [x] CPU 测试复跑 **129 passed / 1 skipped**，梯度 checkpoint 一致性和两种微调跨阶段恢复复核；跳过项需要真实 release 路径。
+- [x] 模型实现阶段 CPU 测试复跑 **129 passed / 1 skipped**，梯度 checkpoint 一致性和两种微调跨阶段恢复复核；跳过项需要真实 release 路径。这里保留历史测试范围，各轮后续记录见 [验证说明](docs/MODEL_VALIDATION.md)。
 - [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录链路验证，完整训练效果见下方 TODO。
 
 - [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
-- [x] 基于 CD-009 当前代码的 [详细性能优化方案](docs/PERFORMANCE_OPTIMIZATION.md)：精确 CPU 几何、读取与体素、后台预取、既有 checkpoint 续接及实现清单；已实现精确 C FPS、CPU 几何复用、按需读取与体素整理、有序预取和显式 checkpoint 迁移，本轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 已在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
-- [x] P1 后 [11 组 batch/CPU 对照](docs/performance/P1_BATCH_CPU_RESULTS.json)：保留 B1A4、8 个逻辑核、2 个数据 worker；正常训练暴露的数据等待仅约 1–2 ms/update。公开记录对应 2026-11-12 的历史窗口，不代表实时进度。
-- [x] [P2 实现与测试记录](docs/PERFORMANCE_PHASE2.md)：全点 CPU 网格与坐标快路径已有真实四帧原容差对照证据；voxel heads 的 AMP 梯度对照未通过，继续关闭。P2 是否已应用以最新运行说明为准，历史记录保留为测试证据。
-- [x] 读取 [H20 P2 诊断](docs/performance/H20_P2_BATCH_DIAGNOSIS.md) 和 [L20 P2 诊断](docs/performance/L20_P2_BATCH_DIAGNOSIS.md)，更新 [batch 可行性分析](docs/H20_BATCHSIZE_ANALYSIS.md)：H20 B2 仅 +2.20%，L20 64k 下 B2 仍慢于 B1，当前继续 B1A4；L20/E5 的 16k→64k 已测吞吐 +28.40%，尚待应用。
-- [x] [H20/E2 历史启动记录](docs/performance/H20_E2_STARTUP.md) 已归档；E2 不启用接触分组。该记录不替代本轮对当前优化应用状态的确认。
-- [x] [P3 原生接触几何及整合候选](docs/PERFORMANCE_PHASE3.md)：既有原生查询加上本轮 `split` 分块反向、64k 执行覆盖和已批准来源直接迁到 v3 的接线；新 [整合 sidecar](configs/performance/cd009-p3-integrated.json) 包含待应用的 P2 grid/坐标快路径。旧几何版本本地 CPU query **0.902→0.295 s（3.06×）** 的 [记录](docs/performance/P3_CPU_RESULTS.json) 与本轮 [split CPU 子图证据](docs/performance/P3_SPLIT_CPU_RESULTS.json) 分开保存，均不代表训练机已提速。
+- [x] [P1 性能优化历史方案与实现](docs/PERFORMANCE_OPTIMIZATION.md)：精确 C FPS、core/lip 局部几何复用、CPU 几何上下文、按需读取与体素整理、有序预取和显式 checkpoint 迁移；该轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [P1 真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
+- [x] P1 后 [11 组 batch/CPU 对照](docs/performance/P1_BATCH_CPU_RESULTS.json)：保留 B1A4、8 个逻辑核、2 个数据 worker；当时正常训练暴露的数据等待仅约 1–2 ms/update。公开记录对应 2026-11-12 的历史窗口；P3 后 E0/E1 的 loader 等待已重新显现。
+- [x] [P2 全点 CPU 网格与坐标快路径](docs/PERFORMANCE_PHASE2.md) 通过真实四帧原容差对照并用于训练，最新 P3 来源 checkpoint 已确认其应用身份；voxel heads 的 AMP 梯度对照未通过，继续关闭。
+- [x] 读取 [H20 P2 诊断](docs/performance/H20_P2_BATCH_DIAGNOSIS.md) 和 [L20 P2 诊断](docs/performance/L20_P2_BATCH_DIAGNOSIS.md)，完成 [batch 可行性分析](docs/H20_BATCHSIZE_ANALYSIS.md)：H20 B2 仅 +2.20%，L20 64k 下 B2 仍慢于 B1，当前继续 B1A4。L20/E5 的 16k→64k 吞吐 +28.40% 属于历史零更新短测；后续实际 E3 checkpoint 的 64k 配对未过原梯度门槛，当前选择 16k。
+- [x] [H20/E2 历史启动记录](docs/performance/H20_E2_STARTUP.md) 已归档；E2 不启用接触分组。其既有 FP16 投影溢出仍是独立未解决问题，不能由启动记录推定当前恢复。
+- [x] [P3 原生接触几何及 split 分块](docs/PERFORMANCE_PHASE3.md) 已整合、修复原生几何正负零字节差异并完成实际接续：H20/E5 使用 [64k 配置](configs/performance/cd009-p3-integrated.json)，L20/E0/E1/E3 使用 [16k 配置](configs/performance/cd009-p3-l20-16k.json)。各首 25 次正常更新的中位数分别为 **5.7462、1.8446、1.7423、3.2120 秒/更新**；E0/E1 无接触分组，改善主要出现在反向。实际运行代码为 `f4f7f0d`，详见 [配对、失败取舍与正常窗口](docs/performance/P3_INTEGRATED_RESULTS.md)。
+- [x] [优化全程总览](docs/PERFORMANCE_HISTORY.md)：整理初始 profile、P1/P2/P3 的实现、实测、未采用路线和当前状态，并同步各运行指南。局部 CPU 原型、零更新短测和自然训练窗口分开呈现，不相乘为累计加速承诺。
+- [x] supervisor 支持显式登记的 L20 GPU4 和独立 `control_repo`，管理代码可与固定 trainer checkout 分开。仍是单卡单组实验，不是多卡 DDP，也不代表新增卡上的实验已完成。
 
 ## TODO（待完成）
 
 - [ ] **进行中：** 按 [实际 v3 预训练策略](docs/CD009_PRETRAINING.md) 完成 E0–E5 六组独立训练，每组 230,400 有效训练帧（名义 40 轮）；当前实测选择 E=4，派生为 57,600 次成功更新。全部六组与各 10 次完整验证验收后才完成。
-- [ ] 按 [P3 测试和应用说明](docs/PERFORMANCE_PHASE3.md) 对当前实际 baseline 与整合候选做同四帧配对，随后一次迁移/续训、读取原预算内正常窗口；一起应用通过的 P2/P3，L20/E5 纳入已测有效的 64k。H20 实例广播归约保留为下一候选，按优化后的实际热点再决定；不重复 batch/CPU/worker/cap 矩阵。
+- [ ] 继续已有 P3 运行及原计划验证；H20/E5、L20/E0/E1/E3 的配对/迁移和首窗口已完成，不因文档更新重复执行。其他运行按 [实际配置和接续说明](docs/PERFORMANCE_PHASE3.md) 处理，L20 64k 继续延后。H20 实例广播反向、E0/E1 新出现的数据等待是后续关注点，不自动扩展 batch/CPU/worker/cap 矩阵。
+- [ ] 处理 E2 已有 FP16 投影溢出，并完成其后续训练；本轮性能记录没有解决该问题。
 - [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
 - [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
 - [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
@@ -45,7 +48,7 @@
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
 | 正在运行的公开预训练 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
-| 缩短现有预训练耗时 | [P3 整合优化、测试与应用](docs/PERFORMANCE_PHASE3.md) · [P2 测试反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
+| 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
 | 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 

@@ -1,22 +1,24 @@
-# CD-009 P3：整合待应用优化与正常续训
+# CD-009 P3：整合优化与正常续训
 
-2026-11-13 更新。依据 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 及随后完成的[真实 checkpoint 配对结果](performance/P3_INTEGRATED_RESULTS.md)调整方案。**H20/E5 的 64k + split + native 组合已通过四帧配对并取得续训首 25 步窗口；用户已明确批准 L20 使用通过配对的 16k + split + native 组合，L20 部署与首 25 次正常更新窗口仍待完成。** L20 原 64k 组合未通过原梯度门槛，现予延后，原失败报告保留。
+2026-11-13 更新。依据 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 及随后完成的[真实 checkpoint 配对与续训结果](performance/P3_INTEGRATED_RESULTS.md)调整方案。**H20/E5 的 64k + split + native 与 L20/E3 的 16k + split + native 已通过四帧配对；H20/E5 及 L20/E0、E1、E3 均已完成迁移并取得首 25 次正常更新窗口。** L20 原 64k 组合未通过原梯度门槛，现予延后，原失败报告保留。
 
-H20 保持 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json) 的实际 dense chunk **65,536**；L20 采用 [cd009-p3-l20-16k.json](../configs/performance/cd009-p3-l20-16k.json) 的 **16,384**。两者均启用 **P2 全点 CPU grid 与坐标快路径、compiled FPS、P3 原生接触查询及 `torch.split` 输入分块**。两卡继续 B1A4，保持原硬件 profile、2 mm 网络体素、每帧 512 候选、完整观测和 230,400 有效帧 / 57,600 成功更新预算。`no_instance_voxel_heads` 继续为 `false`。
+优化全过程、版本取舍和当前状态见 [性能优化全程总览](PERFORMANCE_HISTORY.md)。这些正常窗口的训练代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`；后续 GitHub 发布与独立 `control_repo` 的 supervisor 身份不替换训练运行身份。
 
-## 1. 当前状态与待应用清单
+H20 保持 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json) 的实际 dense chunk **65,536**；L20 采用 [cd009-p3-l20-16k.json](../configs/performance/cd009-p3-l20-16k.json) 的 **16,384**。两者均启用 **P2 全点 CPU grid 与坐标快路径、compiled FPS、P3 原生接触查询及 `torch.split` 输入分块**；E0/E1 不使用 contact grouping，不获得原生查询收益。两卡继续 B1A4，保持原硬件 profile、2 mm 网络体素、每帧 512 候选、完整观测和 230,400 有效帧 / 57,600 成功更新预算。`no_instance_voxel_heads` 继续为 `false`。
+
+## 1. 当前状态与取舍
 
 | 项目 | 已有证据 | 本轮处理 |
 | --- | --- | --- |
 | P2 全点 CPU grid、backbone 坐标快路径 | 本轮实际源 checkpoint 已使用 P2 | 保留在两种目标配置中 |
 | P2 无实例 voxel heads | 既有真实 AMP 梯度比较未通过，见 [P2 记录](PERFORMANCE_PHASE2.md) | 保持关闭，不随其他 P2 改动启用 |
-| P3 融合原生接触查询 | 修复正负零字节差异后，H20 64k 与 L20 16k 完整四帧配对通过 | H20 已续训；L20 按用户批准的 16k 组合待迁移 |
+| P3 融合原生接触查询 | 修复正负零字节差异后，H20/E5 64k 与 L20/E3 16k 完整四帧配对通过 | 两组均已使用原生查询续训，并取得首 25 步窗口 |
 | dense chunk 65,536 | H20 原配置已是 65,536；L20 原 64k 候选未通过严格梯度门槛 | H20 保持 64k；L20 保留 16k，64k 延后，不改冻结 profile |
 | `chunk_input_mode=split` | H20 64k 与 L20 16k 组合均通过完整配对 | 保留；不从组合窗口推定 split 的独立收益 |
 | H20 实例特征广播的 indexing backward | 已定位 fusion scope 内的主要 GPU 热点 | 下一候选，尚待实现；不阻塞本次已有组合 |
 | B2A2 | H20 短测仅 +2.20%；L20 在 64k 下仍比 B1A4 慢 9.33% | 两卡保持 B1A4，不继续扩大 batch |
 
-两份诊断及较早 [P2_REAL_RESULTS.json](performance/P2_REAL_RESULTS.json) 中的 `e73d62e`、“实际部署 P2”或“恢复正式训练”等表述保留为当时记录。**测量身份不用于推定当前应用状态。** 本轮从实际 committed checkpoint 读取源代码、sidecar 和学习状态，确定 original、P1 或 P2 起点，不预设所有 run 都是 P2。
+两份诊断及较早 [P2_REAL_RESULTS.json](performance/P2_REAL_RESULTS.json) 保留为当时记录。**本轮已从实际 committed checkpoint 确认配对与续训的源为 P2 `e73d62e`，不是仅凭测量身份推定部署。** 后续其他运行仍按各自 checkpoint 读取源代码、sidecar 和学习状态；迁移器保留批准的 original/P1/P2 直接接续能力。
 
 原 [cd009-p3.json](../configs/performance/cd009-p3.json) 字节和 [P3_CPU_RESULTS.json](performance/P3_CPU_RESULTS.json) 保留，分别代表旧的 geometry-only 目标和其本地 CPU 测量；它们不包含本次 64k 覆盖与 split 的整合结果。
 
@@ -84,7 +86,7 @@ P3 将四球查询、五区筛选、首点/FPS 与描述量打包合成一次 C+
 
 `chunk_input_mode=split` 在现有 `chunk_apply` 中对每个输入调用一次 `torch.split(tensor, chunk_size, dim=0)`，随后按原顺序执行各块的原回调与 `torch.cat`。它用同一多输出视图组织梯度，代替每次循环单独创建 `tensor[start:end]` 的切片反向路径；dense 与接触编码沿现有入口传递这一执行选项。
 
-没有新增 MLP 层、改变参数名或初始化顺序，也没有改变稀疏骨干 BN 的训练模式、帧组批、损失权重、梯度累积或 activation checkpoint 选择。split 调整输入视图组织；浮点归约结果以真实 AMP 配对为准，不仅依据数学等价宣称通过。H20 已有组合的正常窗口结果，**split 的独立收益及 L20 新组合正常窗口仍未确定**。
+没有新增 MLP 层、改变参数名或初始化顺序，也没有改变稀疏骨干 BN 的训练模式、帧组批、损失权重、梯度累积或 activation checkpoint 选择。split 调整输入视图组织；浮点归约结果以真实 AMP 配对为准，不仅依据数学等价宣称通过。H20/E5 与 L20/E0、E1、E3 均已有组合的正常窗口结果，**split 的独立收益仍未分离测量**。
 
 ## 4. 配置与实现入口
 
@@ -134,9 +136,9 @@ H20 64k sidecar 原始字节 SHA256 保持 `e896f4bcc49e635ce8e4cbdfcaa0e602e1ca
 
 ## 5. 训练机只沿用三项正常验收
 
-不重跑完整实验矩阵，也不要求把 grid、native、64k、split 分别做消融。H20/E5 的 64k→64k 与 L20/E3 的 16k→16k + split/native 配对已经通过，沿用既有通过证据。其余运行使用各自原 profile 和学习状态接续，不据此宣称每个架构都已独立测得收益。L20 部署及各自 20–30 次正常更新窗口仍待完成。
+不重跑完整实验矩阵，也不要求把 grid、native、64k、split 分别做消融。H20/E5 的 64k→64k 与 L20/E3 的 16k→16k + split/native 配对已经通过；H20/E5 和 L20/E0、E1、E3 的迁移与首 25 步正常窗口也已完成。沿用这些既有证据，不重复安排已完成的验收，也不据此宣称其他实验都已独立测得收益。
 
-执行顺序为：按 5.2 的现有命令正常暂停并取得 current checkpoint → 完成 5.1 配对 → 在同一次暂停内迁移和恢复 → 读取 5.3 正常窗口。下面按三项验收内容分节，不要求重复暂停。
+以下保留本次采用的接续流程，供尚需切换的运行参考：按 5.2 的现有命令正常暂停并取得 current checkpoint → 复用或完成 5.1 配对 → 在同一次暂停内迁移和恢复 → 读取 5.3 正常窗口。已完成接续的运行继续原训练，不因文档更新再次暂停或迁移。
 
 ### 5.1 同四帧配对：判定数值是否可接续
 
@@ -233,7 +235,9 @@ python -m suction20.run_supervisor --config "$SUPERVISOR_CONFIG" \
 
 ### 5.3 读取原预算内 20–30 次正常更新
 
-恢复后使用原预算内的正常更新日志确认效果，保持 Adam、AMP、采样和原验证计划。看完整观察窗口墙钟及逐步中位数，并结合 query、backward 和显存记录判断收益；保留首步启动成本，注明窗口内是否发生保存/验证。
+H20/E5 与 L20/E0、E1、E3 已各取得首 25 次成功更新、100 个物理帧及 100 个有效帧的窗口，首个慢步均保留；具体旧新窗口、计时范围与当时持久化进度见 [正常续训记录](performance/P3_INTEGRATED_RESULTS.md)。日志已观察到的末步不等于该步当时已保存为 checkpoint。
+
+后续接续仍使用原预算内的正常更新日志确认效果，保持 Adam、AMP、采样和原验证计划。看完整观察窗口墙钟及逐步中位数，并结合 query、backward 和显存记录判断收益；保留首步启动成本，注明窗口内是否发生保存/验证。
 
 训练日志的阶段时间仍是带必要同步的 host 区间；`elapsed_seconds` 不含日志、checkpoint 和 validation，不能只用它冒充全流程墙钟。query 已包含在 forward，producer 准备时间通常与消费重叠，不重复相加。P3 的 `native_*_worker_s` 是两线程累计工作量，也不能与 `native_query_wall_s` 相加或作为互斥占比。
 
@@ -243,15 +247,15 @@ python -m suction20.run_supervisor --config "$SUPERVISOR_CONFIG" \
 
 ## 6. 本地检查与历史结果边界
 
-### 6.1 本轮整合的本地检查
+### 6.1 整合版本发布前的本地检查（历史）
 
-本轮定向 CPU 测试 **7 passed**（几何整合 4 项、chunk 3 项），迁移相关测试 **13 passed**，配对工具测试 **5 passed**。最终本地既有套件为 **333 passed、1 skipped，14.94 s**；本地环境的 Unix socket 限制使 `tests/test_prefetch.py` 无法执行，沿用此前的明确排除，完整套件由该提交的 GitHub CI 执行。这些结果覆盖本地实现与正常接续路径，尚不代表训练机 AMP 配对或整步性能已经通过；后两项按第 5 节完成。
+整合版本发布前的定向 CPU 测试 **7 passed**（几何整合 4 项、chunk 3 项），迁移相关测试 **13 passed**，配对工具测试 **5 passed**。当时本地既有套件为 **333 passed、1 skipped，14.94 s**；本地环境的 Unix socket 限制使 `tests/test_prefetch.py` 无法执行，沿用此前的明确排除，完整套件由该提交的 GitHub CI 执行。这些历史结果覆盖本地实现与正常接续路径；随后完成的正零修复、真实 AMP 配对与训练窗口另见 [P3 真实结果](performance/P3_INTEGRATED_RESULTS.md)，不将本地测试数改记为后续真机结果。
 
 [split CPU 子图记录](performance/P3_SPLIT_CPU_RESULTS.json) 使用 2,049 点、9 块与原 fusion MLP。在只改输入视图组织时，SliceBackward 由 9 个变为 0 个，相关整输入梯度清零由 9 次变为 0 次、累加由 8 次变为 0 次；FP32/FP64 的输出与全部测量梯度相同。这里没有比较新旧 dense chunk，也没有 CUDA/AMP 吞吐结论。记录中的整次广播原型未接入本轮产品路径。
 
 ### 6.2 保留的旧 P3 geometry-only 记录
 
-以下是整合前的历史结果，**不代表本次 64k + split 组合已经通过训练机测试**。
+以下是整合前的历史结果，**不能替代上文另行记录的 H20 64k、L20 16k 组合真机结果**。
 
 本地环境为 Python 3.12.14、PyTorch 2.5.1+cpu、NumPy 2.3.5、SciPy 1.17.0、GCC 14.2.0，affinity 可见 9 个逻辑核；Torch/BLAS 各 1 线程，P3 使用 2 个候选线程。使用 [既有固定场景](../research/performance_p2/fixture.py)，同一 84 万点、512 候选、grid、compiled FPS 和随机 roll 初态，两条路径各预热一次、再各测两次：
 

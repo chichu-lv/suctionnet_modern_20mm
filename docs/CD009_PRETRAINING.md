@@ -1,14 +1,14 @@
 # CD-009：正在运行的 v3 预训练
 
-2026-11-12。E0–E5 六组独立预训练正在分阶段执行，**尚未完成六组训练、完整开发验证或收敛比较**。E5/H20、E3/L20 和随后启动的 E0/L20 已有正式 100 步暂停、检查和恢复后的下一步证据；其余实验按资源与稳定性门槛逐级启动。这里发布的是实际代码、固定配置和策略，不是已完成训练的权重或质量报告。
+2026-11-13 更新。E0–E5 六组独立预训练仍在分阶段推进，**尚未完成六组训练、完整开发验证或收敛比较**。早期 E5/H20、E3/L20 和随后启动的 E0/L20 的正式 100 步暂停、检查及恢复证据保留；后续性能接续状态见下方更新。这里发布的是实际代码、固定配置和策略，不是已完成训练的权重或质量报告。
 
-**2026-11-13 状态修正：** 按用户最新运行说明，**P2 仅测试、尚未实际应用；P3 尚未在训练机测试**。下方及 [H20/E2](performance/H20_E2_STARTUP.md) 中的版本、迁移和窗口是已上传的历史记录，不能据此断言当前 checkpoint 已是 P2。[调整后的 P3](PERFORMANCE_PHASE3.md) 将待应用的 P2、原生几何、split 分块和 64k 执行覆盖整合到一次正常切换中。实际源身份从当前 committed checkpoint 读取。
+**2026-11-13 最新记录：** [P3 实际配对与续训结果](performance/P3_INTEGRATED_RESULTS.md) 已确认源 checkpoint 使用 P2。H20/E5 按 **64k + split + native**、L20/E0/E1/E3 按 **16k + split + native** 完成接续，各已观察到首 25 次成功更新；日志末步不等于当时持久化 checkpoint 的进度，具体范围见原报告。L20 原 64k 组合未通过原梯度门槛，当前保留 16k；E2 的独立 FP16 投影溢出问题本轮未恢复。完整优化时序见 [性能优化回顾](PERFORMANCE_HISTORY.md)，配置与接续说明见 [P3](PERFORMANCE_PHASE3.md)。
 
 ## 固定版本与可复现配置
 
 性能优化前已部署的代码固定为 `98862f4d6a133c99afa082a0755dbb888b41b38d`，运行源码 SHA256 为 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`。该版本包含 JSON 数字读取修复：`.json` 使用 JSON parser，避免 `1e-08` 被 YAML 当作字符串。YAML 配置继续按 YAML 规则读取。
 
-历史反馈把 H20/E5、L20/E0/E3 的迁移以及 H20/E2 的启动关联到以下 P2 代码。这里保留其测量身份与 GitHub 发布对应关系；当前应用状态以上方用户最新说明为准。
+历史反馈把 H20/E5、L20/E0/E3 的迁移以及 H20/E2 的启动关联到以下 P2 代码；后续 P3 真实配对也已从源 checkpoint 核实这一 P2 身份。这里保留该阶段与 GitHub 发布的对应关系，当前已接续的 P3 运行身份见 [实际结果](performance/P3_INTEGRATED_RESULTS.md)。
 
 | 身份 | 已核验值 |
 | --- | --- |
@@ -20,11 +20,13 @@
 
 报告中的本地 commit 与该 GitHub commit 的 Git tree 已核对一致，但发布有独立 SHA，不承诺原 Git 祖先链。本次仓库更新不自动改变训练机。普通恢复仍要求相同代码与性能身份；已批准的 original/P1/P2 来源可显式直接迁到整合 v3，无需先运行中间 P2。current checkpoint、receipt 和新 attempt 保存实际 commit/源码摘要/sidecar/本机扩展身份，不能直接用后续文档 HEAD 替代。
 
-**P2 待应用项：** 原生 CPU 全点网格与坐标快路径已有真实四帧配对证据；voxel fusion/q0 未通过原 AMP 梯度容差，继续关闭。历史迁移与窗口见 [P2 实施记录](PERFORMANCE_PHASE2.md#12-实施与真实验收记录2026-11-12) 和 [公开结果](performance/P2_REAL_RESULTS.json)。本轮保持 B1A4、CPU8、loader2，新增的 [整合 sidecar](../configs/performance/cd009-p3-integrated.json) 不改写下方冻结 profiles；日志分别记录 profile 中的 chunk 和实际执行的 chunk。
+**P2/P3 采用项：** 原生 CPU 全点网格与坐标快路径已有真实四帧配对证据，并保留在当前 P3 中；voxel fusion/q0 未通过原 AMP 梯度容差，继续关闭。P2 历史迁移与窗口见 [实施记录](PERFORMANCE_PHASE2.md#12-实施与真实验收记录2026-11-12) 和 [公开结果](performance/P2_REAL_RESULTS.json)。当前保持 B1A4、CPU8、loader2；[H20 64k sidecar](../configs/performance/cd009-p3-integrated.json) 与 [L20 16k sidecar](../configs/performance/cd009-p3-l20-16k.json) 不改写下方冻结 profiles，日志分别记录 profile chunk 和实际执行 chunk。L20/E5 的 64k 吞吐 +28.40% 仅为历史 fresh-model 短测，后续 E3 checkpoint 配对未通过，不能列为当前已采用收益。
 
 [六份正式配置及可移植哈希清单](../configs/runtime_profiles/cd009-v3/manifest.json) 保留部署配置的原始字节。清单的 `config_path` 相对仓库根目录，`config_sha256` 是文件原始字节 SHA256；每组还记录测量文件名、SHA256、trial ID 和测量代码版本。原始测量日志、训练日志、权重、数据及私有控制配置不放入 Git。配置中的数据路径是占位符；运行时由 supervisor 参数覆盖，无需改写已绑定哈希的配置。
 
-## 硬件选择：按实际吞吐
+## 初始硬件选择：历史短测与冻结 profile
+
+以下 17 次 profile trial 属于性能优化前的初始选择，原数值和测量范围保留，不代表当前 P3 吞吐；各阶段变化见 [性能优化回顾](PERFORMANCE_HISTORY.md)。
 
 共完成 **17 个独立 profile trial，216 次物理帧呈现（72 warmup、144 measured），零 optimizer 更新**；按 trial ID 去重计数。每 trial 一个 warmup、两个 measured block，使用独立 seed42 模型和实际训练帧。BN 状态只在丢弃的测量进程内变化；未加载正式 checkpoint。测量代码为 `bd8f65ffe4b577a5dc2a1c7d8623e924a595ac48`；后续训练版本未改变模型和损失算法。
 
@@ -82,7 +84,9 @@ checkpoint 在完整更新边界每 100 成功步或 900 秒保存，并覆盖�
 
 [性能方案](PERFORMANCE_OPTIMIZATION.md) 保留 `9d8ecc016c011d5b8d295e5e4220bd5e89fc5d97` 基线、CPU 原型和设计依据；当前分支已实现 CPython FP64 FPS、core/lip 复用、有界四球查询、selective NPZ、一维体素去重、CPU 几何上下文、有序后台预取，以及既有 checkpoint 的受限迁移。模型参数形状、原损失、完整观测和 v3 预算保持；六份硬件 profile 原始字节未改。
 
-本轮目标性能参数独立放在 [cd009-p3-integrated.json](../configs/performance/cd009-p3-integrated.json)，P1/P2 和旧几何 v3 sidecar 保留原字节。本机编译、`--performance-config`、supervisor 的 `performance_configs[host][experiment]`、迁移命令及备份要求见 [P3 操作步骤](PERFORMANCE_PHASE3.md)。普通 resume 同时绑定 sidecar SHA256 和 FPS/空间网格源码、编译器、flags、ABI、二进制身份，不能静默回退到另一后端。
+当前两种性能参数独立放在 [H20 64k 配置](../configs/performance/cd009-p3-integrated.json) 与 [L20 16k 配置](../configs/performance/cd009-p3-l20-16k.json)，P1/P2 和旧几何 v3 sidecar 保留原字节。已记录的 P3 窗口执行代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，不是后续文档发布 HEAD；实际构建及 sidecar 身份见 [P3 结果](performance/P3_INTEGRATED_RESULTS.md)。本机编译、`--performance-config`、supervisor 的 `performance_configs[host][experiment]`、迁移命令及备份要求见 [P3 操作步骤](PERFORMANCE_PHASE3.md)。普通 resume 同时绑定 sidecar SHA256 和 FPS/空间网格源码、编译器、flags、ABI、二进制身份，不能静默回退到另一后端。
+
+P3 首 25 步自然窗口已记录 H20/E5 以及 L20/E0/E1/E3 的实际变化，不是同帧性能倍率。E0/E1 不使用接触分组，其变化不归因于 native 查询；反向缩短后，loader 等待中位数分别升至 0.64262 / 0.56827 s，E3 仍约 0.00101 s。因此旧阶段“加载等待接近零”的结论不覆盖所有当前任务。这里同步已有观察，不增加 worker 扫描、额外训练更新或验证节点。
 
 迁移按实际 checkpoint 匹配已批准的 original、P1 或 P2 身份，可直接进入整合 v3；源 checkpoint 使用正常暂停保存。保留模型、Adam、AMP、RNG、已消费采样游标、成功步、best、验证和日志前缀。`migrations/performance-UUID/` 留存源状态硬链接、原 manifest、sidecar 和 receipt，备份递归沿用实际存在的历史档案；共享备份含对象符号链接，恢复必须解引用（例如 `cp -L`）。迁移后前 50 次成功更新临时开启内部几何计时，之后回到 sidecar 默认关闭值；这 50 次属于原正式预算，不触发额外验证，也不改 sidecar 字节。
 

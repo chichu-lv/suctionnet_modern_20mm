@@ -1,6 +1,6 @@
 # 模型运行入口
 
-实现包含只读源数据适配、E0–E5、预训练、两种目标域微调、实际姿态 R20 评价和无标签推理。CPU 合成测试不需要 spconv；生产稀疏主干需要 CUDA。运行结果及限制见 [验证记录](MODEL_VALIDATION.md)。
+实现包含只读源数据适配、E0–E5、预训练、两种目标域微调、实际姿态 R20 评价和无标签推理。CPU 合成测试不需要 spconv；生产稀疏主干需要 CUDA。运行结果及限制见 [验证记录](MODEL_VALIDATION.md)，性能变化与部署过程见 [性能优化全程总览](PERFORMANCE_HISTORY.md)。
 
 ## 环境与外部主干
 
@@ -54,9 +54,9 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
-**2026-11-13 当前状态：P2 仅测试、尚未实际应用，P3 尚未在训练机测试。** [调整后的构建、同四帧配对与接续](PERFORMANCE_PHASE3.md) 使用 `configs/performance/cd009-p3-integrated.json`，将待应用的 P2 grid/坐标快路径、P3 原生几何、split 分块与 64k dense chunk 执行覆盖合并。旧 `cd009-p3.json` 保留作几何版本记录；本地 CPU 结果不表示训练机已完成切换。
+**2026-11-13 当前记录：H20/E5 使用 64k + split + native，L20/E0、E1、E3 使用 16k + split 的目标配置，均已迁移续训并取得首 25 次正常更新窗口。** H20/E5 与 L20/E3 的真实四帧配对已通过；E0/E1 不使用接触分组。L20 原 64k 组合未通过原梯度门槛，已延后。[P3 操作说明](PERFORMANCE_PHASE3.md) 分别使用 `configs/performance/cd009-p3-integrated.json`（H20）和 `configs/performance/cd009-p3-l20-16k.json`（L20）；旧 `cd009-p3.json` 保留作几何版本记录。
 
-P2 的全点 CPU 网格及坐标快路径已有原容差四帧真实配对记录；voxel heads 因真实 AMP 梯度未通过而继续关闭。历史报告中的1030/2462/1058步迁移和窗口保留作原始记录，不作为当前部署状态依据。接续时读取当前 committed checkpoint，已批准的 original/P1/P2 可一次迁到目标 v3；无需先应用一次 P2。下面 P1/P2 命令保留为历史使用说明，当前整合方案按 [P3 操作步骤](PERFORMANCE_PHASE3.md) 执行。
+本轮实际源 checkpoint 已确认使用 P2 `e73d62e`，保留全点 CPU 网格与坐标快路径；voxel heads 继续关闭。上述正常窗口的训练代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，后续 GitHub HEAD 与独立 `control_repo` 的 supervisor 代码身份另计，不替换训练身份。[最新实测记录](performance/P3_INTEGRATED_RESULTS.md) 给出源状态、四帧结果及正常窗口。历史报告中的1030/2462/1058步迁移和窗口保留原范围；其他接续仍读取实际 current checkpoint，批准的 original/P1/P2 可直接迁到目标 v3，无需中间迁移。
 
 ### 本机扩展与独立性能配置
 
@@ -74,16 +74,16 @@ python -c 'import json; from models.spatial_index import spatial_index_backend_i
 
 `setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码摘要；实际扩展的 binary/source SHA256、compiler、flags、ABI 和 Python cache tag 单独进入运行身份。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
 
-[configs/performance/cd009-p2.json](../configs/performance/cd009-p2.json) 是当前额外 JSON sidecar，保持原六份正式 profile 字节和哈希。`--performance-config PATH` 在预训练入口加载它，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。v2 保留下面的严格 v1 字段契约，并增加空间索引和两个布尔开关：
+当前额外 JSON sidecar 按主机选择 [H20 64k](../configs/performance/cd009-p3-integrated.json) 或 [L20 16k](../configs/performance/cd009-p3-l20-16k.json)，保持原正式 profile 字节和哈希。[P2 sidecar](../configs/performance/cd009-p2.json) 保留作源身份及历史参考。`--performance-config PATH` 在预训练入口加载所选文件，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。v2/v3 保留下面的 v1 字段契约：
 
 - 当前整合目标为 `schema_version:"suction20.performance.v3"`；既有 v1/v2 与原 v3 字段集仍兼容，不自动补写字段或改变 sidecar 原字节哈希。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
-- `query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前真实帧测量选择 `null / 1`，因此提供的 P1 文件采用该配置；这不等于已验证整步训练加速。
+- NumPy 参考路径中，`query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前 native 配置要求 `null / 1`；原生候选线程独立固定为 `min(2, CPU affinity)`，不由这两个字段控制。
 - `loader` 含 `num_workers:2`、`prefetch_factor:2`、`persistent_workers:true`、`pin_memory:true`、`multiprocessing_context:"spawn"`。`num_workers:0` 仅供显式 CPU/reference 路径；不引入另一套训练进度。
 - `detailed_cpu_timing:false` 为常规值。未知键、错误类型和范围被拒绝。
 
 P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`backbone_coordinate_fastpath:true`、`no_instance_voxel_heads:false`。空间网格和FPS的源码/编译器/flags/ABI/二进制摘要分别绑定到当前身份；原始全点几何和排序不变。不要启用未通过真实梯度验收的voxel路径。
 
-整合 v3 另加顶层 `dense_chunk_size_override:65536` 与 `chunk_input_mode:"split"`。前者只覆盖模型实际执行值，不回写 `model.dense_chunk_size` 或 profile 字节；后者用一次 `torch.split` 连接同一输入的所有块，保留逐块前向及 checkpoint 顺序。训练 attempt 的 `execution.model_execution`、配对报告的 `identities.*.model_execution`、batch benchmark 的 `identity.model_execution` 会同时显示原 profile 值和实际值。L20 64k 目前的真实性能证据来自 E5，不能自动写成其他实验已测收益。
+整合 v3 使用 `contact_query_backend:"native_cpu"`、顶层 `dense_chunk_size_override`（H20 为 65536，L20 为 16384）及 `chunk_input_mode:"split"`。覆盖值只改变模型实际执行参数，不回写 `model.dense_chunk_size` 或 profile 字节；split 用一次 `torch.split` 连接同一输入的所有块，保留逐块前向及 checkpoint 顺序。训练 attempt 的 `execution.model_execution`、配对报告的 `identities.*.model_execution`、batch benchmark 的 `identity.model_execution` 会同时显示原 profile 值和实际值。历史 L20/E5 64k 零更新短测不是当前 L20 16k 配置的收益，也不覆盖随后 E3 checkpoint 的 64k 梯度失败。
 
 主进程在 pinning 后建立 `CpuGeometry` 与独立 `SamplerTargetsCPU`，上传 GPU 消费字段；观测上下文不含标签、不进入 state_dict。worker 只准备 CPU 数据；独立 DataLoader generator 不消耗模型 RNG。已发出 ticket 与已完成 backward 的消费游标分开，checkpoint 只持久化消费游标；AMP 跳步保留实际帧消费，但不推进成功更新预算。
 
@@ -94,7 +94,7 @@ P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`ba
   "performance_configs": {
     "H20": {
       "E5": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p2.json",
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p3-integrated.json",
         "config_sha256": "REPLACE_WITH_RAW_FILE_SHA256"
       }
     }
@@ -102,9 +102,9 @@ P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`ba
 }
 ```
 
-按实际迁移批次为 L20/E0–E4 登记相应项；缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；既有 run 先执行下述迁移。
+上例为 H20/E5；L20 按实际迁移批次登记 16k sidecar。本轮 L20/E0、E1、E3 使用运行根目录 `performance/` 下的独立固定文件，SHA256 为 `39c8422e1c817d1af14e8ff160299669d008d8ca9fc56b782d22368b7e5b1f24`。缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；尚未切换的既有 run 按下述流程迁移，已完成者继续原训练。
 
-### 从原冻结代码或批准的P1迁移并正常恢复
+### 从批准的 original/P1/P2 迁移并正常恢复
 
 转换器接受已核实的 original revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`，以及批准的 P1 revision `996421c664a5a0b84c308aa4ca47c31eaff4035b`、源码摘要 `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` 与原 P1 sidecar `08d2247c…`；P2 批准身份见 [P3 接续说明](PERFORMANCE_PHASE3.md)。允许 original→v1/v2/v3、P1→v2/v3、P2→v3，保留历史 receipt 的合法迁移关系。P1 来源原有迁移链继续沿用；源身份按实际 checkpoint 读取。具名 dense chunk 执行覆盖位于 sidecar，不改变冻结 profile、batch、loss、预算、数据、依赖或数学设置。
 
@@ -114,7 +114,7 @@ P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`ba
 ```bash
 python scripts/migrate_performance_checkpoint.py \
   --config configs/runtime_profiles/cd009-v3/H20-E5.json \
-  --performance-config configs/performance/cd009-p2.json \
+  --performance-config configs/performance/cd009-p3-integrated.json \
   --run-dir /path/to/runs/E5_seed42 \
   --control-dir /path/to/control/attempts/PAUSED_TOKEN \
   --expected-source-checkpoint-sha256 SOURCE_CURRENT_SHA256 \
@@ -123,17 +123,17 @@ python scripts/migrate_performance_checkpoint.py \
   --backbone-root /path/to/graspness_modern
 ```
 
-`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
+上例选择 H20/E5；L20 使用自己的原 profile 和固定的 `cd009-p3-l20-16k.json` 路径。`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
 
 归档路径为 `RUN/migrations/performance-UUID/`：`source.pt` 是源 blob 的硬链接，另外保存 `source-manifest.json`、`performance-config.json` 和 `receipt.json`。receipt 记录源/目标 identity、源成功步/attempt、实际允许差异和三个归档文件的大小/hash。新 current 的 `runtime_state` 与 manifest `analysis` 都引用 receipt 相对路径及 SHA256；后续保存继续透传。根目录 `runtime.json`/`resolved_config.json` 保留 run 最初版本，当前身份看 current、receipt 与新 attempt。
 
 3. 更新私有 supervisor 的 sidecar 映射后，仍执行普通 `resume E5`（其他实验同理）。supervisor 仅在检查到有效迁移 receipt、目标 sidecar hash 相同且原源 checkpoint 的 final backup 仍有效时允许原 assignment 切换；新 attempt 沿用原设备、profile 和学习状态。普通 resume 不提供忽略身份检查的开关。
 
-现有备份会递归验证并复制 P2→P1 链中每份 receipt 引用的三份归档文件及 receipt，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。共享备份内的符号链接指向备份根内的对象；实际恢复须解引用（例如 `cp -L`），再在恢复目录执行严格迁移校验。实际切换按 [性能方案第 11 节](PERFORMANCE_OPTIMIZATION.md#11-精简验收只检查三个正常路径) 的三项正常检查验收。
+现有备份会递归验证并复制当前 receipt 及其 P1/P2 历史链中每份 receipt 引用的三份归档文件，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。共享备份内的符号链接指向备份根内的对象；实际恢复须解引用（例如 `cp -L`），再在恢复目录执行严格迁移校验。接续沿用 [P3 操作说明](PERFORMANCE_PHASE3.md) 的三项正常检查，已完成的配对和窗口直接引用已有记录。
 
 ### 真实诊断结果的正确使用
 
-以下380/833/441及相应窗口为历史P1记录。P2报告中的四帧、1030/2462/1058迁移和30步历史窗口见 [P2报告](PERFORMANCE_PHASE2.md)；原AMP容差未放宽，voxel失败保留。当前应用状态以上方用户最新说明为准。
+以下380/833/441及相应窗口为历史P1记录。P2报告中的四帧、1030/2462/1058迁移和30步历史窗口见 [P2报告](PERFORMANCE_PHASE2.md)；原AMP容差未放宽，voxel失败保留。当前应用状态以 [P3 配对与正常窗口记录](performance/P3_INTEGRATED_RESULTS.md) 为准，跨阶段比较见 [全程总览](PERFORMANCE_HISTORY.md)。
 
 `scripts/benchmark_training_pipeline.py` 的独立旧/新进程结果保持失败，旧代码自身重复运行也出现骨干数值变化。随后 `scripts/benchmark_paired_pipeline.py` 从同一第 380 步 checkpoint、相同四帧与增强种子出发，共享每帧一次真实骨干输出，再比较两条实际下游路径及其完整骨干 VJP；四帧零失败，容差保持 `atol=2e-4, rtol=2e-3`。完整离散几何、描述符和 RNG 精确核对；该配对结果不覆盖原失败，也不证明独立 CUDA 运行逐位相同。
 
