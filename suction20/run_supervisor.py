@@ -293,10 +293,10 @@ def validate_config(config):
         raise Refused("only H20 and L20 are authorized")
     extra = config.get("extra_authorized_gpus", {})
     if not isinstance(extra, dict) or set(extra) - {"L20"}:
-        raise Refused("extra authorized GPUs must explicitly name L20 index 4")
+        raise Refused("extra authorized GPUs must explicitly name L20 indices 4 or 5")
     authorized_l20 = extra.get("L20", {})
-    if not isinstance(authorized_l20, dict) or set(authorized_l20) - {"4"}:
-        raise Refused("only explicitly authorized L20 index 4 may extend the registry")
+    if not isinstance(authorized_l20, dict) or set(authorized_l20) - {"4", "5"}:
+        raise Refused("only explicitly authorized L20 indices 4 or 5 may extend the registry")
     uuids = []
     for host, maximum in (("H20", 2), ("L20", 4)):
         entry = config["hosts"][host]

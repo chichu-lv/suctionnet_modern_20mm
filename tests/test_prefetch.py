@@ -3,10 +3,11 @@ import copy
 import time
 
 import numpy as np
+import pytest
 import torch
 
 from suction20.datasets import derive_masks
-from suction20.prefetch import close_ticket_loader, consume_tickets, make_ticket_loader
+from suction20.prefetch import TicketBatchSampler, close_ticket_loader, consume_tickets, make_ticket_loader
 from suction20.training import FrameSchedule
 
 
@@ -57,8 +58,15 @@ def test_spawn_prefetch_matches_serial_and_resumes_consumed_state():
         saved = copy.deepcopy(consumed.state_dict())
         expected_next = next(serial_iter)
     finally:
+        issued_before_close = copy.deepcopy(loader.batch_sampler.issued_schedule.state_dict())
         close_ticket_loader(loader, iterator)
         close_ticket_loader(serial_loader, serial_iter)
+    assert consumed.state_dict() == saved
+    assert loader.batch_sampler.issued_schedule.state_dict() == issued_before_close
+    assert not any(worker.is_alive() for worker in iterator._workers)
+    assert all(worker.exitcode == 0 for worker in iterator._workers)
+    close_ticket_loader(loader, iterator)
+    assert torch.equal(torch.get_rng_state(), rng)
     resumed = FrameSchedule([0], seed=31, frame_keys=source.keys)
     resumed.load_state_dict(saved)
     resumed_loader = make_ticket_loader(source, resumed, start_sequence_id=count,
@@ -74,3 +82,65 @@ def test_spawn_prefetch_matches_serial_and_resumes_consumed_state():
         assert torch.equal(torch.get_rng_state(), rng)
     finally:
         close_ticket_loader(resumed_loader, iterator)
+
+
+def test_close_drains_issued_batches_before_transport_shutdown_without_consuming():
+    source = ToySource()
+    consumed = FrameSchedule([0], seed=31, frame_keys=source.keys)
+    sampler = TicketBatchSampler(consumed.state_dict(), 0, 1,
+                                 {key: i for i, key in enumerate(source.keys)})
+    issuing = iter(sampler)
+    queued = [next(issuing) for _ in range(4)]
+    issued = copy.deepcopy(sampler.issued_schedule.state_dict())
+    before = copy.deepcopy(consumed.state_dict())
+    events = []
+
+    class Active:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            assert sampler._stop_issuing
+            with pytest.raises(StopIteration):
+                next(issuing)
+            if not queued:
+                raise StopIteration
+            events.append('drain')
+            return queued.pop(0)
+
+        def _shutdown_workers(self):
+            assert not queued
+            events.append('shutdown')
+
+    loader = type('Loader', (), {})()
+    loader.batch_sampler, loader._iterator = sampler, Active()
+    close_ticket_loader(loader)
+    assert events == ['drain'] * 4 + ['shutdown']
+    assert consumed.state_dict() == before
+    assert sampler.issued_schedule.state_dict() == issued
+    assert loader._iterator is None
+
+
+def test_close_preserves_worker_error_and_still_shuts_down():
+    source = ToySource()
+    consumed = FrameSchedule([0], seed=31, frame_keys=source.keys)
+    sampler = TicketBatchSampler(consumed.state_dict(), 0, 1,
+                                 {key: i for i, key in enumerate(source.keys)})
+    events = []
+
+    class Active:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise RuntimeError('original producer failure')
+
+        def _shutdown_workers(self):
+            events.append('shutdown')
+
+    loader = type('Loader', (), {})()
+    loader.batch_sampler, loader._iterator = sampler, Active()
+    with pytest.raises(RuntimeError, match='original producer failure'):
+        close_ticket_loader(loader)
+    assert events == ['shutdown']
+    assert loader._iterator is None

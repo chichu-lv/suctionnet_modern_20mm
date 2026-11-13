@@ -911,7 +911,8 @@ def test_gpu4_requires_explicit_uuid_binding_and_unique_resources(config, coordi
 
 
 @pytest.mark.parametrize("extra", [None, [], {"H20": {"2": "GPU-extra"}},
-                                   {"L20": []}, {"L20": {"5": "GPU-extra"}},
+                                   {"L20": []}, {"L20": {"6": "GPU-extra"}},
+                                   {"L20": {"7": "GPU-extra"}}, {"L20": {"05": "GPU-extra"}},
                                    {"L20": {"04": "GPU-extra"}}, {"L20": {4: "GPU-extra"}}])
 def test_extra_gpu_schema_rejects_other_scopes(config, extra):
     config["extra_authorized_gpus"] = extra
@@ -921,6 +922,38 @@ def test_extra_gpu_schema_rejects_other_scopes(config, extra):
 
 def test_gpu4_authorization_requires_matching_registry_entry(config):
     config["extra_authorized_gpus"] = {"L20": {"4": "GPU-L20-4"}}
+    with pytest.raises(s.Refused, match="authorized"):
+        s.validate_config(config)
+
+
+@pytest.mark.parametrize("include_gpu4", [False, True])
+def test_gpu5_requires_explicit_uuid_binding_and_unique_resources(config, coordinator, include_gpu4):
+    if include_gpu4:
+        authorize_gpu4(config)
+    config["hosts"]["L20"]["gpus"]["5"] = {"uuid": "GPU-L20-5", "cpus": list(range(40, 48))}
+    with pytest.raises(s.Refused, match="explicit extras"):
+        s.validate_config(config)
+    config.setdefault("extra_authorized_gpus", {}).setdefault("L20", {})["5"] = "GPU-L20-5"
+    s.validate_config(config)
+    assignment = coordinator.assign("E2", "L20", 5)
+    assert assignment["gpu_index"] == 5 and assignment["gpu_uuid"] == "GPU-L20-5"
+    assert assignment["cpus"] == list(range(40, 48))
+    config["extra_authorized_gpus"]["L20"]["5"] = "GPU-wrong"
+    with pytest.raises(s.Refused, match="UUID differs"):
+        s.validate_config(config)
+    config["extra_authorized_gpus"]["L20"]["5"] = "GPU-L20-5"
+    config["hosts"]["L20"]["gpus"]["5"]["cpus"] = [0]
+    with pytest.raises(s.Refused, match="overlaps"):
+        s.validate_config(config)
+    config["hosts"]["L20"]["gpus"]["5"]["cpus"] = list(range(40, 48))
+    config["extra_authorized_gpus"]["L20"]["5"] = "GPU-H20-0"
+    config["hosts"]["L20"]["gpus"]["5"]["uuid"] = "GPU-H20-0"
+    with pytest.raises(s.Refused, match="more than once"):
+        s.validate_config(config)
+
+
+def test_gpu5_authorization_requires_matching_registry_entry(config):
+    config["extra_authorized_gpus"] = {"L20": {"5": "GPU-L20-5"}}
     with pytest.raises(s.Refused, match="authorized"):
         s.validate_config(config)
 
