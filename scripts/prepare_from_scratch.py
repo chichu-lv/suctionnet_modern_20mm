@@ -29,7 +29,9 @@ def main():
     parser.add_argument('--cpu-threads', type=int, help='PyTorch CPU threads, independent of affinity count')
     parser.add_argument('--gpu-memory-limit-gib', type=float, help='Override host preset allocator limit')
     parser.add_argument('--microbatch-size', type=int,
-                        help='Divide the existing effective batch; accumulation is derived automatically')
+                        help='Divide the selected effective batch; accumulation is derived automatically')
+    parser.add_argument('--effective-batch-size', type=int,
+                        help='Explicit fresh-run recipe change; preserve v3 sample budget, derive steps, keep peak LR')
     parser.add_argument('--geometry-pipeline-depth', type=int, choices=(1, 2), default=1,
                         help='2 overlaps detached CPU contact geometry within the same optimizer update')
     parser.add_argument('--pose-chunk-size', type=int,
@@ -51,7 +53,8 @@ def main():
         workers=args.workers, geometry_threads=args.geometry_threads,
         cpu_affinity_count=args.cpu_affinity_count, cpu_threads=args.cpu_threads,
         gpu_memory_limit_gib=args.gpu_memory_limit_gib,
-        microbatch_size=args.microbatch_size, geometry_pipeline_depth=args.geometry_pipeline_depth,
+        microbatch_size=args.microbatch_size, effective_batch_size=args.effective_batch_size,
+        geometry_pipeline_depth=args.geometry_pipeline_depth,
         pose_chunk_size=args.pose_chunk_size,
         geometry_precision=args.geometry_precision, scene_cache_size=args.scene_cache_size,
         object_cache_size=args.object_cache_size, voxel_heads=not args.no_voxel_heads,
@@ -88,6 +91,7 @@ def main():
                           geometry_threads=performance['geometry_threads'],
                           geometry_pipeline_depth=config['training']['geometry_pipeline_depth'],
                           microbatch_size=config['training']['microbatch_size'],
+                          effective_batch_size=config['training']['effective_batch_size'],
                           gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
                           pose_chunk_size=config['model'].get('pose_chunk_size', 32),
                           data_workers=performance['loader']['num_workers'], measured=False),

@@ -8,7 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from .performance import SCHEMA_VERSION_V4, validate_performance_config
-from .pretrain_budget import resolve_config
+from .pretrain_budget import CONTRACT_VERSION, resolve_config
 
 
 HARDWARE_PRESETS = {
@@ -26,11 +26,17 @@ HARDWARE_PRESETS = {
 def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_chunk_size=None,
                         workers=None, geometry_threads=None, geometry_precision='float32',
                         cpu_affinity_count=None, cpu_threads=None, gpu_memory_limit_gib=None,
-                        microbatch_size=None, geometry_pipeline_depth=1, pose_chunk_size=None,
+                        microbatch_size=None, effective_batch_size=None,
+                        geometry_pipeline_depth=1, pose_chunk_size=None,
                         scene_cache_size=90, object_cache_size=88,
                         voxel_heads=True, instance_broadcast_mode='segment',
                         compile_dense_heads=False, fused_optimizer=True):
-    """Return new training/performance dictionaries; never mutate the source."""
+    """Return fresh-run dictionaries; optionally change the effective batch.
+
+    An explicit effective-batch change preserves v3 sample milestones and
+    derives their update counts. Optimizer hyperparameters, including peak LR,
+    are retained; this is a new training recipe, not a checkpoint migration.
+    """
     config = deepcopy(base)
     old_profile, old_runtime = config.get('runtime_profile', {}), config.get('runtime', {})
     source_host = old_profile.get('host', 'custom')
@@ -56,11 +62,27 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     training = config['training']
     effective_batch = training.get('effective_batch_size',
         training.get('microbatch_size', 1) * training.get('gradient_accumulation_steps', 4))
-    if microbatch_size is not None:
-        if type(microbatch_size) is not int or microbatch_size < 1 or effective_batch % microbatch_size:
-            raise ValueError('microbatch_size must be a positive divisor of the existing effective batch')
-        training['microbatch_size'] = microbatch_size
-        training['gradient_accumulation_steps'] = effective_batch // microbatch_size
+    if effective_batch_size is not None:
+        if type(effective_batch_size) is not int or effective_batch_size < 1:
+            raise ValueError('effective_batch_size must be a positive integer')
+        if effective_batch_size != effective_batch:
+            if training.get('budget_contract') != CONTRACT_VERSION:
+                raise ValueError('Changing effective batch requires the v3 sample budget contract')
+            # These are derived from sample milestones, not independent limits.
+            # resolve_config recreates them for the new effective batch.
+            for section, key in (('training', 'max_optimizer_steps'),
+                                 ('training', 'validate_every_optimizer_steps'),
+                                 ('scheduler', 'warmup_optimizer_steps'),
+                                 ('scheduler', 'total_optimizer_steps')):
+                config.get(section, {}).pop(key, None)
+        effective_batch = effective_batch_size
+        training['effective_batch_size'] = effective_batch
+    if microbatch_size is not None or effective_batch_size is not None:
+        micro = training.get('microbatch_size', 1) if microbatch_size is None else microbatch_size
+        if type(micro) is not int or micro < 1 or effective_batch % micro:
+            raise ValueError('microbatch_size must be a positive divisor of the selected effective batch')
+        training['microbatch_size'] = micro
+        training['gradient_accumulation_steps'] = effective_batch // micro
     if type(geometry_pipeline_depth) is not int or geometry_pipeline_depth not in (1, 2):
         raise ValueError('geometry_pipeline_depth must be 1 or 2')
     if geometry_pipeline_depth == 2 and (
@@ -108,7 +130,8 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     config['runtime_profile'] = {
         'profile_id': (f'cd010-fresh-{host}-{experiment}-dense{dense_chunk_size}'
                        f'-cpu{cpu_affinity_count}-geo{geometry_threads}-w{workers}-{precision}'
-                       f'-b{training.get("microbatch_size", 1)}-pipe{geometry_pipeline_depth}'
+                       f'-b{training.get("microbatch_size", 1)}-e{effective_batch}'
+                       f'-pipe{geometry_pipeline_depth}'
                        f'-pose{config["model"].get("pose_chunk_size", 32)}'),
         'training_version': 'v3',
         'selection_status': 'from_scratch',
@@ -122,5 +145,5 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     }
     config['runtime'] = {'cpu_threads': cpu_threads, 'cpu_affinity_count': cpu_affinity_count,
                          'gpu_memory_limit_gib': gpu_memory_limit_gib}
-    # Retain the scientific sample budget, optimizer/loss settings and schedule.
+    # Retain the sample budget/milestones and optimizer/loss hyperparameters.
     return resolve_config(config), performance

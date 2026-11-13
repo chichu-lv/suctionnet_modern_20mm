@@ -30,9 +30,9 @@ def test_plan_is_one_experiment_two_fresh_candidates(hardware, experiment, micro
         assert not (tmp_path / variant['name'] / 'run').exists()
 
 
-def row(step, ended, *, updated=True, depth=2):
+def row(step, ended, *, updated=True, depth=2, effective_batch=4):
     return {'global_step': step, 'updated': updated, 'ended_monotonic': ended,
-            'effective_samples_completed': step * 4, 'elapsed_seconds': 2.,
+            'effective_samples_completed': step * effective_batch, 'elapsed_seconds': 2.,
             'loader_wait_s': .01, 'gradients_finite': updated,
             'geometry_pipeline': {'depth': depth, 'geometry_job_wall_s': 1.2,
                                   'geometry_wait_host_s': .2},
@@ -66,6 +66,52 @@ def test_serial_future_is_not_misreported_as_zero_work():
 def test_unobserved_process_exit_is_not_reported_as_success(tmp_path, monkeypatch):
     plan = prepare_plan('H20', tmp_path)
     monkeypatch.setattr('scripts.benchmark_geometry_overlap.summarize_run',
-                        lambda _: {'trainer_phase': 'paused', 'frames_per_second': 1.})
+                        lambda _, **kwargs: {'trainer_phase': 'paused', 'frames_per_second': 1.})
     result = summarize_plan(plan, tmp_path)
     assert all(item['normal_pause'] is None for item in result['results'])
+
+
+@pytest.mark.parametrize('hardware,batches,boundaries', [
+    ('H20', [(2, 4, 8), (4, 2, 8)], [(5, 15), (5, 15)]),
+    ('L20', [(1, 4, 4), (2, 2, 4)], [(10, 30), (10, 30)]),
+])
+def test_memory_suite_uses_equal_frame_windows(hardware, batches, boundaries, tmp_path):
+    plan = prepare_plan(hardware, tmp_path, suite='memory', gpu_memory_limit_gib=128 if hardware == 'H20' else 36)
+    assert plan['suite'] == 'memory'
+    assert plan['total_credited_frames_per_variant'] == 120
+    assert len(plan['variants']) == 2
+    for variant, batch, (warmup, stop) in zip(plan['variants'], batches, boundaries):
+        config = json.loads(open(variant['train_config']).read())
+        performance = json.loads(open(variant['performance_config']).read())
+        micro, accumulation, effective = batch
+        assert config['training']['microbatch_size'] == micro
+        assert config['training']['gradient_accumulation_steps'] == accumulation
+        assert config['training']['effective_batch_size'] == effective
+        assert config['training']['geometry_pipeline_depth'] == 2
+        assert config['runtime']['gpu_memory_limit_gib'] == (128 if hardware == 'H20' else 36)
+        assert config['training']['target_effective_samples'] == 230400
+        assert config['training']['max_optimizer_steps'] == 230400 // effective
+        assert config['scheduler']['warmup_optimizer_steps'] == 11520 // effective
+        assert variant['warmup_successful_steps'] == warmup
+        assert variant['stop_at_successful_step'] == stop
+        assert warmup * effective == 40
+        assert (stop - warmup) * effective == 80
+        assert variant['command'][-2:] == ['--pause-at-step', str(stop)]
+        assert performance['dense_chunk_size_override'] == 65536
+        assert config['model']['pose_chunk_size'] == 32
+
+
+def test_memory_summary_uses_variant_boundaries_not_common_update_count(tmp_path):
+    plan = prepare_plan('H20', tmp_path, suite='memory')
+    for variant in plan['variants']:
+        effective = variant['effective_batch_size']
+        stop = variant['stop_at_successful_step']
+        # The H20 pair uses the same effective batch and 5→15 window, not 10→30.
+        rows = [row(step, step * effective / 2, effective_batch=effective) for step in range(1, stop + 1)]
+        attempt = tmp_path / variant['name'] / 'run' / 'attempts' / 'one'
+        attempt.mkdir(parents=True)
+        (attempt / 'updates.jsonl').write_text(''.join(json.dumps(item) + '\n' for item in rows))
+    result = summarize_plan(plan, tmp_path)
+    assert result['throughput_change_percent'] == pytest.approx(0)
+    assert [item['successful_updates'] for item in result['results']] == [10, 10]
+    assert all(item['credited_frames'] == 80 and item['frames_per_second'] == 2 for item in result['results'])

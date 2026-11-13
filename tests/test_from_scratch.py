@@ -84,3 +84,33 @@ def test_pipeline_config_uses_memory_without_changing_sample_budget():
     assert resolve_budget(config) == resolve_budget(source)
     with pytest.raises(ValueError, match='at least two microbatches'):
         from_scratch_config(source, microbatch_size=4, geometry_pipeline_depth=2)
+
+
+def test_larger_effective_batch_rederives_steps_and_preserves_sample_milestones():
+    root = Path(__file__).resolve().parents[1]
+    source = json.loads((root / 'configs/runtime_profiles/cd009-v3/H20-E5.json').read_text())
+    original = deepcopy(source)
+    config, _ = from_scratch_config(source, microbatch_size=4,
+        effective_batch_size=8, geometry_pipeline_depth=2)
+    assert source == original
+    assert config['training']['microbatch_size'] == 4
+    assert config['training']['gradient_accumulation_steps'] == 2
+    assert config['training']['effective_batch_size'] == 8
+    assert config['training']['geometry_pipeline_depth'] == 2
+    assert config['training']['max_optimizer_steps'] == 28800
+    assert config['scheduler']['total_optimizer_steps'] == 28800
+    assert config['scheduler']['warmup_optimizer_steps'] == 1440
+    assert config['training']['validate_every_optimizer_steps'] == 2880
+    assert resolve_budget(config)['target_samples'] == resolve_budget(source)['target_samples'] == 230400
+    for key in ('target_effective_samples', 'warmup_effective_samples',
+                'validation_effective_samples', 'epoch_effective_samples'):
+        assert config['training'][key] == source['training'][key]
+    assert config['optimizer']['lr_peak'] == source['optimizer']['lr_peak']
+    assert config['loss'] == source['loss']
+    assert '-b4-e8-' in config['runtime_profile']['profile_id']
+    with pytest.raises(ValueError, match='positive integer'):
+        from_scratch_config(source, effective_batch_size=0)
+    legacy = deepcopy(source)
+    legacy['training'].pop('budget_contract')
+    with pytest.raises(ValueError, match='v3 sample budget'):
+        from_scratch_config(legacy, microbatch_size=4, effective_batch_size=8)

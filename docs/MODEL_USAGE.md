@@ -46,11 +46,11 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 正式公开数据预训练
 
-`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。当前六组CD-010使用从[原CD-009 profile](../configs/runtime_profiles/cd009-v3/manifest.json)派生并固定的新配置；实际设备、batch、精度与部署版本见[CD-010运行状态](performance/CD010_RUN_STATUS.md)。旧CD-009已停止，其[原策略和身份](CD009_PRETRAINING.md)保留作历史记录。
+`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。此前六组CD-010使用从[原CD-009 profile](../configs/runtime_profiles/cd009-v3/manifest.json)派生的新配置；现已全部停止，最终代码确定前只做优化测试。当前状态和停止前记录见[CD-010运行状态](performance/CD010_RUN_STATUS.md)。旧CD-009也停止，其[原策略和身份](CD009_PRETRAINING.md)保留作历史记录。
 
 每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；当前 E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练正在分阶段执行，尚未完成六组与各 10 次开发验证。
 
-正式多机管理复用下方[supervisor入口](#cd-009-persistent-multi-host-pretraining)和[公共模板](implementation/examples/cd009-supervisor.json)，私有控制配置不提交到仓库。现有六组启动已完成，按固定部署继续原训练/保存/验证，不因这里新增性能代码重复首100步、恢复审计或全机检查。单独性能比较使用下方两机各一个实验的短测入口。
+正式多机管理复用下方[supervisor入口](#cd-009-persistent-multi-host-pretraining)和[公共模板](implementation/examples/cd009-supervisor.json)，私有控制配置不提交到仓库。六组与协调器当前保持停止，短测不恢复完整训练，不重复首100步、恢复审计或全机检查。性能比较使用下方两机各一个实验的入口。
 
 ## CD-010 独立从头训练
 
@@ -58,7 +58,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 `--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
 
-新增加的[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)通过`--geometry-pipeline-depth 2`显式启用；`--microbatch-size 2`自动保持有效batch并派生accumulation，`--pose-chunk-size`单独控制接触头。当前性能验证只需`benchmark_geometry_overlap.py --hardware H20|L20 --out-dir NEW [--run]`：H20/E5、L20/E3各一个实验，每机串行/流水线两个设置。默认只生成配置，不启动训练。新调度的GPU吞吐待该对照确认；不要求六组或额外恢复/完整验证。
+[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)已实测支持depth2：H20/E5 +19.90%、L20/E3 +33.82%。下一轮[显存扩展](GEOMETRY_MEMORY_SCALING.md)使用`benchmark_geometry_overlap.py --suite memory --hardware H20|L20 --out-dir NEW [--run]`：H20/E5比较B2A4与B4A2（共同有效batch8），L20/E3比较B1A4与B2A2（共同有效batch4）。每设置40帧预热、80帧计时；默认只生成，`--run`才执行短测，不启动完整训练。新增`--effective-batch-size`显式改变训练batch并按样本重新派生步数；`--pose-chunk-size`单独控制接触头，本轮固定32。
 
 精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
 
