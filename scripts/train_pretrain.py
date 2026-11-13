@@ -15,6 +15,7 @@ import torch
 
 from suction20.performance import attach_performance, build_runtime_identity
 from suction20.precision import resolve_precision, UpdateLossAccumulator
+from suction20.geometry_pipeline import GeometryPipeline, GeometryCompletion
 from suction20.pretrain_budget import CONTRACT_VERSION, resolve_budget, resolve_config, sampling_epoch, validate_resume_progress
 from suction20.datasets import collate_public, frame_key, split_scene_ids
 from suction20.losses import source_losses
@@ -28,7 +29,8 @@ from suction20.pretrain_runtime import (AttemptLog, CheckpointStore, Progress, R
 
 
 def train(config, run_dir, device, *, resume=None, init_checkpoint=None, stop_at_step=None,
-          pause_at_step=None, control_dir=None, validation_gate=False, attempt_id=None):
+          pause_at_step=None, control_dir=None, validation_gate=False, attempt_id=None,
+          profile_update=None):
     """Return successful step count; CLI maps durable paused status to exit 75."""
     config = resolve_config(config)
     budget = resolve_budget(config)
@@ -40,7 +42,8 @@ def train(config, run_dir, device, *, resume=None, init_checkpoint=None, stop_at
                             experiment=config.get("experiment"), attempt_id=attempt_id or uuid.uuid4().hex,
                             target_step=int(config["training"]["max_optimizer_steps"]))
         return _train(config, run_dir, device, progress, resume=resume, init_checkpoint=init_checkpoint,
-                      stop_at_step=stop_at_step, pause_at_step=pause_at_step, validation_gate=validation_gate)
+                      stop_at_step=stop_at_step, pause_at_step=pause_at_step, validation_gate=validation_gate,
+                      profile_update=profile_update)
     except Exception as error:
         if progress is not None:
             progress.update(phase="failed", error=f"{type(error).__name__}: {error}")
@@ -52,7 +55,7 @@ def train(config, run_dir, device, *, resume=None, init_checkpoint=None, stop_at
 
 
 def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_at_step,
-           pause_at_step, validation_gate):
+           pause_at_step, validation_gate, profile_update=None):
     budget = resolve_budget(config)
     effective_batch = budget["effective_batch_size"]
     profile = config.get("runtime_profile")
@@ -87,6 +90,14 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     accumulation = train_cfg.get("gradient_accumulation_steps", 4)
     if microbatch * accumulation != train_cfg.get("effective_batch_size", 4):
         raise ValueError("Effective batch differs from microbatch × accumulation")
+    pipeline_depth = train_cfg.get("geometry_pipeline_depth", 1)
+    if type(pipeline_depth) is not int or pipeline_depth not in (1, 2):
+        raise ValueError("training.geometry_pipeline_depth must be 1 or 2")
+    if pipeline_depth == 2 and (not fresh_execution or accumulation < 2 or
+                               config.get("experiment") not in ("E3", "E4", "E5")):
+        raise ValueError("Geometry pipeline depth 2 requires fresh v4 contact training and accumulation >= 2")
+    if profile_update is not None and (type(profile_update) is not int or profile_update < 1):
+        raise ValueError("profile_update must be a positive successful-update boundary")
     dataset = make_source_dataset(config, augment=True)
     key_to_index = {key: i for i, key in enumerate(dataset.keys)}
     schedule = FrameSchedule(split_scene_ids("train"), seed=config.get("sampling_seed", 20261110),
@@ -146,6 +157,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                  "gpu_uuid": normalize_gpu_uuid(torch.cuda.get_device_properties(device).uuid) if device.type == "cuda" else None,
                  "math_settings": math_settings, "runtime": config.get("runtime", {}),
                  "model_execution": getattr(model, "execution_settings", {}),
+                 "geometry_pipeline_depth": pipeline_depth,
                  "precision": precision.as_dict(),
                  "optimizer_execution": {"name": "AdamW", "fused_requested": opt_cfg.get("fused", False),
                                           "fused_effective": bool(optimizer.defaults.get("fused"))}}
@@ -310,6 +322,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     probe = parameters[0]
     optimizer.zero_grad(set_to_none=True)
     loader, loader_iter = None, None
+    geometry_pipeline = GeometryPipeline() if pipeline_depth == 2 else None
+    active_profiler, profile_done = None, False
     consumed_count = log.frames
     try:
         if performance:
@@ -366,7 +380,20 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             production_timing = {}
             timing = {name: 0. for name in ("data", "collate", "h2d_host", "forward_host", "loss_host", "backward_host", "optimizer_host", "diagnostics_host")}
             before = probe.detach().clone()
-            for micro_index in range(accumulation):
+            pipeline_timing = {"depth": pipeline_depth, "geometry_job_wall_s": 0.,
+                               "geometry_wait_host_s": 0.}
+            timing["geometry_wait_host"] = 0.
+            profile_trace = None
+            if profile_update is not None and not profile_done and step + 1 == profile_update:
+                activities = [torch.profiler.ProfilerActivity.CPU]
+                if device.type == "cuda":
+                    activities.append(torch.profiler.ProfilerActivity.CUDA)
+                active_profiler = torch.profiler.profile(activities=activities, record_shapes=True)
+                active_profiler.start()
+                profile_done = True
+
+            def prepare_microbatch(micro_index):
+                nonlocal data_seconds, collate_seconds, loader_wait_s
                 samples, micro_frames, cpu_kwargs = [], [], {}
                 if loader_iter is not None:
                     waiting = time.perf_counter()
@@ -409,19 +436,49 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 model.set_epoch(regime_epoch)
                 for frame_index, detail in enumerate(micro_frames):
                     detail["voxel_count"] = int((packed["inputs"]["voxel_coords"][:, 0] == frame_index).sum())
-                frame_stats.append({"microbatch_index": micro_index, "sampling_regime_epoch": regime_epoch, "point_count": len(packed["inputs"]["xyz_cam_m"]),
-                                    "voxel_count": len(packed["inputs"]["voxel_coords"])})
+                stat = {"microbatch_index": micro_index, "sampling_regime_epoch": regime_epoch, "point_count": len(packed["inputs"]["xyz_cam_m"]),
+                                    "voxel_count": len(packed["inputs"]["voxel_coords"])}
+                frame_stats.append(stat)
                 if loader_iter is not None:
-                    frame_stats[-1].update(worker_pid=packed.get("worker_pid"),
+                    stat.update(worker_pid=packed.get("worker_pid"),
                         cache_info=packed.get("cache_info"), production_timing=packed.get("production_timing"))
                 timer = time.perf_counter()
                 upload = select_training_gpu_inputs(packed["inputs"]) if performance else packed["inputs"]
                 inputs = move_to_device(upload, device, non_blocking=bool(performance))
                 targets = move_to_device(packed["targets"], device, non_blocking=bool(performance))
                 timing["h2d_host"] += time.perf_counter() - timer
+                payload = {"packed": packed, "inputs": inputs, "targets": targets,
+                           "micro_frames": micro_frames, "stat": stat,
+                           "tickets": tickets if loader_iter is not None else None,
+                           "cpu_kwargs": cpu_kwargs}
+                if geometry_pipeline is not None:
+                    timer = time.perf_counter()
+                    with precision.autocast(), torch.profiler.record_function("geometry.gpu_prepare"):
+                        prepared = model.prepare_forward(inputs, sampler_mode="train", targets=targets, **cpu_kwargs)
+                    timing["forward_host"] += time.perf_counter() - timer
+                    payload["prepared"] = prepared
+                    return payload, prepared.geometry_job
+                return payload
+
+            if geometry_pipeline is not None:
+                microbatches = geometry_pipeline.iter_update(accumulation, prepare_microbatch)
+            else:
+                microbatches = (GeometryCompletion(prepare_microbatch(index)) for index in range(accumulation))
+            for work in microbatches:
+                payload = work.payload
+                packed, inputs, targets = payload["packed"], payload["inputs"], payload["targets"]
+                micro_frames, stat = payload["micro_frames"], payload["stat"]
                 timer = time.perf_counter()
-                with precision.autocast():
-                    prediction = model(inputs, sampler_mode="train", targets=targets, **cpu_kwargs)
+                if geometry_pipeline is not None:
+                    with precision.autocast(), torch.profiler.record_function("geometry.gpu_finish"):
+                        prediction = model.finish_forward(payload["prepared"], geometry_result=work.geometry_result)
+                    stat["geometry_pipeline"] = work.timing
+                    pipeline_timing["geometry_job_wall_s"] += work.timing["geometry_job_wall_s"]
+                    pipeline_timing["geometry_wait_host_s"] += work.timing["geometry_wait_host_s"]
+                    timing["geometry_wait_host"] += work.timing["geometry_wait_host_s"]
+                else:
+                    with precision.autocast(), torch.profiler.record_function("model.forward"):
+                        prediction = model(inputs, sampler_mode="train", targets=targets, **payload["cpu_kwargs"])
                 timing["forward_host"] += time.perf_counter() - timer
                 seed_counts = prediction["seed_valid"].sum(dim=-1).detach().cpu().tolist()
                 if not isinstance(seed_counts, list):
@@ -430,9 +487,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                     raise ValueError("Prediction frame count differs from packed microbatch")
                 for detail, count in zip(micro_frames, seed_counts):
                     detail["valid_seed_count"] = int(count)
-                frame_stats[-1]["valid_seed_count"] = sum(int(count) for count in seed_counts)
+                stat["valid_seed_count"] = sum(int(count) for count in seed_counts)
                 if hasattr(model, "last_grouping_timings"):
-                    frame_stats[-1]["grouping_timings"] = dict(model.last_grouping_timings)
+                    stat["grouping_timings"] = dict(model.last_grouping_timings)
                 timer = time.perf_counter()
                 loss = source_losses(prediction, targets, inputs,
                                      quality_target=config["model"]["quality_target"],
@@ -442,7 +499,8 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 if loss_accumulator is None and not torch.isfinite(loss["total"]):
                     raise FloatingPointError("Non-finite training loss; no optimizer update performed")
                 timer = time.perf_counter()
-                scaler.scale(loss["total"] / accumulation).backward()
+                with torch.profiler.record_function("model.backward"):
+                    scaler.scale(loss["total"] / accumulation).backward()
                 if loss_accumulator is not None:
                     loss_accumulator.add(loss)
                 else:
@@ -451,13 +509,14 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 timing["backward_host"] += time.perf_counter() - timer
                 timer = time.perf_counter()
                 if "seed_point_index" in prediction and "quality_valid" in packed["targets"]:
-                    frame_stats[-1]["supervised_frame_counts"] = source_supervision_counts(prediction, packed)
+                    stat["supervised_frame_counts"] = source_supervision_counts(prediction, packed)
                 else:
-                    frame_stats[-1]["supervised_frame_counts"] = None
+                    stat["supervised_frame_counts"] = None
                 timing["diagnostics_host"] += time.perf_counter() - timer
                 if loader_iter is not None:
-                    consumed_count = consume_tickets(schedule, tickets, consumed_count)
-                del samples, packed, prediction, loss, inputs, targets, cpu_kwargs, upload
+                    consumed_count = consume_tickets(schedule, payload["tickets"], consumed_count)
+                # Drop the completed graph before the generator fills its next slot.
+                del work, payload, packed, prediction, loss, inputs, targets
             if loss_accumulator is not None:
                 timer = time.perf_counter()
                 totals = loss_accumulator.result()
@@ -468,6 +527,11 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             timer = time.perf_counter()
             updated, grad_norm = optimizer_update(optimizer, scaler, parameters, opt_cfg.get("grad_clip_norm", 10.))
             timing["optimizer_host"] += time.perf_counter() - timer
+            if active_profiler is not None:
+                active_profiler.stop()
+                profile_trace = f"geometry-profile-step{step + 1}-{log.attempt_id}.json"
+                active_profiler.export_chrome_trace(str(run_dir / profile_trace))
+                active_profiler = None
             timing.update(data=data_seconds, collate=collate_seconds, loader_wait_s=loader_wait_s)
             if updated:
                 step += 1
@@ -486,10 +550,11 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                        started_unix=started_unix, ended_unix=time.time(),
                        started_monotonic=started_monotonic, ended_monotonic=time.monotonic(),
                        timing_seconds=timing, production_timing=production_timing,
+                       geometry_pipeline=pipeline_timing, profile_trace=profile_trace,
                        loader_wait_s=loader_wait_s, performance_identity=identity.get("performance"),
                        performance_diagnostics={"active": detailed_timing_active,
                            "until_step_exclusive": diagnostic_until_step},
-                       timing_scope="Host intervals with incidental synchronization; excludes logging/checkpoint/validation; producer data/collate overlap training; loader_wait_s is exposed wait; not isolated GPU kernel times",
+                       timing_scope="Host intervals with incidental synchronization; excludes logging/checkpoint/validation; producer data/collate and background geometry overlap training; loader_wait_s and geometry_wait_host are exposed waits; not isolated GPU kernel times",
                        memory_scope="CUDA peaks reset at each accumulation attempt; RSS is process lifetime maximum",
                        grad_norm_scope="unscaled pre-clipping total gradient norm",
                        amp_scale_before=amp_scale_before, amp_scale_after=scaler.get_scale(),
@@ -527,6 +592,10 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         log.event("failed", global_step=step, error=f"{type(error).__name__}: {error}")
         raise
     finally:
+        if active_profiler is not None:
+            active_profiler.stop()
+        if geometry_pipeline is not None:
+            geometry_pipeline.close()
         if loader is not None:
             close_ticket_loader(loader, loader_iter)
             progress.update(loader_worker_identities=[])
@@ -543,6 +612,7 @@ def main():
     parser.add_argument("--control-dir")
     parser.add_argument("--validation-gate", action="store_true")
     parser.add_argument("--attempt-id")
+    parser.add_argument("--profile-update", type=int, help="Capture one update CPU/CUDA trace; use a separate diagnostic run, not a throughput window")
     parser.add_argument("--cpu-threads", type=int)
     parser.add_argument("--gpu-memory-limit-gib", type=float)
     initial = parser.add_mutually_exclusive_group()
@@ -563,7 +633,7 @@ def main():
     train(config, args.run_dir, require_device(args.device), resume=args.resume,
           init_checkpoint=args.init_checkpoint, stop_at_step=args.stop_at_step,
           pause_at_step=args.pause_at_step, control_dir=args.control_dir,
-          validation_gate=args.validation_gate, attempt_id=args.attempt_id)
+          validation_gate=args.validation_gate, attempt_id=args.attempt_id, profile_update=args.profile_update)
     status = read_json(Path(args.control_dir or Path(args.run_dir) / "control") / "status.json")
     if status["phase"] == "paused":
         sys.exit(75)

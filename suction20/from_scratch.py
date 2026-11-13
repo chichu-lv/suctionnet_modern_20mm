@@ -1,7 +1,7 @@
 """Build an independent fresh-start configuration from an existing experiment.
 
-The old profile supplies the experiment and source host. Hardware presets are
-unmeasured resource candidates, not a throughput endorsement of those settings.
+The old profile supplies the experiment and source host. Presets incorporate
+measured CD010 resource choices; new scheduling combinations remain candidates.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .pretrain_budget import resolve_config
 
 
 HARDWARE_PRESETS = {
-    'H20': {'dense_chunk_size': 131072, 'workers': 4, 'geometry_threads': 8,
+    'H20': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 8,
             'cpu_affinity_count': 16, 'cpu_threads': 8, 'gpu_memory_limit_gib': 112,
             'gpu_model': 'NVIDIA H20-3e'},
     'L20': {'dense_chunk_size': 65536, 'workers': 4, 'geometry_threads': 4,
@@ -26,6 +26,7 @@ HARDWARE_PRESETS = {
 def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_chunk_size=None,
                         workers=None, geometry_threads=None, geometry_precision='float32',
                         cpu_affinity_count=None, cpu_threads=None, gpu_memory_limit_gib=None,
+                        microbatch_size=None, geometry_pipeline_depth=1, pose_chunk_size=None,
                         scene_cache_size=90, object_cache_size=88,
                         voxel_heads=True, instance_broadcast_mode='segment',
                         compile_dense_heads=False, fused_optimizer=True):
@@ -52,6 +53,24 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     experiment = config.get('experiment', config.get('model', {}).get('experiment'))
     if experiment not in ('E0', 'E1', 'E2', 'E3', 'E4', 'E5'):
         raise ValueError('From-scratch configuration requires an E0–E5 experiment')
+    training = config['training']
+    effective_batch = training.get('effective_batch_size',
+        training.get('microbatch_size', 1) * training.get('gradient_accumulation_steps', 4))
+    if microbatch_size is not None:
+        if type(microbatch_size) is not int or microbatch_size < 1 or effective_batch % microbatch_size:
+            raise ValueError('microbatch_size must be a positive divisor of the existing effective batch')
+        training['microbatch_size'] = microbatch_size
+        training['gradient_accumulation_steps'] = effective_batch // microbatch_size
+    if type(geometry_pipeline_depth) is not int or geometry_pipeline_depth not in (1, 2):
+        raise ValueError('geometry_pipeline_depth must be 1 or 2')
+    if geometry_pipeline_depth == 2 and (
+            experiment not in ('E3', 'E4', 'E5') or training.get('gradient_accumulation_steps', 4) < 2):
+        raise ValueError('Depth 2 requires contact grouping and at least two microbatches per update')
+    training['geometry_pipeline_depth'] = geometry_pipeline_depth
+    if pose_chunk_size is not None:
+        if type(pose_chunk_size) is not int or pose_chunk_size < 1:
+            raise ValueError('pose_chunk_size must be a positive integer')
+        config['model']['pose_chunk_size'] = pose_chunk_size
     if precision not in ('fp32', 'fp16', 'bf16'):
         raise ValueError('Precision must be fp32, fp16 or bf16')
     if min(scene_cache_size, object_cache_size) < 1:
@@ -88,10 +107,13 @@ def from_scratch_config(base, *, hardware_preset=None, precision='fp16', dense_c
     host = preset_name if preset_name in ('H20', 'L20') else source_host
     config['runtime_profile'] = {
         'profile_id': (f'cd010-fresh-{host}-{experiment}-dense{dense_chunk_size}'
-                       f'-cpu{cpu_affinity_count}-geo{geometry_threads}-w{workers}-{precision}'),
+                       f'-cpu{cpu_affinity_count}-geo{geometry_threads}-w{workers}-{precision}'
+                       f'-b{training.get("microbatch_size", 1)}-pipe{geometry_pipeline_depth}'
+                       f'-pose{config["model"].get("pose_chunk_size", 32)}'),
         'training_version': 'v3',
         'selection_status': 'from_scratch',
-        'selection_basis': f'{preset_name} resource candidate; GPU throughput is not yet measured.',
+        'selection_basis': (f'{preset_name} resource preset; 64k retained after CD010 measurements. '
+                            'This generated scheduling combination requires its own throughput comparison.'),
         'hardware_preset': preset_name,
         'source_profile_id': old_profile.get('profile_id'),
         'host': host,

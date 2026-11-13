@@ -26,7 +26,7 @@ def test_fresh_config_preserves_budget_and_source(experiment, voxel_heads, tmp_p
     assert config['data']['scene_cache_size'] == 90
     assert config['data']['object_cache_size'] == 88
     assert performance['no_instance_voxel_heads'] is voxel_heads
-    assert performance['dense_chunk_size_override'] == (131072 if host == 'H20' else 65536)
+    assert performance['dense_chunk_size_override'] == 65536
     assert performance['geometry_threads'] == (8 if host == 'H20' else 4)
     assert config['runtime']['cpu_affinity_count'] == (16 if host == 'H20' else 8)
     assert config['runtime']['cpu_threads'] == 8
@@ -70,3 +70,17 @@ def test_reference_preset_keeps_common_comparison_and_source_memory_limit():
     assert config['runtime']['cpu_affinity_count'] == 8
     assert config['runtime']['gpu_memory_limit_gib'] == 112
     assert config['runtime_profile']['host'] == 'H20'
+
+
+def test_pipeline_config_uses_memory_without_changing_sample_budget():
+    root = Path(__file__).resolve().parents[1]
+    source = json.loads((root / 'configs/runtime_profiles/cd009-v3/H20-E5.json').read_text())
+    config, _ = from_scratch_config(source, microbatch_size=2,
+        geometry_pipeline_depth=2, pose_chunk_size=128)
+    assert config['training']['microbatch_size'] == 2
+    assert config['training']['gradient_accumulation_steps'] == 2
+    assert config['training']['geometry_pipeline_depth'] == 2
+    assert config['model']['pose_chunk_size'] == 128
+    assert resolve_budget(config) == resolve_budget(source)
+    with pytest.raises(ValueError, match='at least two microbatches'):
+        from_scratch_config(source, microbatch_size=4, geometry_pipeline_depth=2)

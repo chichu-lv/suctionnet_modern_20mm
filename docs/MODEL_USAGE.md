@@ -46,19 +46,21 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 正式公开数据预训练
 
-`configs/pretrain_e0.yaml` 至 `pretrain_e5.yaml` 是带 pending profile 的正式模板，不能原样启动。当前正在运行的版本使用 [六份精确 JSON 配置及哈希](../configs/runtime_profiles/cd009-v3/manifest.json)：H20/E5、L20/E0–E4。策略、测量依据和部署/发布版本区别见 [CD-009 当前预训练](CD009_PRETRAINING.md)。
+`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。当前六组CD-010使用从[原CD-009 profile](../configs/runtime_profiles/cd009-v3/manifest.json)派生并固定的新配置；实际设备、batch、精度与部署版本见[CD-010运行状态](performance/CD010_RUN_STATUS.md)。旧CD-009已停止，其[原策略和身份](CD009_PRETRAINING.md)保留作历史记录。
 
 每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；当前 E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练正在分阶段执行，尚未完成六组与各 10 次开发验证。
 
-正式多机运行从下方 [supervisor 入口](#cd-009-persistent-multi-host-pretraining) 和 [公共模板](implementation/examples/cd009-supervisor.json) 开始，登记精确 config SHA256，填写本地数据/主干路径、机器身份和授权 GPU。私有控制配置不提交到仓库。冻结运行代码后通过 host evidence、首个 100 步暂停/恢复和稳定性门槛逐级启动；不要跳过 supervisor 的单一 owner 和验证/备份协调。
+正式多机管理复用下方[supervisor入口](#cd-009-persistent-multi-host-pretraining)和[公共模板](implementation/examples/cd009-supervisor.json)，私有控制配置不提交到仓库。现有六组启动已完成，按固定部署继续原训练/保存/验证，不因这里新增性能代码重复首100步、恢复审计或全机检查。单独性能比较使用下方两机各一个实验的短测入口。
 
 ## CD-010 独立从头训练
 
-从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的`train.json`、v4 `performance.json`和运行命令。自动按host选择未测候选：H20为128k/geometry8/affinity16，L20为64k/geometry4/affinity8；Torch线程均8、worker均4。继续split、FP32原生几何、segment实例广播及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
+从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的`train.json`、v4 `performance.json`和运行命令。按host选择资源：H20为64k/geometry8/affinity16，L20为64k/geometry4/affinity8；Torch线程均8、worker均4。H20的128k实测收益仅0.50%，默认已保留64k。继续split、FP32原生几何、segment实例广播及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
 
-`--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。真实吞吐尚未测量，按文档的少量顺序候选确定最终主机配置；旧16帧零更新benchmark不代表新v4路径。
+`--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
 
-精度默认FP16。`--precision bf16` 显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，所以该选择不能预先认定更快。融合AdamW默认开启，局部MLP编译通过 `--compile-dense-heads` 选择。现有训练没有自动应用这些设置。
+新增加的[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)通过`--geometry-pipeline-depth 2`显式启用；`--microbatch-size 2`自动保持有效batch并派生accumulation，`--pose-chunk-size`单独控制接触头。当前性能验证只需`benchmark_geometry_overlap.py --hardware H20|L20 --out-dir NEW [--run]`：H20/E5、L20/E3各一个实验，每机串行/流水线两个设置。默认只生成配置，不启动训练。新调度的GPU吞吐待该对照确认；不要求六组或额外恢复/完整验证。
+
+精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
 
 训练和恢复使用原生成的两个配置；独立评价/推理使用新run的 `resolved_config.json`。管理器支持 `selection_status="from_scratch"` 与v4 sidecar，使用独立的CD-010控制配置和账本即可。新运行不执行旧checkpoint四帧AMP/RNG对齐；原预算内的正常日志窗口提供实际吞吐判断。
 
@@ -66,7 +68,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 性能实现构建与既有运行迁移
 
-**2026-11-13 当前记录：H20/E5 使用 64k + split + native，L20/E0、E1、E3 使用 16k + split 的目标配置，均已迁移续训并取得首 25 次正常更新窗口。** H20/E5 与 L20/E3 的真实四帧配对已通过；E0/E1 不使用接触分组。L20 原 64k 组合未通过原梯度门槛，已延后。[P3 操作说明](PERFORMANCE_PHASE3.md) 分别使用 `configs/performance/cd009-p3-integrated.json`（H20）和 `configs/performance/cd009-p3-l20-16k.json`（L20）；旧 `cd009-p3.json` 保留作几何版本记录。
+**以下为已停止的CD-009历史记录：H20/E5使用64k + split + native，L20/E0、E1、E3使用16k + split，曾迁移续训并取得首25次正常更新窗口。** H20/E5与L20/E3的真实四帧配对当时通过；E0/E1不使用接触分组。L20原64k组合未通过旧梯度门槛，因此旧运行选择16k；该限制不适用于CD-010从头训练。[P3操作说明](PERFORMANCE_PHASE3.md)分别使用`configs/performance/cd009-p3-integrated.json`（H20）和`configs/performance/cd009-p3-l20-16k.json`（L20）；旧`cd009-p3.json`保留作几何版本记录。
 
 本轮实际源 checkpoint 已确认使用 P2 `e73d62e`，保留全点 CPU 网格与坐标快路径；voxel heads 继续关闭。上述正常窗口的训练代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，后续 GitHub HEAD 与独立 `control_repo` 的 supervisor 代码身份另计，不替换训练身份。[最新实测记录](performance/P3_INTEGRATED_RESULTS.md) 给出源状态、四帧结果及正常窗口。历史报告中的1030/2462/1058步迁移和窗口保留原范围；其他接续仍读取实际 current checkpoint，批准的 original/P1/P2 可直接迁到目标 v3，无需中间迁移。
 

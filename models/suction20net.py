@@ -1,6 +1,10 @@
 """Shared scene encoder and explicit physical-pose scoring interface."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import partial
+from typing import Callable
+
 import torch
 from torch import nn
 
@@ -17,6 +21,20 @@ EXPERIMENTS = {
     'E2': (True, False, False), 'E3': (False, True, False),
     'E4': (True, True, False), 'E5': (True, True, True),
 }
+
+
+@dataclass
+class PreparedSceneForward:
+    """One in-flight microbatch: graph on the main thread, CPU job detached."""
+    encoded: dict
+    q0: torch.Tensor
+    axis: torch.Tensor
+    seeds: torch.Tensor
+    valid: torch.Tensor
+    rows: torch.Tensor
+    pose: dict
+    sampler_timings: dict
+    geometry_job: Callable | None
 
 
 class Suction20Net(nn.Module):
@@ -228,8 +246,8 @@ class Suction20Net(nn.Module):
                 anchor[i] = rows[nearest]
         return anchor
 
-    def score_at_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
-                      proposal_q0=None, feature_point_index=None, pose_batch_index=None):
+    def _prepare_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
+                      feature_point_index=None, pose_batch_index=None):
         if pose_batch_index is None:
             if len(encoded['g_cam']) != 1:
                 raise ValueError('Packed explicit poses require pose_batch_index')
@@ -247,14 +265,31 @@ class Suction20Net(nn.Module):
         safe = anchors.clamp_min(0)
         fused = self.gather_fused_features(encoded, safe)
         gravity = encoded['g_cam'][batch].to(fused)
+        return {'point_cam_m': point_cam_m, 'normal': n, 'instance': instance_id,
+                'batch': batch, 'anchors': anchors, 'valid': valid, 'safe': safe,
+                'fused': fused, 'gravity': gravity}
+
+    def score_at_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
+                      proposal_q0=None, feature_point_index=None, pose_batch_index=None):
+        prepared = self._prepare_pose(encoded, point_cam_m, normal_out_cam, instance_id,
+                                       feature_point_index, pose_batch_index)
         if self.contact_grouping is not None:
-            zones = self.contact_grouping(encoded, point_cam_m, n, instance_id, batch, valid,
+            zones = self.contact_grouping(encoded, point_cam_m, prepared['normal'], instance_id,
+                                          prepared['batch'], prepared['valid'],
                                           random_roll=encoded.get('random_group_roll', self.training))
-            zone_features = torch.cat([zones[name] for name in ZONE_NAMES] +
-                                      [zones['lip_sector_log_counts']], -1).to(fused)
             self.last_grouping_timings = dict(self.contact_grouping.last_timings)
         else:
             zones = None
+        return self._score_prepared_pose(encoded, prepared, zones)
+
+    def _score_prepared_pose(self, encoded, prepared, zones):
+        point_cam_m, n = prepared['point_cam_m'], prepared['normal']
+        anchors, valid, safe = prepared['anchors'], prepared['valid'], prepared['safe']
+        fused, gravity = prepared['fused'], prepared['gravity']
+        if zones is not None:
+            zone_features = torch.cat([zones[name] for name in ZONE_NAMES] +
+                                      [zones['lip_sector_log_counts']], -1).to(fused)
+        else:
             zone_features = fused.new_zeros((len(fused), 328))
         h = self.pose_fusion(torch.cat((fused, zone_features, n.to(fused), gravity), -1))
         q = self.q_head(h).squeeze(-1).sigmoid()
@@ -292,6 +327,51 @@ class Suction20Net(nn.Module):
                                   encoded['instance_id_input'][rows], proposal_q0=q0[rows],
                                   feature_point_index=rows, pose_batch_index=encoded['batch_index'][rows])
         self.last_grouping_timings.update(self.sampler.last_timings)
+        return self._pack_prediction(encoded, q0, axis, seeds, valid, rows, pose)
+
+    def prepare_forward(self, batch_input, *, sampler_mode='inference', targets=None,
+                        cpu_geometry=None, sampler_targets_cpu=None):
+        """GPU/dense prefix, then snapshot a detached CPU geometry job.
+
+        Call on the training thread under the same autocast policy as forward.
+        The returned graph stays alive until finish_forward and backward finish.
+        All candidate and roll RNG draws happen here, before background work.
+        """
+        encoded = self.encode_scene(batch_input, cpu_geometry=cpu_geometry)
+        encoded['random_group_roll'] = self.training and sampler_mode != 'inference'
+        q0, axis = self.predict_dense(encoded)
+        seeds, valid = self.sample(encoded, q0, sampler_mode, targets,
+                                   sampler_targets_cpu=sampler_targets_cpu)
+        rows = seeds[valid]
+        pose = self._prepare_pose(encoded, encoded['xyz_cam_m'][rows], axis[rows],
+                                   encoded['instance_id_input'][rows], rows,
+                                   encoded['batch_index'][rows])
+        job = None
+        if self.contact_grouping is not None:
+            request = self.contact_grouping.prepare_query(encoded, pose['point_cam_m'],
+                pose['normal'], pose['instance'], pose['batch'], pose['valid'],
+                random_roll=encoded['random_group_roll'])
+            job = partial(self.contact_grouping.run_query, request)
+        return PreparedSceneForward(encoded, q0, axis, seeds, valid, rows, pose,
+                                    dict(self.sampler.last_timings), job)
+
+    def finish_forward(self, prepared, *, geometry_result=None):
+        """GPU suffix for one completed query; autograd remains on this thread."""
+        if self.contact_grouping is not None:
+            if geometry_result is None:
+                raise ValueError('finish_forward requires the completed CPU geometry result')
+            zones = self.contact_grouping.encode_query(prepared.encoded, geometry_result)
+            self.last_grouping_timings = dict(self.contact_grouping.last_timings)
+        else:
+            zones = None
+            self.last_grouping_timings = {}
+        pose = self._score_prepared_pose(prepared.encoded, prepared.pose, zones)
+        self.last_grouping_timings.update(prepared.sampler_timings)
+        return self._pack_prediction(prepared.encoded, prepared.q0, prepared.axis,
+                                     prepared.seeds, prepared.valid, prepared.rows, pose)
+
+    @staticmethod
+    def _pack_prediction(encoded, q0, axis, seeds, valid, rows, pose):
         result = {'q0_all': q0, 'normal_out_all': axis,
                   'seed_point_index': seeds, 'seed_valid': valid}
         for name in ['q', 'pose_features', 'pose_feature_valid', 'task_success_logit',
