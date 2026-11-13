@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import sys
@@ -357,9 +358,13 @@ def test_atomic_control_replacement_does_not_truncate_backup_json(coordinator, m
 
 
 @pytest.mark.parametrize("copy_failure", [False, True])
-def test_worker_final_backup_grant_and_bounded_copy_failure(coordinator, monkeypatch, copy_failure):
+@pytest.mark.parametrize("control_override", [False, True])
+def test_worker_final_backup_grant_and_bounded_copy_failure(coordinator, monkeypatch, copy_failure, control_override):
     assignment = coordinator.assign("E5", "H20", 0)
     config = coordinator.config
+    if control_override:
+        config["control_repo"] = str(Path(config["root"]) / "control-repo")
+    monkeypatch.setenv("PYTHONPATH", "/unrelated/imports")
     run, control = s.assignment_paths(config, assignment)
     label = Path(config["label_root"])
     label.mkdir(parents=True)
@@ -379,6 +384,9 @@ def test_worker_final_backup_grant_and_bounded_copy_failure(coordinator, monkeyp
             return 75
     def spawn(*args, **kwargs):
         assert kwargs["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert "PYTHONPATH" not in kwargs["env"]
+        assert kwargs["cwd"] == Path(config["root"]) / "repo"
+        assert str(Path(config["root"]) / "repo/scripts/train_pretrain.py") in args[0]
         assert len(kwargs["pass_fds"]) == 2
         (run / "checkpoints").mkdir()
         checkpoint = run / "checkpoints/current.pt"
@@ -440,6 +448,8 @@ def test_only_h20_snapshots_include_allocator_and_sanitized_config(coordinator, 
     s.atomic_json(Path(config['root']) / 'control/coordinator.json', coordinator.state)
     config['private_key'] = 'excluded-root-secret'
     config['hosts']['H20']['ssh_options'] = ['excluded-transport-secret']
+    config['control_repo'] = str(Path(config['root']) / 'control-repo')
+    authorize_gpu4(config)
     usage = s.shutil.disk_usage
     monkeypatch.setattr(s.shutil, 'disk_usage', lambda p: usage(p)._replace(free=300 * s.GIB))
     result = Path(s.backup_snapshot(config, assignment, {'request_id': 'allocator'}))
@@ -451,6 +461,8 @@ def test_only_h20_snapshots_include_allocator_and_sanitized_config(coordinator, 
         saved = s.read_json(safe_config)
         assert saved['manifest_sha256'] == config['manifest_sha256']
         assert saved['hosts']['H20']['gpus'] == config['hosts']['H20']['gpus']
+        assert saved['extra_authorized_gpus'] == config['extra_authorized_gpus']
+        assert saved['control_repo'] == config['control_repo']
         assert 'excluded-' not in safe_config.read_text()
 
 
@@ -848,3 +860,106 @@ def test_missing_profile_blocks_launch_without_stopping_coordinator(config, monk
     assert not state['assignments']
     s.main(['--config', str(path), 'tick'])
     assert not s.read_json(ledger)['assignments']
+
+
+def authorize_gpu4(config):
+    config["hosts"]["L20"]["gpus"]["4"] = {"uuid": "GPU-L20-4", "cpus": list(range(32, 40))}
+    config["extra_authorized_gpus"] = {"L20": {"4": "GPU-L20-4"}}
+
+
+def test_gpu4_requires_explicit_uuid_binding_and_unique_resources(config, coordinator):
+    authorize_gpu4(config)
+    s.validate_config(config)
+    assignment = coordinator.assign("E4", "L20", 4)
+    assert assignment["gpu_index"] == 4 and assignment["gpu_uuid"] == "GPU-L20-4"
+    assert assignment["cpus"] == list(range(32, 40))
+    config["extra_authorized_gpus"]["L20"]["4"] = "GPU-wrong"
+    with pytest.raises(s.Refused, match="UUID differs"):
+        s.validate_config(config)
+    config["extra_authorized_gpus"]["L20"]["4"] = "GPU-L20-4"
+    config["hosts"]["L20"]["gpus"]["4"]["cpus"] = [0]
+    with pytest.raises(s.Refused, match="overlaps"):
+        s.validate_config(config)
+    config["hosts"]["L20"]["gpus"]["4"]["cpus"] = list(range(32, 40))
+    config["extra_authorized_gpus"]["L20"]["4"] = "GPU-H20-0"
+    config["hosts"]["L20"]["gpus"]["4"]["uuid"] = "GPU-H20-0"
+    with pytest.raises(s.Refused, match="more than once"):
+        s.validate_config(config)
+
+
+@pytest.mark.parametrize("extra", [None, [], {"H20": {"2": "GPU-extra"}},
+                                   {"L20": []}, {"L20": {"5": "GPU-extra"}},
+                                   {"L20": {"04": "GPU-extra"}}, {"L20": {4: "GPU-extra"}}])
+def test_extra_gpu_schema_rejects_other_scopes(config, extra):
+    config["extra_authorized_gpus"] = extra
+    with pytest.raises(s.Refused, match="authorized"):
+        s.validate_config(config)
+
+
+def test_gpu4_authorization_requires_matching_registry_entry(config):
+    config["extra_authorized_gpus"] = {"L20": {"4": "GPU-L20-4"}}
+    with pytest.raises(s.Refused, match="authorized"):
+        s.validate_config(config)
+
+
+@pytest.mark.parametrize("path", [None, "relative/repo", "/absolute/../repo", 4])
+def test_control_repository_requires_absolute_nontraversing_path(config, path):
+    config["control_repo"] = path
+    with pytest.raises(s.Refused, match="absolute path"):
+        s.validate_config(config)
+
+
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("local", [False, True])
+def test_control_repository_routes_rpc_only(config, tmp_path, monkeypatch, override, local):
+    expected = Path(config["root"]) / ("control repo" if override else "repo")
+    if override:
+        config["control_repo"] = str(expected)
+    s.validate_config(config)
+    monkeypatch.setattr(s, "is_local_host", lambda *args: local)
+    captured = {}
+    def run(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout='{"ok":true}')
+    monkeypatch.setattr(s.subprocess, "run", run)
+    path = tmp_path / "config with spaces.json"
+    assert s.Transport(config, path).call("L20", {"op": "probe"}) == {"ok": True}
+    command = captured["command"] if local else shlex.split(captured["command"][-1])
+    assert command == [config["python"], str(expected / "scripts/supervise_pretrain.py"),
+                       "--config", str(path), "rpc", "--host", "L20"]
+    assert json.loads(captured["kwargs"]["input"]) == {"op": "probe"}
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_control_repository_routes_worker_but_keeps_training_cwd(config, coordinator, tmp_path, monkeypatch, override):
+    authorize_gpu4(config)
+    expected = Path(config["root"]) / ("control-repo" if override else "repo")
+    if override:
+        config["control_repo"] = str(expected)
+    s.validate_config(config)
+    assignment = coordinator.assign("E4", "L20", 4)
+    captured = {}
+    def spawn(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return type("Worker", (), {"pid": 999999999})()
+    monkeypatch.setattr(s.subprocess, "Popen", spawn)
+    path = tmp_path / "config.json"
+    result = s.launch_worker(config, path, "L20", assignment)
+    assert result["state"] == "dispatched"
+    assert captured["command"][:2] == [config["python"], str(expected / "scripts/supervise_pretrain.py")]
+    assert captured["command"][4:7] == ["worker", "--host", "L20"]
+    assert captured["kwargs"]["cwd"] == Path(config["root"]) / "repo"
+    assert captured["kwargs"]["start_new_session"] is True
+    assert s.launch_worker(config, path, "L20", assignment)["state"] == "already_dispatched"
+
+
+@pytest.mark.parametrize("resume", [None, "last.pt"])
+def test_control_override_preserves_exact_selected_trainer_command(config, coordinator, resume):
+    selected_v3(config)
+    assignment = coordinator.assign("E5", "H20", 0, resume=resume, prefix_passed=bool(resume))
+    before = s.trainer_command(config, assignment)
+    config["control_repo"] = str(Path(config["root"]) / "control-repo")
+    authorize_gpu4(config)
+    s.validate_config(config)
+    assert s.trainer_command(config, assignment) == before
+    assert before[1] == str(Path(config["root"]) / "repo/scripts/train_pretrain.py")

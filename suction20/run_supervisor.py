@@ -288,22 +288,35 @@ def fsync_directory(path):
 
 
 def validate_config(config):
+    control_repository(config)
     if set(config["hosts"]) != {"H20", "L20"}:
         raise Refused("only H20 and L20 are authorized")
+    extra = config.get("extra_authorized_gpus", {})
+    if not isinstance(extra, dict) or set(extra) - {"L20"}:
+        raise Refused("extra authorized GPUs must explicitly name L20 index 4")
+    authorized_l20 = extra.get("L20", {})
+    if not isinstance(authorized_l20, dict) or set(authorized_l20) - {"4"}:
+        raise Refused("only explicitly authorized L20 index 4 may extend the registry")
+    uuids = []
     for host, maximum in (("H20", 2), ("L20", 4)):
         entry = config["hosts"][host]
-        indexes = [int(index) for index in entry["gpus"]]
-        if sorted(indexes) != list(range(maximum)):
-            raise Refused(f"{host} requires exactly authorized indices 0..{maximum - 1}")
+        authorized = extra.get(host, {})
+        if set(entry["gpus"]) != {str(i) for i in range(maximum)} | set(authorized):
+            raise Refused(f"{host} requires exactly authorized base indices and explicit extras")
+        if any(entry["gpus"][index]["uuid"] != expected for index, expected in authorized.items()):
+            raise Refused("extra authorized GPU UUID differs from registry")
         cpus = []
         for gpu in entry["gpus"].values():
-            if not gpu["uuid"].startswith("GPU-") or "REPLACE" in gpu["uuid"]:
+            if not isinstance(gpu["uuid"], str) or not gpu["uuid"].startswith("GPU-") or "REPLACE" in gpu["uuid"]:
                 raise Refused("fill observed authorized GPU UUIDs before running")
             if not gpu["cpus"] or any(type(cpu) is not int or cpu < 0 for cpu in gpu["cpus"]):
                 raise Refused("each device requires a nonempty CPU affinity pool")
             cpus.extend(gpu["cpus"])
+            uuids.append(gpu["uuid"])
         if len(cpus) != len(set(cpus)):
             raise Refused("CPU affinity overlaps on a host")
+    if len(uuids) != len(set(uuids)):
+        raise Refused("GPU UUID is assigned more than once")
     if config.get("contract_version") not in (None, "suction20.pretrain.updates.legacy", CONTRACT_VERSION):
         raise Refused("unsupported supervisor contract")
     if config.get("contract_version") == CONTRACT_VERSION and not config.get("lock_root"):
@@ -339,6 +352,14 @@ def assignment_paths(config, assignment):
 
 def assignment_budget(assignment):
     return assignment.get("budget") or resolve_budget({"training": {"max_optimizer_steps": 57600}})
+
+
+def control_repository(config):
+    """Route only supervisor processes; trainers retain the frozen root/repo."""
+    value = config.get("control_repo", str(Path(config["root"]) / "repo"))
+    if not isinstance(value, str) or not Path(value).is_absolute() or ".." in Path(value).parts:
+        raise Refused("control repository must be an absolute path without traversal")
+    return Path(value)
 
 
 def selected_profile(config, experiment, host):
@@ -473,7 +494,7 @@ class Transport:
 
     def call(self, host, request, timeout=30):
         config = self.config
-        command = [config["python"], str(Path(config["root"]) / "repo/scripts/supervise_pretrain.py"),
+        command = [config["python"], str(control_repository(config) / "scripts/supervise_pretrain.py"),
                    "--config", self.config_path, "rpc", "--host", host]
         if not is_local_host(config, host):
             command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
@@ -826,7 +847,7 @@ def launch_worker(config, config_path, host, assignment):
                 raise Refused("assignment token reused with different payload")
             return {"state": "already_dispatched", "token": assignment["token"]}
         atomic_json(control / "assignment.json", assignment)
-        command = [config["python"], str(Path(config["root"]) / "repo/scripts/supervise_pretrain.py"),
+        command = [config["python"], str(control_repository(config) / "scripts/supervise_pretrain.py"),
                    "--config", str(Path(config_path).resolve()), "worker", "--host", host,
                    "--assignment", str(control / "assignment.json")]
         # start_new_session is setsid; survival after logout is separately evidenced.
@@ -927,7 +948,9 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         safe_config = {key: config[key] for key in (
             "root", "python", "source_root", "label_root", "backup_root",
             "backbone_root", "manifest_sha256")}
-        safe_config.update({key: config[key] for key in ("contract_version", "profiles", "performance_configs", "lock_root") if key in config})
+        safe_config.update({key: config[key] for key in (
+            "contract_version", "profiles", "performance_configs", "lock_root",
+            "extra_authorized_gpus", "control_repo") if key in config})
         safe_config["hosts"] = {host: {key: value[key] for key in (
             "machine_id", "hostname", "ssh", "gpus") if key in value}
             for host, value in config["hosts"].items()}
