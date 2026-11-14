@@ -59,7 +59,7 @@
 | 公开预训练原始规格与历史配置 | [v3 固定配置、策略与边界](docs/CD009_PRETRAINING.md) · [原训练规格](docs/implementation/TRAINING.md) |
 | 缩短现有预训练耗时 | [优化全程与当前结果](docs/PERFORMANCE_HISTORY.md) · [P3 实施与接续](docs/PERFORMANCE_PHASE3.md) · [P2 历史反馈](docs/PERFORMANCE_PHASE2.md) · [H20 显存与 batch 可行性](docs/H20_BATCHSIZE_ANALYSIS.md) |
 | 当前正式训练配方与性能结果 | [选定配置并从头启动](docs/SELECTED_PRETRAINING_RECIPE.md) · [十二档补测结果](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md) · [接触头改动](docs/CONTACT_HEAD_OPTIMIZATION.md) |
-| 少量自有数据微调 | [微调接口与策略](docs/implementation/FINETUNING.md) |
+| 少量自有数据微调 | [数据准备方案评估与正确字段](docs/TARGET_FINETUNING_DATA_REVIEW.md) · [微调接口与策略](docs/implementation/FINETUNING.md) |
 | 消融、R20评价与目标验证 | [实验方案](docs/implementation/EXPERIMENTS.md) |
 
 可执行命令见[运行指南](docs/MODEL_USAGE.md)。完整预训练和两种微调配置已提供；可选派生数据 sidecar 转换与 residual uncertainty 仍未实现。
