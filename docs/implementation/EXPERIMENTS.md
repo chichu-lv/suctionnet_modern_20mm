@@ -2,6 +2,8 @@
 
 > 本文件规定实验，不提供未发生的结果。当前目标是先得到可用于少量自有场景微调的公开数据预训练权重。已有训练数据通过 [adapter](LEGACY_DATA_ADJUSTMENT.md) 直接复用；实验不要求重新制作整套标签。模型定义见 [MODEL.md](MODEL.md)，训练预算见 [TRAINING.md](TRAINING.md)。
 
+公开论文对照的公式、官方 API 口径及本项目 R20 指标的对应关系，见 [SuctionNet 方法对照与评价指标计算规范](../SUCTIONNET_COMPARISON_METRICS.md)。该文档汇总外部方法指标；本文件继续规定项目自身的 R20 实验。
+
 ## 1. 本轮要验证的问题
 
 1. GT-B 中加入 Wrench 后，是否改善同一 R20 最终姿态质量？

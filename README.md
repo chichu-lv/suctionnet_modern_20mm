@@ -8,6 +8,8 @@
 
 ## Done（已完成）
 
+- [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
+
 - [x] [E0–E5完整预训练与开发验证](docs/experiments/CD010-20261117/pretraining/REPORT.md)：每组230,400有效样本，合计100,800次成功更新与60个验证节点；E5 best step2880的Top-1为13.12%。E2已完成BF16 dense/FP32 sparse训练与原定开发验证。
 - [x] [E5目标微调与401帧配对推理](docs/experiments/CD010-20261117/finetuning/README.md)：1000次成功更新，任务评分在固定历史动作验证上改善；[独立分析及结果图](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)给出权重选择、收益与指标解释。
 
@@ -55,6 +57,7 @@
 | 内容 | 文档 |
 |---|---|
 | 最新预训练、微调与推理结果 | [完整实验数据](docs/experiments/CD010-20261117/README.md) · [独立分析与选模](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md) |
+| 公开方法对照与指标算法 | [四项 SuctionNet 方法、官方 AP 计算与 R20 对应](docs/SUCTIONNET_COMPARISON_METRICS.md) |
 | 论文式方法架构图 | [三子图总览、双语图注与代码对应](docs/METHOD_ARCHITECTURE.md) · [矢量 PDF](docs/figures/paper-architecture.pdf) · [可编辑 SVG](docs/figures/paper-architecture.svg) |
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
