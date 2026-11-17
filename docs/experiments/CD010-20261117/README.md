@@ -2,6 +2,8 @@
 
 本目录发布已完成实验的可分析记录（2026-11-17）。数据均来自保存的实验日志和预测，不重新训练、不重跑推理。
 
+**独立复核与模型选择：** [预训练、微调与401帧行为分析](analysis/RESULTS_ANALYSIS.md)，包含模块增益、E5 best选择、微调验证轨迹及配对动作变化；[结果总图](analysis/overview.png)。
+
 | 内容 | 记录规模 | 入口 |
 |---|---:|---|
 | E0–E5 正式预训练 | 100,800次成功更新，100,827次尝试；每组230,400样本 | [分析报告](pretraining/REPORT.md) · [文件索引](pretraining/README.md) |
@@ -41,3 +43,4 @@ JSONL逐行读取；[文件清单与SHA256](FILES.json)用于检查下载完整�
 
 
 训练逐步记录最终发布为 `pretraining/training_updates/E0.part01.csv` 等普通CSV分片（每片至多10,000行），共11片，合计100,827行，保留44列。候选表仍为gzip。`pretraining/EXPORT_MANIFEST.json`记录中间导出版本；最终发布路径、大小与哈希以顶层 `FILES.json` 为准。
+
