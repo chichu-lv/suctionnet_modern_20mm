@@ -1,0 +1,255 @@
+{
+  "schema_version": "suction20.finetune.v1",
+  "stage": "target_finetune",
+  "mode": "attempt_success",
+  "seed": 42,
+  "init_checkpoint": "${PRETRAIN_RUN}/runs/E5_seed42/best.pt",
+  "target_data": {
+    "manifest": "${FINETUNE_RUN}/data/manifest_attempt_success.jsonl",
+    "schema_version": "suction20.target.v1",
+    "split_field": "split",
+    "group_field": "group_id",
+    "train_sampler": "uniform_group_then_frame_or_attempt",
+    "label_kind": "attempt_success",
+    "success_definition": "completed_pick_and_transfer",
+    "missing_label_policy": "mask_false",
+    "anchor_feature": "source_index_else_same_instance_nearest_observation",
+    "nearest_observation_radius_m": 0.005,
+    "score_pose": "human_reviewed_published_planning_command",
+    "unmapped_attempt_policy": "skip_supervision_not_negative",
+    "pose_provenance": {
+      "pose_source": "planned_pipeline_contact",
+      "actual_execution_verified": false,
+      "gravity_source": "negative_shared_belt_plane_normal_approximation",
+      "success_definition": "completed_pick_and_transfer",
+      "notice": "Manually reviewed outcome linked to one published planning command; neither commanded pose nor numeric calibration is independently measured actual contact ground truth."
+    }
+  },
+  "source_replay": {
+    "enabled": true,
+    "source_root": "${SOURCE_RELEASE}/work/prepare/0000/2eeec9465e6c41f1b6284c0de808e58c/input_raw",
+    "label_root": "${SOURCE_RELEASE}/output",
+    "frozen_label_config": "${SOURCE_RELEASE}/output/config_frozen.json",
+    "camera": "realsense",
+    "source_format": "legacy_dc4ad6b",
+    "compatibility": "auto",
+    "legacy_producer": "dc4ad6b00535c89ece1feef2751ba86006e5f97e",
+    "adapter_read_only": true,
+    "adapter_cache": null,
+    "scene_split": "source_checkpoint_train_split",
+    "source_frames_per_optimizer_step": 2,
+    "scene_cache_size": 90,
+    "object_cache_size": 88
+  },
+  "model": {
+    "backbone": "spconv_resunet14",
+    "backbone_root": "${BACKBONE_ROOT}",
+    "checkpoint_dense": false,
+    "dense_chunk_size": 65536,
+    "group_samples": {
+      "approach": 32,
+      "core": 32,
+      "cup": 32,
+      "lip": 64,
+      "mount": 32
+    },
+    "instance_feature_dim": 128,
+    "name": "suction20net",
+    "normal_max_tilt_deg": 30.0,
+    "normal_parameterization": "tangent_residual",
+    "normal_target": "gt_normal_original_candidate_axis",
+    "physical_geometry_source": "frozen_label_config",
+    "point_feature_dim": 256,
+    "quality_target": "gt_B",
+    "seal_normalization_source": "frozen_label_config",
+    "seed_count": 512,
+    "use_aux_heads": true,
+    "use_contact_grouping": true,
+    "use_instance_fusion": true,
+    "use_task_success_head": true,
+    "voxel_size_m": 0.002,
+    "pose_chunk_size": 128
+  },
+  "loss": {
+    "target_loss": "attempted_pose_bce_with_logits",
+    "target_weight": 1.0,
+    "target_bce_pos_weight": 1.0,
+    "target_quality_proxy_supervision": false,
+    "target_normal_supervision": false,
+    "target_aux_component_supervision": false,
+    "proposal_q0_in_task_features": false,
+    "source_loss": "source_checkpoint_physical_losses",
+    "source_weight": 0.5,
+    "domain_reduction": "separate_target_and_source_means",
+    "microbatch_frame_weights": {
+      "target": 0.5,
+      "source": 0.25
+    },
+    "additional_divide_by_accumulation_steps": false
+  },
+  "optimizer": {
+    "name": "AdamW",
+    "create_fresh_on_init_checkpoint": true,
+    "weight_decay": 0.0001,
+    "no_weight_decay": [
+      "bias",
+      "normalization_parameters"
+    ],
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "grad_clip_norm": 10.0
+  },
+  "training": {
+    "max_optimizer_steps": 1000,
+    "target_frames_per_optimizer_step": 2,
+    "effective_batch_size": 4,
+    "world_size": 1,
+    "microbatch_size": 1,
+    "accumulated_microbatches_per_optimizer_step": 4,
+    "amp": true,
+    "encoder_frozen": true,
+    "bn_mode": "eval",
+    "bn_affine_trainable": false,
+    "phases": [
+      {
+        "name": "heads_only",
+        "start_optimizer_step": 0,
+        "end_optimizer_step_exclusive": 200,
+        "train_groups": [
+          "heads"
+        ],
+        "lr": {
+          "heads": 0.0003,
+          "decoder": 0.0
+        }
+      },
+      {
+        "name": "decoder_and_heads",
+        "start_optimizer_step": 200,
+        "end_optimizer_step_exclusive": 1000,
+        "train_groups": [
+          "decoder",
+          "heads"
+        ],
+        "lr": {
+          "heads": 0.0001,
+          "decoder": 1e-05
+        }
+      }
+    ],
+    "preserve_heads_optimizer_state_at_phase_change": true
+  },
+  "augmentation": {
+    "scale": false,
+    "yaw_about_gravity_deg": [
+      -180.0,
+      180.0
+    ],
+    "translation_in_table_plane_m": [
+      -0.02,
+      0.02
+    ],
+    "depth_noise_std_m": 0.0,
+    "point_dropout_fraction": [
+      0.0,
+      0.0
+    ],
+    "transform_explicit_pose_and_gravity": true
+  },
+  "validation": {
+    "evaluate_source_initialization": true,
+    "source_baseline_score": "q_at_recorded_planning_command_pose",
+    "finetuned_score": "task_success_at_recorded_planning_command_pose",
+    "every_optimizer_steps": 100,
+    "always_save_step_200": true,
+    "selection_metric": "attempt_AUROC",
+    "selection_mode": "max",
+    "report_metrics": [
+      "attempt_AUROC",
+      "attempt_PR_AUC",
+      "labeled_attempt_count",
+      "independent_GROUP01ount"
+    ],
+    "zero_shot_q_as_probability": false
+  },
+  "ranking": {
+    "final_score": "task_success_score",
+    "multiply_by_q": false,
+    "uncertainty_lambda": 0.0,
+    "postprocessing": "inherit_source_config"
+  },
+  "runtime": {
+    "cpu_threads": 8,
+    "gpu_memory_limit_gib": null,
+    "backbone_root": "${BACKBONE_ROOT}",
+    "performance": {
+      "fps_backend": "compiled",
+      "spatial_index": {
+        "backend": "uniform_grid_cpu",
+        "cell_size_m": 0.02
+      },
+      "contact_query_backend": "native_cpu",
+      "contact_feature_gather_mode": "zone",
+      "no_instance_voxel_heads": false,
+      "backbone_coordinate_fastpath": true,
+      "dense_chunk_size_override": 65536,
+      "chunk_input_mode": "split",
+      "geometry_threads": 8,
+      "geometry_precision": "float32",
+      "instance_broadcast_mode": "segment",
+      "compile_dense_heads": false,
+      "query_chunk_size": null,
+      "query_workers": 1,
+      "detailed_cpu_timing": false
+    }
+  },
+  "sampling_seed": 20261110,
+  "experiment": "E5",
+  "data": {
+    "enabled": true,
+    "source_root": "${SOURCE_RELEASE}/work/prepare/0000/2eeec9465e6c41f1b6284c0de808e58c/input_raw",
+    "label_root": "${SOURCE_RELEASE}/output",
+    "frozen_label_config": "${SOURCE_RELEASE}/output/config_frozen.json",
+    "camera": "realsense",
+    "source_format": "legacy_dc4ad6b",
+    "compatibility": "auto",
+    "legacy_producer": "dc4ad6b00535c89ece1feef2751ba86006e5f97e",
+    "adapter_read_only": true,
+    "adapter_cache": null,
+    "scene_split": "source_checkpoint_train_split",
+    "source_frames_per_optimizer_step": 2,
+    "scene_cache_size": 90,
+    "object_cache_size": 88
+  },
+  "source_loss": {
+    "reduction": "instance_mean_then_frame_mean_then_batch_mean",
+    "smooth_l1_beta": 0.05,
+    "weights": {
+      "collision_free": 0.1,
+      "normal": 2.0,
+      "q": 1.0,
+      "q0": 1.0,
+      "seal": 0.5,
+      "wrench": 0.25
+    }
+  },
+  "sampling": {
+    "grouping_axis": "detached_predicted_normal",
+    "high_A_threshold": 0.2,
+    "instance_balanced": true,
+    "main_fractions": {
+      "high_A": 0.25,
+      "low_A": 0.25,
+      "proposal": 0.5
+    },
+    "warmup_epochs": 2,
+    "warmup_fractions": {
+      "high_A": 0.5,
+      "low_A": 0.5,
+      "proposal": 0.0
+    }
+  }
+}

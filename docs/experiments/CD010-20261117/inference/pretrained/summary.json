@@ -1,0 +1,33 @@
+{
+  "frames": 401,
+  "errors": 0,
+  "frames_with_candidates": 401,
+  "frames_without_candidates": 0,
+  "checkpoint": "E5 best step2880",
+  "training": false,
+  "depth_scale_m": 0.001,
+  "gravity": "user_approved_negative_belt_normal_proxy",
+  "top1_q_predicted_quality_not_success_probability": {
+    "min": 0.0309600830078125,
+    "p10": 0.486572265625,
+    "median": 0.62451171875,
+    "p90": 0.7451171875,
+    "max": 0.873046875
+  },
+  "timing": {
+    "load_seconds": {
+      "total": 103.34787093894556,
+      "mean": 0.2577253639375201
+    },
+    "inference_seconds": {
+      "total": 157.41636383207515,
+      "mean": 0.3925595108031799
+    },
+    "total_seconds": {
+      "total": 294.06822506384924,
+      "mean": 0.7333372196105966
+    }
+  },
+  "historical_outcomes_are_not_labels_for_new_predictions": true,
+  "actual_execution_metrics_computed": false
+}

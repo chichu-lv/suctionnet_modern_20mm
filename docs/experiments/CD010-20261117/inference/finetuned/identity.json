@@ -1,0 +1,14 @@
+{
+  "schema_version": "suction20.target-finetuned.case.v1",
+  "checkpoint_sha256": "d55f1c2cda980ad0b874d14a267f834047794bf05dbb17bad3215026cd6bed18",
+  "checkpoint_step": 1000,
+  "checkpoint_stage": "target_finetune",
+  "target_mode": "attempt_success",
+  "ranking": {
+    "score_field": "task_success_score",
+    "proposal_score_field": "q0",
+    "score_semantics": "learned_completed_pick_and_transfer_score_not_calibrated_probability",
+    "physical_quality_field": "q",
+    "multiply_by_q": false
+  }
+}

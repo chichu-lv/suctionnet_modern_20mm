@@ -1,0 +1,175 @@
+{
+  "checked_at_unix": 1794883460.3770285,
+  "scope": "Read-only numeric export correspondence; no inference or training rerun",
+  "checks": {
+    "updates_count": {
+      "passed": true,
+      "details": {
+        "attempted": 1001,
+        "successful": 1000,
+        "skipped": 1
+      }
+    },
+    "updates_exact_source": {
+      "passed": true,
+      "details": null
+    },
+    "validation_exact_source": {
+      "passed": true,
+      "details": null
+    },
+    "validation_counts": {
+      "passed": true,
+      "details": {
+        "nodes": 11,
+        "steps": [
+          0,
+          100,
+          200,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          900,
+          1000
+        ],
+        "frames_each": [
+          399,
+          399,
+          399,
+          399,
+          399,
+          399,
+          399,
+          399,
+          399,
+          399,
+          399
+        ]
+      }
+    },
+    "updates_successful_sequence": {
+      "passed": true,
+      "details": null
+    },
+    "manifest_exclusions": {
+      "passed": true,
+      "details": {
+        "accepted": 2162,
+        "excluded": 629,
+        "splits": {
+          "train": 1676,
+          "test": 87,
+          "val": 399
+        }
+      }
+    },
+    "manifest_attempt_semantics": {
+      "passed": true,
+      "details": null
+    },
+    "exclusions_exact": {
+      "passed": true,
+      "details": null
+    },
+    "pretrained_candidate_all_values": {
+      "passed": true,
+      "details": {
+        "frames": 401,
+        "csv_rows": 205312,
+        "unique_pairs": 205312,
+        "expected_pairs": 205312,
+        "mismatches": [],
+        "comparison": "Every exported candidate field compared exactly with original JSON"
+      }
+    },
+    "pretrained_provenance_coverage": {
+      "passed": true,
+      "details": null
+    },
+    "pretrained_identity_sha": {
+      "passed": true,
+      "details": null
+    },
+    "finetuned_candidate_all_values": {
+      "passed": true,
+      "details": {
+        "frames": 401,
+        "csv_rows": 205312,
+        "unique_pairs": 205312,
+        "expected_pairs": 205312,
+        "mismatches": [],
+        "comparison": "Every exported candidate field compared exactly with original JSON"
+      }
+    },
+    "finetuned_provenance_coverage": {
+      "passed": true,
+      "details": null
+    },
+    "finetuned_identity_sha": {
+      "passed": true,
+      "details": null
+    },
+    "comparison_exact": {
+      "passed": true,
+      "details": {
+        "frames": {
+          "pretrained": 401,
+          "finetuned": 401
+        },
+        "original_poses": {
+          "pretrained": 382,
+          "finetuned": 382
+        },
+        "mismatches": []
+      }
+    },
+    "flat_table_counts": {
+      "passed": true,
+      "details": {
+        "inference_frames": 802,
+        "validation_frames": 4389,
+        "validation_nodes": 11,
+        "training_rows": 1001
+      }
+    },
+    "finetuning/training_updates.csv_exact_values": {
+      "passed": true,
+      "details": {
+        "rows": 1001,
+        "mismatches": []
+      }
+    },
+    "finetuning/validation_metrics.csv_exact_values": {
+      "passed": true,
+      "details": {
+        "rows": 11,
+        "mismatches": []
+      }
+    },
+    "finetuning/validation_frames.csv_exact_values": {
+      "passed": true,
+      "details": {
+        "rows": 4389,
+        "mismatches": []
+      }
+    },
+    "inference_frame_metrics_exact_values": {
+      "passed": true,
+      "details": {
+        "rows": 802,
+        "mismatches": []
+      }
+    }
+  },
+  "errors": [],
+  "notes": [
+    "All candidate numeric values checked, not a sample.",
+    "Original training records do not contain per-attempt validation logits or probability vectors; summary metrics and per-frame loss/counts are preserved, but exact ROC reconstruction is not possible from those historical validation logs alone.",
+    "source-logs/ is a staging input directory and must remain excluded from publication as instructed; checked numeric logs are under finetuning/logs/.",
+    "Inference ranks compare new proposed actions; original comparisons are planning-command geometric differences, not measured robot success."
+  ],
+  "passed": true
+}
