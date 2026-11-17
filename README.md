@@ -4,9 +4,12 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前正式采用配置（2026-11-13，北京时间）：** [十二档补测](docs/performance/CD010_BATCH_ACCUMULATION_RESULTS.md)全部完成，确认 **H20/E5：B4A12、有效batch48、zone128、depth2**；**L20：B1A12、有效batch12**，接触组使用zone128/depth2。两台代表模型实测2.887176与3.700548帧/s，较同轮旧配置分别提高17.60%和4.54%。按用户最新指令，六组都在新目录从step0重新训练，不接续旧checkpoint，不再补测。配置、预算和启动命令见[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)。**新六组已实际启动并全部产生成功更新**，旧有效batch8任务已停止。[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)包含冻结版本、启动命令、日志/模型位置及旧验证故障的兼容修复；完整训练和新定期验证尚未完成。
+**当前实验状态（2026-11-17，北京时间）：** E0–E5 六组从头预训练均已完成，每组230,400有效样本及10次固定开发验证。按预定Top-1主指标采用 **E5 best step2880**；由它初始化的真实场景微调也已完成，当前采用 **step1000**，固定399条历史规划动作验证AUROC由0.6215提高到0.7121。两模型各401帧新候选的推理记录已发布；它们尚不代表新策略实际吸取成功率。完整数据见[实验资料](docs/experiments/CD010-20261117/README.md)，模型选择、模块收益、微调轨迹和动作变化见[独立分析报告](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)。历史训练硬件配方与启动命令继续保留在[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)和[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)。
 
 ## Done（已完成）
+
+- [x] [E0–E5完整预训练与开发验证](docs/experiments/CD010-20261117/pretraining/REPORT.md)：每组230,400有效样本，合计100,800次成功更新与60个验证节点；E5 best step2880的Top-1为13.12%。E2已完成BF16 dense/FP32 sparse训练与原定开发验证。
+- [x] [E5目标微调与401帧配对推理](docs/experiments/CD010-20261117/finetuning/README.md)：1000次成功更新，任务评分在固定历史动作验证上改善；[独立分析及结果图](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)给出权重选择、收益与指标解释。
 
 - [x] 数据工程 G0–G2 的生成与检查代码；已有旧数据作为训练起点，保留冻结物理参数和 S/W/C/A/B 标签。
 - [x] 模型、预训练、微调与实验的 [详细规格和设计演进图](docs/implementation/README.md)。
@@ -39,12 +42,9 @@
 
 ## TODO（待完成）
 
-- [ ] 按[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)在新目录从头启动并完成六组预训练，各230,400有效样本。H20/E5为4,800更新、warmup240、每480更新验证；L20各组为19,200更新、warmup960、每1,920更新验证，均保留原定10节点。旧训练进度和短测模型不计入新预算。
-- [ ] 用最终选定设置记录长期吞吐与原定验证结果；已完成的资源/重叠短测和旧P3历史配对不重复，旧CD-009不再恢复。
-- [ ] 完成E2的BF16 dense/FP32 sparse新训练与原定验证；短程有限更新已通过，不据此推定完整训练收敛。
-- [ ] 按 [实验方案](docs/implementation/EXPERIMENTS.md) 比较验证指标与计算代价，选定用于迁移的 `gt_B` 模型；锁定方案后报告官方测试划分结果。
-- [ ] 用已有少量自有场景数据运行选中模型的 zero-shot 与对应监督模式微调，并在独立目标场景比较效果。
-- [ ] 进入业务执行阶段后，以相同动作参数完成正常工况效果比较。
+- [ ] 在已有87条未参与选模的有标签test历史动作上，对冻结的E5预训练best与微调best完成一次同动作评分比较；开发验证和401帧新候选推理已完成。
+- [ ] 按[原实验方案](docs/implementation/EXPERIMENTS.md)报告锁定模型的官方test_seen/test_similar/test_novel结果；本轮发布的是开发集结果。
+- [ ] 接入原定正常工况业务执行对比，以新动作的实际吸取和搬运结果判断部署收益。
 
 可选派生数据 sidecar 缓存与 residual uncertainty 工具尚未实现，仅在实际需要时安排，不是上述训练的前置条件。现有测试和短训练记录没有替代全量数据生产验收或真实场景效果实验。
 
@@ -54,6 +54,7 @@
 
 | 内容 | 文档 |
 |---|---|
+| 最新预训练、微调与推理结果 | [完整实验数据](docs/experiments/CD010-20261117/README.md) · [独立分析与选模](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md) |
 | 完整方法架构图 | [E5 总图、维度与监督路径](docs/METHOD_ARCHITECTURE.md) |
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
