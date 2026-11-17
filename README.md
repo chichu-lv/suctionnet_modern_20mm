@@ -13,7 +13,7 @@
 
 - [x] 数据工程 G0–G2 的生成与检查代码；已有旧数据作为训练起点，保留冻结物理参数和 S/W/C/A/B 标签。
 - [x] 模型、预训练、微调与实验的 [详细规格和设计演进图](docs/implementation/README.md)。
-- [x] [E5 方法架构图](docs/METHOD_ARCHITECTURE.md)：共享编码、实例融合、五区姿态评分、预训练/真实尝试微调/推理；提供 PNG、SVG、PDF 与绘图源代码。
+- [x] [论文式方法架构图](docs/METHOD_ARCHITECTURE.md)：点云与稀疏 U-Net、实例上下文、五区接触编码、物理/任务双评分，以及预训练与目标适配；提供横版 SVG、PDF、高清 PNG、双语图注和绘图源代码。
 - [x] 只读旧数据 adapter：恢复原候选轴、重建观测法向、区分质量与轴有效掩码，无需重制标签。
 - [x] E0–E5 模型与配置：稀疏主干、实例融合、五区接触特征、姿态与质量头及辅助监督。
 - [x] 预训练、checkpoint 保存与恢复、无标签推理、NMS 和按实际姿态重算的 R20 评价。
@@ -55,7 +55,7 @@
 | 内容 | 文档 |
 |---|---|
 | 最新预训练、微调与推理结果 | [完整实验数据](docs/experiments/CD010-20261117/README.md) · [独立分析与选模](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md) |
-| 完整方法架构图 | [E5 总图、维度与监督路径](docs/METHOD_ARCHITECTURE.md) |
+| 论文式方法架构图 | [三子图总览、双语图注与代码对应](docs/METHOD_ARCHITECTURE.md) · [矢量 PDF](docs/figures/paper-architecture.pdf) · [可编辑 SVG](docs/figures/paper-architecture.svg) |
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
