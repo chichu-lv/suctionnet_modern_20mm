@@ -2,6 +2,8 @@
 
 本页固定 v3 设计配方（物理质量仍为v2）、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
 
+本文90/10训练、best选模、实例Top1和Top5/NMS描述属于native开发/部署模式。[公开方法对照](PUBLIC_METHOD_COMPARISON.md)另用public20：开发冻结后从头100场景source-only训练、固定预算last、全场景候选导出及sn-paper-radius-v1六指标；三种前端/工作区profile分别登记。本页native规则不覆盖该公开评价出口。
+
 ## 1 当前可执行范围
 
 | 项目 | 本次状态 | 执行条件 |
@@ -229,7 +231,7 @@ contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。�
 |---|---|---|
 | 单实例含目标自碰质量 | `InstTop1_INST20@0.4` | 原始实例总数、无输出率、所选Q_inst均值；另报SW及self比例 |
 | 候选生成/选择 | `Coverage_INST20@256` 与有好候选时Top1选中率 | eligible像素、首轮/回填数、回填轮次、实际K、支持过滤前后、NMS前后；不以无输出率替代质量覆盖 |
-| 公共方法比较 | 既有官方R10与原项目R20六指标 | 重新使用各协议完整评价与后处理；不把新INST或SW填入原Q20 AP表 |
+| 公共方法比较 | [sn-paper-radius-v1](PUBLIC_METHOD_COMPARISON.md)六指标；本方法R20对论文参考，必要时同预测R10附表 | 完整场景、预测分割、100场景source-only、匹配工作区；不调用旧项目R20或INST当官方AP |
 | 历史动作成败 | AUROC、AP、BCE、Brier | 总动作数、有效数、正负数、逐动作分数；BCE/Brier只针对task概率 |
 | 部署成本 | model-only及instance端到端p50/p95 | 硬件、dtype、原始点数、候选数、拷贝、预处理和NMS范围 |
 

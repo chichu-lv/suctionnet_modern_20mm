@@ -8,6 +8,8 @@
 
 完整[架构图说明、双语图注和维度表](../METHOD_ARCHITECTURE_B.md)；下载 [SVG](../../figures/instance-route-b-architecture.svg)、[PDF](../../figures/instance-route-b-architecture.pdf)、[PNG](../../figures/instance-route-b-architecture.png)。
 
+公开验证入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [统一公开协议](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。使用独立public20评分权重和三种匹配的前端/工作区推理身份；论文数值已填，本方法结果待测。
+
 ## 1. 六部分阅读顺序
 
 | 顺序 | 文档 | 实施者应得到的结果 |
