@@ -35,6 +35,8 @@ def main(argv=None):
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--backbone-root', type=Path, help='Pinned external SpConv backbone directory; route A only')
+    parser.add_argument('--query-chunk-size', type=int,
+                        help='Override query batching only: A query_chunk_size / B query_chunk')
     parser.add_argument('--split', choices=['train', 'val', 'test'], default='test',
                         help='Source: train/test with full query labels; target: train/val/test')
     parser.add_argument('--allow-partial-manifests', action='store_true',
@@ -44,9 +46,14 @@ def main(argv=None):
         parser.error('The source protocol has 100 train scenes and 90 test scenes, with no val split')
     if args.domain == 'target' and args.allow_partial_manifests:
         parser.error('--allow-partial-manifests describes source scene coverage only')
+    if args.query_chunk_size is not None and args.query_chunk_size < 1:
+        parser.error('--query-chunk-size must be positive')
 
+    runtime_options = {'backbone_root': args.backbone_root}
+    if args.query_chunk_size is not None:
+        runtime_options['query_chunk_size'] = args.query_chunk_size
     model, metadata = load_instance_checkpoint(args.checkpoint, device=args.device,
-                                              backbone_root=args.backbone_root)
+                                              **runtime_options)
     if args.backbone_root is not None and metadata['route'] != 'a':
         raise ValueError('--backbone-root is only valid for route A')
     if args.domain == 'source':

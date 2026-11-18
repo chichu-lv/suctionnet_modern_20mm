@@ -11,7 +11,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from suction20.instance_data import build_source_instances, merge_source_manifests, source_scene_ids
+from suction20.instance_data import (build_source_instances, _merge_source_manifests,
+    source_scene_ids, source_build_output, source_output_lock)
 
 
 def _range(value):
@@ -37,8 +38,10 @@ def main(argv=None):
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--camera', choices=('realsense', 'kinect'), default='realsense')
     parser.add_argument('--split', choices=('train', 'test', 'all'), default='all')
-    parser.add_argument('--scenes', type=_range, help='Optional explicit shard; summary marks it partial')
-    parser.add_argument('--frames', type=_range, help='Optional explicit views; complete default is 0-255')
+    parser.add_argument('--scenes', type=_range,
+                        help='Explicit scene IDs; writes a scoped subdirectory below output/shards/')
+    parser.add_argument('--frames', type=_range,
+                        help='Explicit views; writes a scoped subdirectory, complete default is 0-255')
     parser.add_argument('--train-queries', type=int, default=128)
     parser.add_argument('--instance-mask-root', type=Path,
                         help='Required row-index masks if a scene repeats the same object class')
@@ -67,18 +70,23 @@ def main(argv=None):
         if not scenes:
             parser.error('parallel builds require at least one scene')
         workers = min(args.workers, len(scenes))
-        # Spawn keeps inherited spatial-index/library state out of workers.
-        with ProcessPoolExecutor(max_workers=workers,
-                mp_context=multiprocessing.get_context('spawn')) as pool:
-            jobs = [pool.submit(build_source_instances, args.dataset_root, args.label_root,
-                        args.output/'shards'/f'part_{i:04d}', scenes=scenes[i::workers], **options)
-                    for i in range(workers)]
-            manifests = [job.result()[0] for job in jobs]
-        partial = (set(scenes) != set(source_scene_ids(args.split)) or
-                   (args.frames is not None and set(args.frames) != set(range(256))))
-        path, summary = merge_source_manifests(manifests, args.output,
-            split=args.split, allow_partial=partial)
-    print(json.dumps({'manifest': str(path), **summary}, ensure_ascii=False, indent=2))
+        destination = source_build_output(args.output, split=args.split, camera=args.camera,
+            scenes=args.scenes, frames=args.frames)
+        # A concurrent invocation of the same request must fail before writing
+        # any worker output. Independent explicit requests use different roots.
+        with source_output_lock(destination):
+            # Spawn keeps inherited spatial-index/library state out of workers.
+            with ProcessPoolExecutor(max_workers=workers,
+                    mp_context=multiprocessing.get_context('spawn')) as pool:
+                jobs = [pool.submit(build_source_instances, args.dataset_root, args.label_root,
+                            destination/'shards'/f'part_{i:04d}', scenes=scenes[i::workers], **options)
+                        for i in range(workers)]
+                manifests = [job.result()[0] for job in jobs]
+            partial = (set(scenes) != set(source_scene_ids(args.split)) or
+                       (args.frames is not None and set(args.frames) != set(range(256))))
+            path, summary = _merge_source_manifests(manifests, destination,
+                split=args.split, allow_partial=partial)
+    print(json.dumps({**summary, 'manifest': str(path.resolve())}, ensure_ascii=False, indent=2))
     return 0
 
 

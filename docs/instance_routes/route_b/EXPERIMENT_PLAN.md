@@ -8,7 +8,7 @@ B模型及共同训练/推理链路已实现，实际网络CPU前向、反向和
 |---|---|
 | 源训练 | scene 0–99全部100场景、全部256视角可抽样；从头训练，不再90/10开发后final refit |
 | 预算 | 140000个成功受监督实例、8750次成功更新；128-query训练前缀 |
-| best选择 | 每1750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
+| best选择 | 第4375、8750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
 | 成绩身份 | `test_selected` / `independent_test_estimate=false`；源test只评价、不反传，但已参与模型选择 |
 | 目标域 | 1676 train、399 val选best、87 test冻结后评价；保留既有group和规划动作语义 |
 | 本轮评价 | INST20实例Top1/selected-Q/coverage，以及目标固定动作AUROC/AP/BCE/Brier |

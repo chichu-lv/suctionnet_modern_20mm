@@ -1,6 +1,9 @@
 """Real-format synthetic assets exercise the actual instance data/teacher path."""
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -13,6 +16,7 @@ from suction20.full_data import DEFAULT_CONFIG, collision_mask_for_instance, tra
 from suction20.instance_data import (InstanceAttemptDataset, InstanceDataset, build_source_instances,
     load_observation, save_observation, source_scene_ids, source_split,
     merge_source_manifests, _save_npz)
+from suction20.instance_data import source_build_output, source_output_lock
 from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M, prepare_instance, stratified_queries_refill
 from suction20.instance_teacher import InstanceTeacher, empty_labels, validate_labels
 
@@ -453,3 +457,116 @@ def test_merge_keeps_explicit_empty_gt_frames(tmp_path):
     manifest,summary=merge_source_manifests([source],tmp_path/'merged',split='test',allow_partial=True)
     assert manifest.read_text()==''
     assert summary['empty_gt_frames']==[[100,0]] and summary['frame_count']==1
+
+
+def test_explicit_selection_namespace_is_stable_readable_and_bounded(tmp_path):
+    expected = tmp_path/'shards/realsense/train/scenes_0000-0009/frames_0000-0255'
+    assert source_build_output(tmp_path, split='train', scenes=range(10)) == expected
+    assert source_build_output(tmp_path, split='train', scenes=reversed(range(10))) == expected
+    assert source_build_output(tmp_path, split='train') == tmp_path
+    assert source_build_output(tmp_path, split='test', camera='kinect') == tmp_path
+    assert source_build_output(tmp_path, split='train', frames=[0]) != expected
+    scattered = source_build_output(tmp_path, split='all', scenes=range(0, 190, 2), frames=range(0, 256, 2))
+    assert all(len(part.encode()) <= 180 for part in scattered.relative_to(tmp_path).parts)
+    assert scattered != source_build_output(tmp_path, split='all', scenes=range(1, 190, 2), frames=range(0, 256, 2))
+    with pytest.raises(ValueError, match='nonempty'):
+        source_build_output(tmp_path, split='train', scenes=[])
+
+
+def _build_command(root, release, output, scene, *, workers=1):
+    script = Path(__file__).resolve().parents[1]/'scripts/build_instance_dataset.py'
+    return [sys.executable, str(script), '--dataset-root', str(root), '--label-root', str(release),
+            '--output', str(output), '--split', 'train', '--scenes', str(scene), '--frames', '0',
+            '--train-queries', '8', '--workers', str(workers)]
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+def test_manual_cli_shards_share_output_without_overwriting_and_merge(tmp_path, parallel):
+    root, release, _ = _assets(tmp_path/'first', scene_id=0)
+    other, _, _ = _assets(tmp_path/'second', scene_id=1)
+    shutil.copytree(other/'scenes/scene_0001', root/'scenes/scene_0001')
+    output = tmp_path/'shared-output'
+    output.mkdir()
+    # A previously published root manifest must not be touched by explicit
+    # subsets; neither caller is authorized to replace that publication.
+    original = output/'manifest_train.jsonl'
+    original.write_text('previous full publication\n')
+    commands = [_build_command(root, release, output, scene) for scene in (0, 1)]
+    if parallel:
+        children = [subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    for command in commands]
+        results = []
+        try:
+            for child in children:
+                stdout, stderr = child.communicate(timeout=30)
+                assert child.returncode == 0, stderr
+                results.append(json.loads(stdout))
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill(); child.wait()
+    else:
+        results = []
+        for command in commands:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            assert completed.returncode == 0, completed.stderr
+            results.append(json.loads(completed.stdout))
+    manifests = [Path(result['manifest']) for result in results]
+    assert len(set(manifests)) == 2
+    assert original.read_text() == 'previous full publication\n'
+    for scene, manifest in enumerate(manifests):
+        assert manifest == source_build_output(output, split='train', scenes=[scene], frames=[0])/'manifest_train.jsonl'
+        row = json.loads(manifest.read_text())
+        assert row['scene_id'] == scene and (manifest.parent/row['observation_npz']).is_file()
+    merged, summary = merge_source_manifests(manifests, tmp_path/'merged', split='train', allow_partial=True)
+    assert summary['frame_count'] == 2 and summary['visible_instance_count'] == 2
+    data = InstanceDataset(merged, training_queries=8)
+    assert len(data) == 2 and all(data[i]['record']['has_supervision'] for i in range(2))
+    snapshot = merged.read_bytes(), merged.with_suffix('.summary.json').read_bytes()
+    with pytest.raises(ValueError, match='reduced/different frame coverage'):
+        merge_source_manifests(manifests[:1], merged.parent, split='train', allow_partial=True)
+    assert (merged.read_bytes(), merged.with_suffix('.summary.json').read_bytes()) == snapshot
+
+
+def test_same_shard_writer_refuses_concurrent_cli_and_releases_lock(tmp_path):
+    root, release, _ = _assets(tmp_path)
+    output = tmp_path/'cache'
+    destination = source_build_output(output, split='train', scenes=[0], frames=[0])
+    command = _build_command(root, release, output, 0)
+    with source_output_lock(destination):
+        child = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert child.returncode != 0 and 'already being written' in child.stderr
+        assert not (destination/'manifest_train.jsonl').exists()
+    child = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
+    assert Path(json.loads(child.stdout)['manifest']).is_file()
+    lock = destination/'.instance-build.lock'
+    first_inode = lock.stat().st_ino
+    with source_output_lock(destination):
+        pass
+    assert lock.stat().st_ino == first_inode
+
+
+def test_workers_cli_uses_scoped_output_and_preserves_parent_manifest(tmp_path):
+    root, release, _ = _assets(tmp_path/'first', scene_id=0)
+    other, _, _ = _assets(tmp_path/'second', scene_id=1)
+    shutil.copytree(other/'scenes/scene_0001', root/'scenes/scene_0001')
+    output = tmp_path/'cache'
+    output.mkdir()
+    (output/'manifest_train.jsonl').write_text('previous full publication\n')
+    child = subprocess.run(_build_command(root, release, output, '0-1', workers=2),
+                           capture_output=True, text=True, timeout=45)
+    assert child.returncode == 0, child.stderr
+    report = json.loads(child.stdout)
+    manifest = Path(report['manifest'])
+    assert manifest == source_build_output(output, split='train', scenes=[0, 1], frames=[0])/'manifest_train.jsonl'
+    assert report['frame_count'] == 2 and len(InstanceDataset(manifest, training_queries=8)) == 2
+    assert (output/'manifest_train.jsonl').read_text() == 'previous full publication\n'
+
+
+def test_full_output_cannot_change_camera_before_reading_assets(tmp_path):
+    output = tmp_path/'cache'
+    output.mkdir()
+    (output/'manifest_train.summary.json').write_text(json.dumps({'camera': 'realsense', 'split': 'train'}))
+    with pytest.raises(ValueError, match='another camera/split'):
+        build_source_instances(tmp_path/'unused', None, output, split='train', camera='kinect', with_labels=False)

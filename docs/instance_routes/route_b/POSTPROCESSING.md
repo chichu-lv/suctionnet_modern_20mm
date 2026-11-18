@@ -12,7 +12,13 @@
 
 首先核验实例编码、p/n/坐标合法性和共同中心支持。canonical使用原像素深度及合法观测轴；历史动作使用记录轴与≤5mm同实例支持锚点。失效记录保留原因，不吸附或翻轴。query几何有效、环槽接触有效、teacher label有效、任务outcome有效是不同字段，不能复用一个bool。
 
-模型输出NaN/Inf属于数值错误，应记录并排除该次输出；全无合法query时返回 `no_pose`。单个环或全部接触槽无支持时，模型内部遵循全零接触特征加显式摘要合同，不能在此擅自将其改成Seal=0或成功概率0。默认不要求某个覆盖率才能参与排序；若未来启用支持过滤，须独立登记配置并重测覆盖/失效率。
+先读取`query_valid`，只对True槽位检查p/n数值、归一化法向和调用`score_at_pose`。False槽位允许零法向等占位值，跳过评分并按原`query_id`写入`rejected_queries`，原因为`ineligible_query`。过滤只压缩执行数组，不重新编号：输出`query_id`、`source_point_id`及环支持诊断按原行映射，不能错配到邻近合法query。
+
+输入结构合法后，支撑点不足`getattr(model, 'min_support_points', 100)`时优先返回`status=no_pose, reason=insufficient_support`，包括空候选或全部无效的情况。当前B没有可配置的`min_support_points`构造器参数，使用100点门槛；支撑足够但没有有效query才返回`reason=no_eligible_queries`。有效槽位的非法p/n、模型输出NaN/Inf或错形状仍显式报错，运行数值错误不作为合法`no_pose`吞掉。
+
+单个环或全部接触槽无支持时，模型内部遵循全零接触特征加显式摘要合同，不能在此擅自将其改成Seal=0或成功概率0。默认不要求某个覆盖率才能参与排序；若未来启用支持过滤，须独立登记配置并重测覆盖/失效率。
+
+源评价、目标动作评价和`infer_instance`均在进入前保存每个模块的`.training`，评分期间设eval，正常返回或异常退出后直接恢复每层原值。B虽不使用BN，仍保留原始混合模式；共用入口也保证A微调中冻结的BN不会被根模块`train(True)`翻回训练态。
 
 ## 2. 阶段决定排名分数
 
@@ -72,7 +78,7 @@ $$T_{base,TCP}=T_{base,cam}\,T_{cam,contact}\,T_{contact,TCP}.$$
 
 ## 7. 验收出口
 
-必须验证稳定同分、严格NMS边界、有向轴反向区别、空query/no_pose、全空环有限值、评分p/n到输出原值一致、SE(3)手性、标定组合顺序和导出profile。默认不用新增概率门槛“清理”难例。后续真实部署以固定版本的输出日志证明效果和延迟，当前2–5ms仍只是工程目标。
+必须验证稳定同分、严格NMS边界、有向轴反向区别、空query/no_pose、全空环有限值、评分p/n到输出原值一致、SE(3)手性、标定组合顺序和导出profile。原生推理回归还覆盖无效零法向槽位的原ID/环诊断对齐、支撑不足原因优先级，以及正常/异常退出的逐模块模式保持。默认不用新增概率门槛“清理”难例。后续真实部署以固定版本的输出日志证明效果和延迟，当前2–5ms仍只是工程目标。
 
 ## 8. 公开比较导出与半径评价：待定
 
@@ -106,3 +112,7 @@ python scripts/evaluate_instance.py --checkpoint /data/runs/b_target/best.pt --m
 ```
 
 源评价要求完整最多256候选的精确姿态标签；train缓存默认前128标签不能直接充当完整候选评价缓存。source partial检查须显式 `--allow-partial-manifests` 并记录其非正式身份。目标评价要求finetune checkpoint，不能用随机task头冒充概率模型。报告保存checkpoint选模来源、数据身份、完整分母/排除原因和 `public_evaluation.status=deferred`，这些命令不计算论文表中的公开AP。
+
+`infer_instance.py`和`evaluate_instance.py`均支持正整数`--query-chunk-size`，与`train_instance.py`同名；对B映射为`model.query_chunk`，不指定时沿用checkpoint，构造器默认64。可在上述命令后附加`--query-chunk-size 32`控制执行内存，不改变候选预算、phase语义或权重结构；B不接受`--backbone-root`。
+
+加载先核验checkpoint保存配置与已有`config_definition`自洽，以及路线/阶段、质量、预处理和选模身份，再在副本上覆盖chunk，以`strict=True`加载权重。原checkpoint配置不改写，输出`model_compatibility`保存`semantic_model`、`checkpoint_execution`、`runtime_execution`。B的`phase_seed`、`training_phase`和其他结构/几何选项不属于执行覆盖；新微调初始化与普通resume的不同兼容性要求见[训练方案](TRAINING_PLAN.md)。普通resume仍检查完整配置，不能借推理chunk覆盖绕过。A另外允许固定骨干的挂载路径覆盖，且A训练遇到未填写的`backbone_root: null`会在读取manifest前报错。

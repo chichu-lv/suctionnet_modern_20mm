@@ -1,6 +1,18 @@
 # 模型验证与当前训练状态
 
-## 2026-11-18 CPU 热路径、状态恢复与无内容校验和修复
+## 2026-11-18 全量运行前的评价、分片与初始化边界修复
+
+本轮将A/B默认source选模计划改为第 **4375、8750** 个成功更新节点，每次仍遍历完整90测试场景×256帧；100训练场景、140000成功实例/8750更新、每875步保存last及目标域val选模口径保持原样。显式 `evaluation_steps` 与旧 `evaluate_every` 二选一，最终预算步必评，暂停不新增节点。报告保存实际评价节点、清单范围和 `timing.wall_seconds/observations`；耗时不包含随后的checkpoint保存。best仅从两个评价节点选择，可能错过中间峰值。按此前五次全量评价计算，减少60%的遍历次数；尚未测得完整真实数据的墙钟节省比例。
+
+手工 `--scenes/--frames` 构建现在在同一输出根下生成按camera/split/实际ID范围区分的可读目录，观测、标签、manifest和summary一起隔离。无显式子集的完整构建路径保持不变。非阻塞OS锁限制同目录单writer；不同分片可并发；合并拒绝遗漏旧帧的覆盖发布。两个数据CLI输出实际manifest绝对路径。旧缓存仍可读取、合并，不自动搬迁，也不进行内容摘要计算。[路径与完整命令](instance_routes/IMPLEMENTATION.md#2-构建共同source缓存)
+
+FT初始化只放宽A的 `backbone_root/query_chunk_size` 和B的 `query_chunk`，其余模型字段、质量及数据合同继续比较；源checkpoint内部保存定义先验证自洽，权重严格加载，并记录源/目标执行设置。推理原有骨干路径覆盖保留，三个CLI新增统一 `--query-chunk-size`。同一运行的普通resume仍要求完整配置一致。[配置边界](instance_routes/IMPLEMENTATION.md#4-暂停恢复与身份检查)
+
+推理先过滤无效query，仅对有效行校验点/轴和评分，保留原始query/source ID及拒绝顺序；无效占位的零/NaN不再触发单位化异常。少支撑且无有效query统一返回 `insufficient_support`。正常与异常退出的逐子模块模式恢复继续保留，混合BN状态有实际回归覆盖。
+
+本轮最终本地A/B联合源码回归 **675 passed / 1 skipped（26.36s）**，命令为 `python -m pytest -q --ignore=tests/test_prefetch.py`。跳过项需要真实 `R20_RELEASE_ROOT`；本地已知受环境限制的多进程预取文件交由各分支GitHub完整CI，不修改测试或新增skip。新增针对性用例覆盖实际CLI同根目录串行/并发分片、同分片进程锁、workers与安全合并、路径/分块FT初始化、坏配置拒绝、三CLI接线、无效查询/原始ID映射，以及减少评价节点后的连续训练与暂停恢复状态一致性。全套包含60项禁止SHA-256的执行代码门禁。运行环境沿用Python3.12.14、PyTorch2.5.1+cpu、NumPy2.3.5；没有执行完整真实数据构建/训练、真实SpConv/GPU时延或机器人试验。
+
+## 2026-11-18 CPU 热路径、状态恢复与无内容校验和修复（上一轮）
 
 按项目要求，所有现行执行代码移除 SHA-256 计算与验证，旧元数据只读兼容且不重新输出；永久约束及回归门禁见 [NO_CONTENT_CHECKSUMS.md](NO_CONTENT_CHECKSUMS.md)。共同数据保留真实 schema、p/n、标签公式、物理定义、配置和 split/group/capture 检查。旧 pretrain 只核对仍可得的实际配置/运行字段；旧 target sampler 若仅有不可还原的观察 ID，明确不支持精确续训，可使用权重初始化新运行。
 

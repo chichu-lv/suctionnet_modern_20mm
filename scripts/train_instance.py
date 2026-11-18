@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from suction20.instance_data import InstanceDataset, InstanceAttemptDataset
+from suction20.instance_config import apply_model_runtime_overrides
 from suction20.instance_training import (InstanceTrainer, check_source_splits,
     create_instance_model, load_instance_config, seed_all)
 
@@ -24,6 +25,8 @@ def main(argv=None):
     parser.add_argument('--run-dir', required=True, type=Path)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--backbone-root', type=Path, help='Pinned external SpConv backbone directory for A')
+    parser.add_argument('--query-chunk-size', type=int,
+                        help='Query batching: A query_chunk_size / B query_chunk; resume must match its saved config')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--resume', type=Path)
     start.add_argument('--init-checkpoint', type=Path, help='Same-route pretrain checkpoint; finetune only')
@@ -33,10 +36,13 @@ def main(argv=None):
                         help='Pause at this successful update; preserves original budget identity for resume')
     args = parser.parse_args(argv)
     config = load_instance_config(args.config)
-    if args.backbone_root:
-        if config['route'] != 'a':
-            parser.error('--backbone-root is only valid for route A')
-        config['model']['backbone_root'] = str(args.backbone_root.resolve())
+    try:
+        config = apply_model_runtime_overrides(config, backbone_root=args.backbone_root,
+                                               query_chunk_size=args.query_chunk_size)
+    except ValueError as error:
+        parser.error(str(error))
+    if config['route'] == 'a' and config['model'].get('backbone_root') is None:
+        parser.error('Route A requires --backbone-root or model.backbone_root in the config')
     if args.stage == 'pretrain' and (args.target_manifest or args.init_checkpoint):
         parser.error('Source pretrain starts from scratch or strict resume; target data is not allowed')
     if args.stage == 'finetune' and (not args.target_manifest or not (args.init_checkpoint or args.resume)):

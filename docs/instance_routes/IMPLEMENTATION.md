@@ -50,17 +50,22 @@ python scripts/build_instance_dataset.py \
 
 产物为 `manifest_train.jsonl` / `manifest_test.jsonl`、同名 `.summary.json`、观测NPZ和标签NPZ。单进程缓存位于 `observations/`、`labels/`；多进程各自在 `shards/part_XXXX/` 写入，合并清单以相对路径引用这些文件。标签含S、W、SW、两种self及 `Q_inst=S*W*(1-C_self)`。当前manifest为v4，读取器同时接受旧v3；旧校验和字段直接忽略，不计算文件/数组校验和，不对文件内容作篡改检测保证。每份NPZ正常加载一次，继续检查结构、有限性、query原像素与p/n精确对应、标签公式及已知的小型物理配置。未知标签保持NaN和无效mask，不改写为0。
 
-`--workers 4` 将scene分配给4个独立进程；每进程构建自己的teacher和缓存，然后安全合并。默认 `--workers 1` 串行。多进程要求显式 `--split train` 或 `test`；不能让几个任务写同一个分片目录。也可以分别在不同机器/进程生成互不重叠的场景分片，再执行：
+`--workers 4` 将scene分配给4个独立进程；每进程构建自己的teacher和缓存，然后安全合并。默认 `--workers 1` 串行，多进程要求显式 `--split train` 或 `test`。不传 `--scenes/--frames` 时保留上述根目录manifest；只要显式传入其中一个参数，就按相机、split、实际scene/frame范围建立独立目录，观测、标签和清单都放入其中。即使显式列出完整范围，也遵循分片规则。CLI输出JSON的 `manifest` 字段给出实际绝对路径。
+
+以下两个构建命令可在同一输出根目录串行或分别启动并行执行，随后合并完整训练集：
 
 ```bash
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$LABEL_RELEASE" --output "$CACHE/train_parts/part_00" --split train --scenes 0-49
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$LABEL_RELEASE" --output "$CACHE/train_parts/part_01" --split train --scenes 50-99
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$LABEL_RELEASE" --output "$CACHE/train" --split train --camera realsense --scenes 0-49
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$LABEL_RELEASE" --output "$CACHE/train" --split train --camera realsense --scenes 50-99
 python scripts/merge_instance_manifests.py \
-  --manifests "$CACHE/train_parts/part_00/manifest_train.jsonl" "$CACHE/train_parts/part_01/manifest_train.jsonl" \
+  --manifests "$CACHE/train/shards/realsense/train/scenes_0000-0049/frames_0000-0255/manifest_train.jsonl" \
+              "$CACHE/train/shards/realsense/train/scenes_0050-0099/frames_0000-0255/manifest_train.jsonl" \
   --output "$CACHE/train" --split train
 ```
 
 合并器重新定位NPZ相对路径，拒绝重复帧/实例、跨split或相机、缺失文件、漏报帧、互相矛盾的空GT帧及已知物理配置冲突；默认要求该split的全部scene×256帧。无实例帧须由 `empty_gt_frames` 明确覆盖，合并summary保留这些帧。只有成本/接线检查才使用 `--allow-partial` 生成不完整合并，训练时另需 `--allow-partial-manifests`；它们不会将不完整数据伪装成正式完整集。
+
+同一分片或同一最终发布目录由非阻塞文件锁保护，第二个writer在写入前报错；不同分片独立写入。manifest/summary通过唯一临时文件原子替换。合并器拒绝用遗漏已有帧的结果覆盖已发布清单，因此串行后续分片也不会缩减既有覆盖。旧manifest仍可读取和合并，不自动搬迁旧缓存；分片路径直接编码ID范围，不计算内容摘要。
 
 当前builder按请求范围生成缓存，不宣称实现了全量异步/按需缓存服务。可先用 `--scenes 0 --frames 0 --train-queries 64` 做真实资产成本检查；相应清单被标记partial，正式训练默认拒绝。无标签推理缓存可用 `--without-labels`，不需要label-root。`--min-support-points` 默认100，写入观测/清单/summary；A的训练与评价实际读取 `model.min_support_points`（默认100）；B当前未暴露该构造参数，helper使用默认100，缓存中的 `trainable` 只是构建时诊断。少支持或无法向实例仍进入test清单并记no_pose；无GT实例帧单独登记在summary中。
 
@@ -89,9 +94,13 @@ python scripts/train_instance.py \
 
 默认FP32、每次1实例前向、累积16个有监督实例、8750次成功更新，即140000次成功监督实例暴露。先均匀scene、再均匀frame、再均匀实例；无有效监督的draw单独计数并重抽，不充当有效预算。AdamW、438步warmup、3e-4峰值、cosine至1e-5。RGB增强共享到整幅实例及support RGB，几何和标签不变。
 
-每1750步在完整90×256帧的可见实例上做native INST20评价，节点为1750、3500、5250、7000、8750，共5次；每875步保存 `last.pt` 进度。`best.pt`优先最大化 `InstTop1_INST20_at_0_4`，其次selected-Q的frame→scene宏平均，再取更早步；该test确实参与选模。评价器不会将缺文件、未求值的teacher标签或漏场景伪装成低质量。
+默认在成功更新第4375、8750步做两次native INST20评价，每次遍历完整90×256帧的可见实例；每875步保存 `last.pt` 进度。`best.pt`优先最大化 `InstTop1_INST20_at_0_4`，其次selected-Q的frame→scene宏平均，再取更早步；该test确实参与选模。评价器不会将缺文件、未求值的teacher标签或漏场景伪装成低质量。减少节点的代价是best仅从这两个checkpoint中选取，可能错过其它时刻的峰值。
 
-周期评价JSON仅保存指标与 `record_details`，不把全部实例明细重复缩进写入。默认 `evaluation_records: best_and_final` 在单次遍历时流式写临时 `.records.jsonl.gz`，只有更新best或到达最终步时保留，其他节点删除临时明细；这减少常驻内存和长期磁盘占用，仍会有一次临时压缩流写入。可选 `all` 保留所有明细，`none` 完全不写明细。完整90场景评价仍是5次，不以子集替代正式选模。
+YAML使用 `evaluation_steps: [4375, 8750]`；也支持旧配置的 `evaluate_every` 周期，两者不能同时指定。显式节点必须是升序、不重复且不超过总预算的正整数；无论使用哪种方式，原计划最终步都会纳入评价。`--stop-after` 不新增评价节点，恢复后继续原计划。小规模配置缩短 `steps` 时必须同步修改 `evaluation_steps`，例如 `steps: 2` 配 `[1, 2]`。运行政策记录实际节点与完整/partial清单范围。
+
+周期评价JSON仅保存指标、`record_details` 与耗时，不把全部实例明细重复缩进写入。默认 `evaluation_records: best_and_final` 在单次遍历时流式写临时 `.records.jsonl.gz`，只有更新best、重复评价当前best步或到达最终步时保留，其余删除临时明细；这减少常驻内存和长期磁盘占用，仍会有一次临时压缩流写入。可选 `all` 保留所有明细，`none` 完全不写明细。`timing.wall_seconds` 覆盖选择集前向、指标和明细处理，不含之后的checkpoint保存；`timing.observations` 记录本次实例数。
+
+若实际完整test有10万至11万个实例，两次评价的名义上限约为5120万至5632万次query，比训练的1792万次query多约2.86至3.14倍；这是按每实例256/128个query估算的工作量，不是实测耗时。共享编码、实际有效候选数、训练反向和I/O都会影响墙钟比例。相较此前五次全量评价，本默认减少60%的全量遍历次数，完整数据上的实际训练/评价耗时仍需记录。
 
 测试用于选模后的同集成绩带选择偏差，checkpoint和报告明确保留 `independent_test_estimate=false`、`paper_comparison_ready=false`。last的 `checkpoint_selection_role=budget_endpoint_or_progress` 与best区别保存，但同run已观察test的事实不被删除。
 
@@ -104,6 +113,10 @@ python scripts/train_instance.py \
 ```
 
 A使用自己的run目录并保留相同 `--backbone-root`。完整恢复模型、Adam状态、阶段、学习率、成功预算、数据采样器、RGB增强RNG，以及Python/NumPy/Torch/CUDA RNG。当前checkpoint按完整配置、route/stage、运行合同、已知物理/预处理定义、清单路径/数量与实际采样ID序列检查恢复兼容性；不读取文件字节来计算身份。不能改总预算后继续声称精确resume。A/B、旧E5和新架构不能混用。
+
+微调 `--init-checkpoint` 是新的运行：A允许更换 `model.backbone_root` 和 `model.query_chunk_size`，B允许更换 `model.query_chunk`。其余已知或未知model字段均参与严格语义比较；省略的已知构造默认值先补齐，网络权重仍以 `strict=True` 加载。先检查源checkpoint保存配置和 `config_definition` 自洽，再使用新运行的执行参数；来源记录保留源/目标执行设置。普通 `--resume` 继续比较完整配置，包含路径和分块设置。
+
+训练、推理、评价三条CLI统一提供 `--query-chunk-size N`，分别映射到A的 `query_chunk_size` 和B的 `query_chunk`；不传时使用配置原值。A的 `backbone_root: null` 是待提供的路径，须通过YAML或 `--backbone-root` 指定，训练CLI在加载大清单前就检查这一点。分块影响临时内存与执行形状，不能据此承诺跨GPU分块的浮点结果逐位相同。
 
 新teacher身份记录 `teacher_spec` 与完整小型 `physics` 字典；对象dense/Seal候选路径只记录出处，不证明文件内容版本相同。旧缓存没有结构化physics时记 `physics=null`，不使用旧校验和推断物理配置，也不因此要求全量重算teacher。双方physics都已知时直接比较；缺来源与缺标签是不同状态，p/n和标签数值检查始终执行。微调初始化记录源checkpoint路径、大小、best/last角色、step、选模政策和可读定义；该来源随checkpoint与推理报告保存。旧checkpoint的校验和不被验证，恢复仍须满足模型结构、配置、已有物理/预处理、样本数量与状态的兼容规则。旧调度器若只有不透明身份、没有实际语义ID序列，不能证明同长度清单没有被重排；新版保存实际序列，可直接核对顺序。
 
@@ -184,6 +197,8 @@ python scripts/evaluate_instance.py \
 
 默认source按q_inst、微调按task概率排序；显式 `--ranking mixed --alpha 0.5` 才使用混合分。排序分和概率分别保存。部署Top5执行方向敏感的10mm/15°双条件NMS；输出原始评分p/n和工具 `+Z=-n_out` 的接触SE(3)，不替换成邻近深度点，不暗中翻轴。空候选明确返回no_pose；读取/模型异常中止，不伪装空成功。
 
+`infer_instance` 先读取 `query_valid`，只校验和单位化有效行，并只对这些行调用评分；无效槽位可含零/NaN占位，输出以原始query/source ID记录拒绝原因，不将占位数值写入JSON。有效行的非有限坐标或零法向仍是错误。支撑点少于模型门槛时，即使没有有效query，也统一报告 `insufficient_support`；支撑充分但全无效时报告 `no_eligible_queries`。正常或异常退出都恢复每个子模块原始training标志，保持微调BN冻结。
+
 source评价保留少支持/无输出实例的失败分母；所需teacher标签未求值时停止完整评价，旧physics来源未知则单独报告；target输出AUROC、分类AP、BCE、Brier及逐动作支持和实际执行验证标志。这两个入口都不计算公开论文AP，`public_evaluation.status`始终deferred。
 
 ## 7. 输出与验证范围
@@ -192,7 +207,7 @@ source评价保留少支持/无输出实例的失败分母；所需teacher标签
 |---|---|
 | `run_identity.json` | 完整配置、source/selection/target定义、运行合同版本、选择政策、初始化出处 |
 | `training.jsonl` | 成功步、域损失、梯度范数、学习率、样本与跳过预算 |
-| `evaluation_stepXXXXXX.json` | 选模指标、选择键/运行定义及 `record_details`，不内嵌records数组 |
+| `evaluation_stepXXXXXX.json` | 选模指标、选择键/节点/范围、`timing` 与 `record_details`，不内嵌records数组 |
 | `evaluation_stepXXXXXX.records.jsonl.gz` | 默认仅本次更新best或最终步保留的逐实例/动作明细 |
 | `best.pt` | 按相应source test或target val选出的完整状态 |
 | `last.pt` | 最近成功边界/预算终点的完整状态 |

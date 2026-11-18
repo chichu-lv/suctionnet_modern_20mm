@@ -95,11 +95,11 @@ $$
 | optimizer | AdamW，betas=(0.9,0.999)，eps=1e-8，weight_decay=0.01 |
 | 学习率 | peak=3e-4，warmup438次成功更新，之后cosine至1e-5 |
 | 首版训练精度 | 网络FP32；新几何正确性基线从原始深度/内参以float64构造XYZ/法向/canonical query/理想环并判边界；冻结teacher保留原算术 |
-| source test选模节点 | 1750、3500、5250、7000、8750，共5次，每次完整90×256帧可见实例 |
+| source test选模节点 | `evaluation_steps: [4375, 8750]`，共2次，每次完整90×256帧可见实例 |
 | 随机性 | Python/NumPy/Torch/CUDA和数据loader种子均固定并保存RNG |
 | 源域选模 | test上的 `InstTop1_INST20@0.4` 最大；再按selected-Q宏平均最大；仍并列则更早步；保存 `test_selected` 身份 |
 | 数据增强 | 每实例一致RGB jitter；灰度化概率0.2；首版不缩放米制几何 |
-| checkpoint | 每875成功步保存last.pt；best.pt按上述5次完整test结果更新，记录完整模型/优化器/采样器/RNG及定义 |
+| checkpoint | 每875成功步保存last.pt；best.pt按上述2次完整test结果更新，记录完整模型/优化器/采样器/RNG及定义 |
 | 评价明细 | `evaluation_records=best_and_final`；逐实例流式压缩为jsonl.gz，仅当次更新best或最终步保留 |
 
 RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固定 mean=(0.485,0.456,0.406)、std=(0.229,0.224,0.225)，invalid位置在归一化后再置零。A的raw支持与backbone点、B的全局与原分辨率纹理ROI共享同一个实例级光度变换。颜色增强不是对真实纹理特征有效性的先验保证。
@@ -110,7 +110,7 @@ RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固
 
 A支持点数的训练与评价门槛来自 `model.min_support_points`，默认100；B当前无该构造参数，helper仍使用默认100。`has_supervision` 只表示存在有效teacher标签，不替代可配置支持门槛。builder另保存 `--min-support-points` 和当时 `trainable/status` 作为准备诊断，修改模型阈值时不能继续硬编码100。目标动作5mm中心支持统一使用 `BOUNDARY_ROUNDOFF_M=1e-12 m` 的闭边界。
 
-每次选模仍覆盖完整90×256帧。`evaluation_stepXXXXXX.json` 只保存指标、选择键和 `record_details`；明细写入 `.records.jsonl.gz`，不将10万级记录列表同时驻留内存并缩进写入JSON。`best_and_final` 在遍历时写临时压缩流，评价后对非best且非final节点删除；`all` 保留所有节点，`none` 不写明细。此策略控制长期磁盘占用，不承诺省去完整评价的前向计算或所有临时写入。
+每次选模仍覆盖完整90×256帧，best仅从两个评价节点中选择，可能错过其它节点的峰值。`evaluation_steps` 与旧配置的 `evaluate_every` 二选一；最终预算步必评，提前 `--stop-after` 不新增评价。缩短steps进行接线测试时同步调整显式节点。`evaluation_stepXXXXXX.json` 保存指标、选择键、节点/范围、`timing` 和 `record_details`；耗时覆盖选择集前向、指标和明细处理，不含之后的checkpoint保存。明细写入 `.records.jsonl.gz`，不将10万级记录列表同时驻留内存并缩进写入JSON。`best_and_final` 在遍历时写临时压缩流，评价后对非best且非final节点删除；`all` 保留所有节点，`none` 不写明细。此策略控制长期磁盘占用，不承诺省去完整评价的前向计算或所有临时写入。
 
 旧E5的 `2880×48=138240` 是全场景有效观测，不是138240个单物体。新预算取140000是明确的新工程上限，不承诺为最优样本量。若有M个可训练实例观测，140000/M仅是曝光次数近似，不是shuffle-without-replacement意义的epoch；B也不承诺15–20epoch或数小时收敛。
 

@@ -39,8 +39,10 @@ $$L_{pre}=L_q+0.5\,SmoothL1_{\beta=.05}(\hat S,S_{20})
 | 优化器 | AdamW；betas=(0.9,0.999)，eps=1e-8，weight_decay=.01 |
 | 学习率 | peak3e-4；438次成功更新线性warmup，随后cosine至1e-5 |
 | 精度 | 网络FP32；原始几何构造及新接触判定float64；teacher保持冻结算术 |
-| 选模评价 | 成功步1750、3500、5250、7000、8750，共5次；每次完整source test，不抽帧 |
-| 保存 | test-selected best.pt；每875成功步保存last.pt，最终步记录预算完成；完整恢复状态 |
+| 选模评价 | `pretrain.evaluation_steps: [4375, 8750]`；预算50%和100%处共2次，每次完整source test，不抽帧 |
+| 保存 | test-selected best.pt；`pretrain.checkpoint_every: 875`，每875成功步保存last.pt，最终步记录预算完成；完整恢复状态 |
+
+完整test评价与恢复checkpoint保存使用独立节奏：保存last不触发额外评价，默认源阶段只在上述两个成功步比较best；微调仍每100成功步评价并保存。若另设源评价节点，`evaluation_steps`须为预算内严格递增的正整数列表，不能与`evaluate_every`同时配置；训练器始终将原预算终点纳入评价。节点和保存间隔进入运行配置，严格resume时保持一致。
 
 RGB jitter与灰度化遵循[预处理](PREPROCESSING.md)，同一实例的上下文/原生纹理使用同一光度参数。训练环phase由seed、样本身份、精确p/n字节的query身份和成功步确定抽取，与query顺序或chunk无关；仅改变观测特征采样，不改标签p/n。验证/推理phase=0。首版不缩放米制几何、不为query改轴后复制源标签。
 
@@ -74,6 +76,8 @@ $$L_{ft}=\frac{L_{t1}+L_{t2}}2+0.5\frac{L_{s1}+L_{s2}}2.$$
 
 B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每角16通道归一化并按原mask清零。阶段切换保留已有head的Adam moments，只加入/解冻既定参数组，不重建optimizer丢失状态。参数组名和完整成员列表写入checkpoint，不能照抄旧decoder/local-CNN名字。
 
+共同的源评价、目标动作评价与`infer_instance`入口逐模块保存`.training`，正常返回或异常退出均直接恢复每层原状态。即使根模块处于train、部分子模块处于eval，评价之后也保持原有组合；A冻结的BN不会被根模块`train(True)`意外重新启用，B同样保持各模块的原始模式。
+
 每100次成功更新评价固定399条val动作；AUROC最大选best，依次以BCE更低、更早步打破平局。保留总数、有效数、正负数和排除原因；单类分组AUROC标未定义。87条test在权重、排序、数据口径冻结后一次性使用。
 
 ## 5. 执行误差正则：默认关闭
@@ -85,6 +89,10 @@ B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每�
 ## 6. 恢复状态和训练准入验收
 
 checkpoint至少包含：模型类/版本、13/5通道输入、330融合及环门控/LN/summary合同、normal/sampler/precision与query/label精确ID、p/n对齐合同、INST/self配置、归一化/padding、精度/ranking、权重/优化器/scaler、成功步/监督实例/已消费draw、参数组、sampler/loader/RNG、源目标清单路径与采样ID序列，以及完整config_definition和显式runtime_contract。初始化与resume互斥；按模型/配置/已知physics/预处理和状态结构检查兼容性。旧校验和字段忽略，未知physics保留null，不计算文件或数组校验和，也不要求为迁移metadata重算全部teacher。
+
+`--init-checkpoint`用于开始新的微调运行：先检查源checkpoint配置与已有`identity.config_definition`自洽，再比较模型语义。B的`model`配置仅允许执行分块`query_chunk`不同；`phase_seed`、`training_phase`及其他结构/几何参数仍严格匹配，路线、质量、数据/teacher合同不放宽，权重使用`strict=True`加载。路线A的执行例外是`backbone_root`和`query_chunk_size`，其点采样、几何和BN策略仍严格匹配；B不接受`backbone_root`，也不能用A权重初始化。不能先覆盖执行字段再忽略源配置矛盾。
+
+微调初始化在`model_compatibility`中记录`semantic_model`、`source_execution`及`target_execution`。普通`--resume`继续要求完整配置相等，包含chunk、phase、评价节点及保存间隔，并恢复优化器、采样和RNG；新微调允许的chunk变化不扩展到同一次运行的resume。已省略的模型参数按实际构造器默认值参与语义比对，未知新增参数也保留在比较中。
 
 运行配置校验 `instance_runtime_v1`、route=b、source scene范围和 `public_evaluation.status=deferred`。CLI支持严格resume和finetune初始化，参数见第7节；不通过旧E5参数或替换文件名绕过模型/数据身份。
 
@@ -99,6 +107,8 @@ python scripts/train_instance.py --config configs/instance_b.yaml --stage pretra
 ```
 
 首轮不传 `--init-checkpoint`，也不传目标域数据。`--device cpu` 使用相同模型和几何合同，不能由CPU短测推定GPU时延。完整运行默认8750成功更新；140000是实际有监督实例暴露预算，不是100场景全帧的epoch计数。
+
+`train_instance.py`、`infer_instance.py`、`evaluate_instance.py`统一支持正整数`--query-chunk-size`；对B映射为`model.query_chunk`，默认64，例如附加`--query-chunk-size 32`可减小查询分块。新微调初始化或独立推理/评价可改变这一执行选项，候选池、监督query数、phase规则及权重结构不随之改变。训练覆盖值写入新运行配置，后续`--resume`必须保持相同实际chunk；不据此声称不同设备或分块具有逐位相同的浮点结果。B无需也不接受`--backbone-root`；A训练则要求该参数或配置中的实际路径，`null`在读取manifest前明确报错。
 
 暂停和严格恢复使用同一运行目录、同一配置和数据身份：
 

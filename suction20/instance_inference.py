@@ -38,7 +38,7 @@ def _numpy(value):
     return np.asarray(value)
 
 
-def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
+def load_instance_checkpoint(path, device='cpu', *, backbone_root=None, query_chunk_size=None):
     """Load this project's own full training checkpoint, with strict weights.
 
     Training checkpoints contain RNG and optimizer data as well as tensors;
@@ -46,6 +46,8 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
     checkpoint produced by ``train_instance.py``. A relocated A backbone is
     still checked against the wrapper's pinned source blobs when constructed.
     """
+    from .instance_config import (apply_model_runtime_overrides, model_execution_options,
+                                  semantic_model_config, validate_saved_config_definition)
     path = Path(path)
     state = torch.load(path, map_location='cpu', weights_only=False)
     if not isinstance(state, dict) or state.get('schema') != CHECKPOINT_SCHEMA:
@@ -63,8 +65,7 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
         raise ValueError('Checkpoint INST20 quality contract mismatch')
     if identity.get('route') != route or identity.get('stage') != stage:
         raise ValueError('Checkpoint route/stage identity mismatch')
-    if 'config_definition' in identity and clean_metadata(identity['config_definition']) != clean_metadata(config):
-        raise ValueError('Checkpoint config definition mismatch')
+    validate_saved_config_definition(config, identity)
     source_identity = identity.get('source', {}).get('data_identity', {})
     expected_preprocessing = {'normal_spec': NORMAL_SPEC, 'sampler_spec': SAMPLER_SPEC,
                               'precision_spec': PRECISION_SPEC, 'quality_contract': QUALITY_CONTRACT}
@@ -96,11 +97,8 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
     if not isinstance(state.get('model'), dict):
         raise ValueError('Checkpoint is missing model weights')
 
-    runtime_config = deepcopy(config)
-    if backbone_root is not None:
-        if route != 'a':
-            raise ValueError('backbone_root override is only valid for route A')
-        runtime_config.setdefault('model', {})['backbone_root'] = str(Path(backbone_root).resolve())
+    runtime_config = apply_model_runtime_overrides(config, backbone_root=backbone_root,
+                                                    query_chunk_size=query_chunk_size)
     model = create_instance_model(runtime_config, device=device)
     model.load_state_dict(state['model'], strict=True)
     model.eval()
@@ -115,6 +113,11 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
         'initialization': clean_metadata(state.get('initialization')),
         'public_evaluation': deepcopy(PUBLIC_EVALUATION),
         'runtime_model_config': runtime_config.get('model', {}),
+        'model_compatibility': {
+            'semantic_model': semantic_model_config(route, config.get('model', {})),
+            'checkpoint_execution': model_execution_options(route, config.get('model', {})),
+            'runtime_execution': model_execution_options(route, runtime_config.get('model', {})),
+        },
         'architecture': architecture,
     }
     return model, metadata
@@ -250,6 +253,8 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
 
     ``no_pose`` describes an observed lack of candidates/support. Malformed
     model outputs raise instead of silently becoming a successful empty frame.
+    Explicitly ineligible input slots are recorded but never sent to the scorer;
+    their point/normal placeholders do not affect eligible poses or their IDs.
     Model train/eval state is restored, allowing this API inside validation.
     """
     ranking, alpha = resolve_ranking(stage, ranking, alpha)
@@ -261,17 +266,16 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         raise ValueError('top_k must be an integer in [1,256]')
     points = np.asarray(observation['query_points'], np.float64)
     normals = np.asarray(observation['query_normals'], np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or normals.shape != points.shape:
+        raise ValueError('Observation queries must have matching [Q,3] arrays')
     count = len(points)
     query_ids = np.asarray(observation.get('query_ids', np.arange(count, dtype=np.int64)))
     source_ids = observation.get('query_source_ids')
-    if points.shape != (count, 3) or normals.shape != points.shape or not np.isfinite(points).all():
-        raise ValueError('Observation queries must be finite matching [Q,3] arrays')
     if (query_ids.shape != (count,) or query_ids.dtype.kind not in 'iu' or
         np.any(query_ids < 0) or len(np.unique(query_ids)) != count):
         raise ValueError('Observation query_ids must be unique nonnegative integers')
     if count > 256:
         raise ValueError('Native instance inference supports at most 256 canonical queries')
-    unit_normals = _unit_normals(normals)
     if source_ids is not None:
         source_ids = np.asarray(source_ids)
         if source_ids.shape != (count,) or source_ids.dtype.kind not in 'iu' or np.any(source_ids < 0):
@@ -279,6 +283,12 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     query_valid = np.asarray(observation.get('query_valid', np.ones(count, bool)))
     if query_valid.shape != (count,) or query_valid.dtype.kind != 'b':
         raise ValueError('Observation query_valid must be an aligned boolean vector')
+    scored_rows = np.flatnonzero(query_valid)
+    scored_points, scored_normals = points[scored_rows], normals[scored_rows]
+    scored_count = len(scored_rows)
+    if not np.isfinite(scored_points).all():
+        raise ValueError('Eligible observation query points must be finite')
+    unit_normals = _unit_normals(scored_normals)
     result = {
         'schema': PREDICTION_SCHEMA, 'instance_uid': str(observation.get('instance_uid', '')),
         'sample_uid': str(observation.get('sample_uid', '')),
@@ -301,9 +311,6 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         'timing_ms': {'encode': 0., 'score': 0., 'postprocess': 0., 'total': 0.},
     }
     start = time.perf_counter()
-    if not count or not query_valid.any():
-        result['timing_ms']['total'] = (time.perf_counter() - start) * 1000.
-        return result
     if len(observation.get('support_points', ())) < minimum_support_points(model):
         result['reason'] = 'insufficient_support'
         result['rejected_queries'] = [
@@ -313,6 +320,13 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         result['rejection_counts'] = dict(Counter(item['reason'] for item in result['rejected_queries']))
         result['timing_ms']['total'] = (time.perf_counter() - start) * 1000.
         return result
+    if not scored_count:
+        result['rejected_queries'] = [
+            {'query_id': int(query_ids[i]), 'reason': 'ineligible_query'}
+            for i in range(count)]
+        result['rejection_counts'] = {'ineligible_query': count} if count else {}
+        result['timing_ms']['total'] = (time.perf_counter() - start) * 1000.
+        return result
 
     with evaluation_mode(model):
         _synchronize(model)
@@ -320,13 +334,13 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         encoded = model.encode_instance(observation)
         _synchronize(model)
         begin_score = time.perf_counter()
-        prediction = model.score_at_pose(encoded, points, normals)
+        prediction = model.score_at_pose(encoded, scored_points, scored_normals)
         _synchronize(model)
         begin_postprocess = time.perf_counter()
     if not isinstance(prediction, dict):
         raise ValueError('Model must return a prediction dictionary')
-    valid = _aligned_vector(prediction, 'valid', count, boolean=True) & query_valid
-    vectors = {key: _aligned_vector(prediction, key, count).astype(np.float64)
+    valid = _aligned_vector(prediction, 'valid', scored_count, boolean=True)
+    vectors = {key: _aligned_vector(prediction, key, scored_count).astype(np.float64)
                for key in ('q_inst', 'seal', 'wrench', 'ell', 'task_logit')}
     for key in ('q_inst', 'seal', 'wrench'):
         if np.any((vectors[key] < 0) | (vectors[key] > 1)):
@@ -338,12 +352,12 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     for key in ('points', 'points_cam_m'):
         if key in prediction:
             output = _numpy(prediction[key])
-            if output.shape != points.shape or not np.array_equal(output, points):
+            if output.shape != scored_points.shape or not np.array_equal(output, scored_points):
                 raise ValueError('Model moved the query contact after scoring')
     for key in ('normal_out', 'normals_out_cam'):
         if key in prediction:
             output = _numpy(prediction[key])
-            if output.shape != normals.shape or not np.allclose(output[valid], unit_normals[valid], rtol=0, atol=4e-15):
+            if output.shape != scored_normals.shape or not np.allclose(output[valid], unit_normals[valid], rtol=0, atol=4e-15):
                 raise ValueError('Model changed the directed axis used for scoring')
             unit_normals[valid] = output[valid]
     # Stable sigmoid avoids overflow for otherwise finite extreme logits.
@@ -355,33 +369,37 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     else:
         scores = task_probability * np.maximum(vectors['q_inst'], 1e-6) ** alpha
     eligible = np.flatnonzero(valid)
-    kept_local = nms_pose_candidates(points[eligible], unit_normals[eligible], scores[eligible], query_ids[eligible])
+    kept_local = nms_pose_candidates(scored_points[eligible], unit_normals[eligible],
+                                    scores[eligible], query_ids[scored_rows[eligible]])
     kept = eligible[kept_local]
     reasons = prediction.get('reason')
-    if reasons is not None and len(reasons) != count:
+    if reasons is not None and len(reasons) != scored_count:
         raise ValueError('Model reason list has no aligned query dimension')
+    rejected = {int(row): 'ineligible_query' for row in np.flatnonzero(~query_valid)}
     for row in np.flatnonzero(~valid):
-        reason = 'ineligible_query' if not query_valid[row] else (
-            str(reasons[row]) if reasons is not None else 'pose_geometry_invalid')
+        reason = str(reasons[row]) if reasons is not None else 'pose_geometry_invalid'
         if reason == 'ok':
             raise ValueError('Invalid model query cannot have an ok reason')
-        result['rejected_queries'].append({'query_id': int(query_ids[row]), 'reason': reason})
+        rejected[int(scored_rows[row])] = reason
+    result['rejected_queries'] = [
+        {'query_id': int(query_ids[row]), 'reason': rejected[row]} for row in sorted(rejected)]
     result['rejection_counts'] = dict(Counter(item['reason'] for item in result['rejected_queries']))
     for row in kept[:top_k]:
+        original_row = scored_rows[row]
         normal = unit_normals[row]
-        transform = contact_transform(points[row], normal)
+        transform = contact_transform(scored_points[row], normal)
         pose = {
-            'query_id': int(query_ids[row]),
-            'source_point_id': int(source_ids[row]) if source_ids is not None else None,
-            'point_cam_m': points[row].tolist(), 'normal_out_cam': normal.tolist(),
+            'query_id': int(query_ids[original_row]),
+            'source_point_id': int(source_ids[original_row]) if source_ids is not None else None,
+            'point_cam_m': scored_points[row].tolist(), 'normal_out_cam': normal.tolist(),
             'tool_z_cam': transform[:3, 2].tolist(), 'T_cam_contact': transform.tolist(),
-            'pose_id': f"{result['instance_uid']}:q{int(query_ids[row])}",
+            'pose_id': f"{result['instance_uid']}:q{int(query_ids[original_row])}",
             'q_inst': float(vectors['q_inst'][row]), 'seal': float(vectors['seal'][row]),
             'wrench': float(vectors['wrench'][row]), 'ell': float(vectors['ell'][row]),
             'task_probability': float(task_probability[row]) if stage == 'finetune' else None,
             'task_logit': float(vectors['task_logit'][row]) if stage == 'finetune' else None,
             'ranking_score': float(scores[row]), 'pose_support_valid': True,
-            'support': _support_diagnostics(prediction, int(row), count),
+            'support': _support_diagnostics(prediction, int(row), scored_count),
         }
         result['poses'].append(pose)
     result['counts'].update(geometry_valid_queries=int(valid.sum()), before_nms=len(eligible),
@@ -389,8 +407,7 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     if result['poses']:
         result.update(status='ok', reason='ok')
     else:
-        result['reason'] = ('insufficient_support' if len(observation.get('support_points', ())) < minimum_support_points(model)
-                            else 'no_geometry_supported_queries')
+        result['reason'] = 'no_geometry_supported_queries'
     end = time.perf_counter()
     result['timing_ms'].update(encode=(begin_score-begin_encode)*1000.,
                                score=(begin_postprocess-begin_score)*1000.,
