@@ -71,8 +71,10 @@ def child(args):
         device = torch.device('cuda', device.index or 0)
         if not torch.cuda.is_available():
             raise RuntimeError('Real CUDA comparison requires CUDA')
-        cap = config['runtime']['gpu_memory_limit_gib'] * 1024**3
-        torch.cuda.set_per_process_memory_fraction(min(1., cap / torch.cuda.get_device_properties(device).total_memory), device)
+        memory_limit = config['runtime']['gpu_memory_limit_gib']
+        if memory_limit is not None:
+            cap = memory_limit * 1024**3
+            torch.cuda.set_per_process_memory_fraction(min(1., cap / torch.cuda.get_device_properties(device).total_memory), device)
     dataset = make_source_dataset(config, augment=True)
     keys = {key: i for i, key in enumerate(dataset.keys)}
     schedule = FrameSchedule(split_scene_ids('train'), seed=config.get('sampling_seed', 20261110),

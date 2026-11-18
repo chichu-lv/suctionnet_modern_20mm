@@ -1,0 +1,25 @@
+{
+  "accepted": 2162,
+  "excluded": 629,
+  "success_definition": "completed_pick_and_transfer",
+  "splits": {
+    "train": {
+      "total": 1676,
+      "success": 1051,
+      "failure": 625
+    },
+    "validation": {
+      "total": 399,
+      "success": 209,
+      "failure": 190
+    },
+    "test": {
+      "total": 87,
+      "success": 65,
+      "failure": 22
+    }
+  },
+  "pose_source": "planned_pipeline_contact",
+  "actual_execution_verified": false,
+  "publication": "Aggregate statistics only; original per-record labels are retained on data server."
+}

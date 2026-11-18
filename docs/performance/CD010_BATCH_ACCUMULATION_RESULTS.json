@@ -1,0 +1,1331 @@
+{
+  "source_commit": "10aeecc5b7de74e2cff43eb4f517b0f2f5d17d9a",
+  "source_tree": "e7af62d30d34122f3f996f5198d23c97d3ed13cb",
+  "formal_configuration_changed": false,
+  "hosts": {
+    "H20": {
+      "hardware": "H20",
+      "experiment": "E5",
+      "suite": "batch-combo",
+      "best_variant": "b4_a12_e48_zone128",
+      "ranking": [
+        {
+          "name": "b4_a12_e48_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 48,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.887175550401032,
+          "peak_allocated_gib": 89.07957363128662,
+          "peak_reserved_gib": 138.373046875,
+          "target_optimizer_updates": 4800,
+          "warmup_optimizer_updates": 240,
+          "validation_interval_updates": 480
+        },
+        {
+          "name": "b3_a8_e24_zone128",
+          "microbatch_size": 3,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.779898355540679,
+          "peak_allocated_gib": 67.16892623901367,
+          "peak_reserved_gib": 123.9609375,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        },
+        {
+          "name": "b4_a6_e24_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 6,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.750320792358392,
+          "peak_allocated_gib": 89.07325887680054,
+          "peak_reserved_gib": 138.396484375,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        },
+        {
+          "name": "b4_a4_e16_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 4,
+          "effective_batch_size": 16,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.622920330018846,
+          "peak_allocated_gib": 89.06516647338867,
+          "peak_reserved_gib": 138.6484375,
+          "target_optimizer_updates": 14400,
+          "warmup_optimizer_updates": 720,
+          "validation_interval_updates": 1440
+        },
+        {
+          "name": "b2_a12_e24_zone128",
+          "microbatch_size": 2,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.5951319569533187,
+          "peak_allocated_gib": 45.660271644592285,
+          "peak_reserved_gib": 99.85546875,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        },
+        {
+          "name": "b4_a2_e8_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 2,
+          "effective_batch_size": 8,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 2.454991301817705,
+          "peak_allocated_gib": 88.6470160484314,
+          "peak_reserved_gib": 138.646484375,
+          "target_optimizer_updates": 28800,
+          "warmup_optimizer_updates": 1440,
+          "validation_interval_updates": 2880
+        }
+      ],
+      "rankings_by_effective_batch": {
+        "8": [
+          {
+            "name": "b4_a2_e8_zone128",
+            "microbatch_size": 4,
+            "gradient_accumulation_steps": 2,
+            "effective_batch_size": 8,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.454991301817705,
+            "peak_allocated_gib": 88.6470160484314,
+            "peak_reserved_gib": 138.646484375,
+            "target_optimizer_updates": 28800,
+            "warmup_optimizer_updates": 1440,
+            "validation_interval_updates": 2880
+          }
+        ],
+        "16": [
+          {
+            "name": "b4_a4_e16_zone128",
+            "microbatch_size": 4,
+            "gradient_accumulation_steps": 4,
+            "effective_batch_size": 16,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.622920330018846,
+            "peak_allocated_gib": 89.06516647338867,
+            "peak_reserved_gib": 138.6484375,
+            "target_optimizer_updates": 14400,
+            "warmup_optimizer_updates": 720,
+            "validation_interval_updates": 1440
+          }
+        ],
+        "24": [
+          {
+            "name": "b3_a8_e24_zone128",
+            "microbatch_size": 3,
+            "gradient_accumulation_steps": 8,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.779898355540679,
+            "peak_allocated_gib": 67.16892623901367,
+            "peak_reserved_gib": 123.9609375,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          },
+          {
+            "name": "b4_a6_e24_zone128",
+            "microbatch_size": 4,
+            "gradient_accumulation_steps": 6,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.750320792358392,
+            "peak_allocated_gib": 89.07325887680054,
+            "peak_reserved_gib": 138.396484375,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          },
+          {
+            "name": "b2_a12_e24_zone128",
+            "microbatch_size": 2,
+            "gradient_accumulation_steps": 12,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.5951319569533187,
+            "peak_allocated_gib": 45.660271644592285,
+            "peak_reserved_gib": 99.85546875,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          }
+        ],
+        "48": [
+          {
+            "name": "b4_a12_e48_zone128",
+            "microbatch_size": 4,
+            "gradient_accumulation_steps": 12,
+            "effective_batch_size": 48,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 2.887175550401032,
+            "peak_allocated_gib": 89.07957363128662,
+            "peak_reserved_gib": 138.373046875,
+            "target_optimizer_updates": 4800,
+            "warmup_optimizer_updates": 240,
+            "validation_interval_updates": 480
+          }
+        ]
+      },
+      "best_variant_by_effective_batch": {
+        "8": "b4_a2_e8_zone128",
+        "16": "b4_a4_e16_zone128",
+        "24": "b3_a8_e24_zone128",
+        "48": "b4_a12_e48_zone128"
+      },
+      "results": [
+        {
+          "name": "b4_a2_e8_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 2,
+          "effective_batch_size": 8,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "current_baseline",
+          "target_optimizer_updates": 28800,
+          "warmup_optimizer_updates": 1440,
+          "validation_interval_updates": 2880,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 6,
+          "stop_at_successful_step": 36,
+          "credited_frames": 240,
+          "wall_seconds": 97.76002050284296,
+          "frames_per_second": 2.454991301817705,
+          "successful_updates": 30,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 3.2404309816192836,
+            "p95": 3.383979021315463
+          },
+          "loader_wait_seconds": {
+            "median": 0.0007347525097429752,
+            "p95": 0.0010430855210870503
+          },
+          "geometry_job_wall_seconds": {
+            "median": 1.8897659359499812,
+            "p95": 2.0282406356651337
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.24627620493993163,
+            "p95": 0.3157990688225254
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.0005296797025948763,
+              "p95": 0.0009597753640264272
+            },
+            "forward_host": {
+              "median": 1.3288486695382744,
+              "p95": 1.4894535631407053
+            },
+            "loss_host": {
+              "median": 0.055376369040459394,
+              "p95": 0.05847698575817049
+            },
+            "backward_host": {
+              "median": 1.421331835212186,
+              "p95": 1.4481668460182846
+            },
+            "optimizer_host": {
+              "median": 0.008414858486503363,
+              "p95": 0.009407948306761681
+            },
+            "diagnostics_host": {
+              "median": 0.1535690762102604,
+              "p95": 0.1731476961635053
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 88.6470160484314,
+          "peak_reserved_gib": 138.646484375,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 0
+        },
+        {
+          "name": "b4_a4_e16_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 4,
+          "effective_batch_size": 16,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 14400,
+          "warmup_optimizer_updates": 720,
+          "validation_interval_updates": 1440,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 3,
+          "stop_at_successful_step": 18,
+          "credited_frames": 240,
+          "wall_seconds": 91.50106362486258,
+          "frames_per_second": 2.622920330018846,
+          "successful_updates": 15,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 6.094444500282407,
+            "p95": 6.2912817636039104
+          },
+          "loader_wait_seconds": {
+            "median": 0.001857016235589981,
+            "p95": 0.002290115039795637
+          },
+          "geometry_job_wall_seconds": {
+            "median": 3.838844724930823,
+            "p95": 3.9693395915906877
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.28795788530260324,
+            "p95": 0.45454447050578883
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.0014201761223375797,
+              "p95": 0.0017191877588629719
+            },
+            "forward_host": {
+              "median": 2.347099417820573,
+              "p95": 2.438042001193389
+            },
+            "loss_host": {
+              "median": 0.09184123203158379,
+              "p95": 0.1007910067681223
+            },
+            "backward_host": {
+              "median": 2.977296131197363,
+              "p95": 3.1331595275085418
+            },
+            "optimizer_host": {
+              "median": 0.007304520811885595,
+              "p95": 0.009047393361106515
+            },
+            "diagnostics_host": {
+              "median": 0.30816019605845213,
+              "p95": 0.349062235513702
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 89.06516647338867,
+          "peak_reserved_gib": 138.6484375,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 6.840310516652526
+        },
+        {
+          "name": "b4_a6_e24_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 6,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 87.2625479423441,
+          "frames_per_second": 2.750320792358392,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 8.649618012132123,
+            "p95": 8.907913282443769
+          },
+          "loader_wait_seconds": {
+            "median": 0.0031036173459142447,
+            "p95": 0.0033026430988684296
+          },
+          "geometry_job_wall_seconds": {
+            "median": 5.580853928113356,
+            "p95": 5.76774360910058
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.2877901438623667,
+            "p95": 0.4026270362082869
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.0022276858799159527,
+              "p95": 0.0024286176078021525
+            },
+            "forward_host": {
+              "median": 3.3438621752429754,
+              "p95": 3.481388583802618
+            },
+            "loss_host": {
+              "median": 0.12822538916952908,
+              "p95": 0.13594730058684945
+            },
+            "backward_host": {
+              "median": 4.40653961035423,
+              "p95": 4.603356429887936
+            },
+            "optimizer_host": {
+              "median": 0.008610402466729283,
+              "p95": 0.009740882948972284
+            },
+            "diagnostics_host": {
+              "median": 0.4589686575345695,
+              "p95": 0.5151998812798411
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 89.07325887680054,
+          "peak_reserved_gib": 138.396484375,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 12.029757104313221
+        },
+        {
+          "name": "b4_a12_e48_zone128",
+          "microbatch_size": 4,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 48,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 4800,
+          "warmup_optimizer_updates": 240,
+          "validation_interval_updates": 480,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 1,
+          "stop_at_successful_step": 6,
+          "credited_frames": 240,
+          "wall_seconds": 83.12622347008437,
+          "frames_per_second": 2.887175550401032,
+          "successful_updates": 5,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 16.61022930825129,
+            "p95": 16.858154804538934
+          },
+          "loader_wait_seconds": {
+            "median": 0.0066106547601521015,
+            "p95": 0.006991930492222309
+          },
+          "geometry_job_wall_seconds": {
+            "median": 10.952677886933088,
+            "p95": 11.158513242844492
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.3257383294403553,
+            "p95": 0.36194461239501835
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.004804567899554968,
+              "p95": 0.005130947660654783
+            },
+            "forward_host": {
+              "median": 6.354546040296555,
+              "p95": 6.589250560849905
+            },
+            "loss_host": {
+              "median": 0.23673528153449297,
+              "p95": 0.23804755648598075
+            },
+            "backward_host": {
+              "median": 8.526751555036753,
+              "p95": 8.902598119527102
+            },
+            "optimizer_host": {
+              "median": 0.007245118264108896,
+              "p95": 0.008959121536463499
+            },
+            "diagnostics_host": {
+              "median": 0.880872658919543,
+              "p95": 0.9425072107464075
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 89.07957363128662,
+          "peak_reserved_gib": 138.373046875,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 17.604308751046595
+        },
+        {
+          "name": "b2_a12_e24_zone128",
+          "microbatch_size": 2,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 92.48084643902257,
+          "frames_per_second": 2.5951319569533187,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 9.193854398094118,
+            "p95": 9.55258131674491
+          },
+          "loader_wait_seconds": {
+            "median": 0.006106273969635367,
+            "p95": 0.006752623687498271
+          },
+          "geometry_job_wall_seconds": {
+            "median": 7.0038609323091805,
+            "p95": 7.240189756429754
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.420420209877193,
+            "p95": 0.4774777920683846
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.005083233350887895,
+              "p95": 0.0056524326791986814
+            },
+            "forward_host": {
+              "median": 3.1436975148972124,
+              "p95": 3.290631558187306
+            },
+            "loss_host": {
+              "median": 0.145674409577623,
+              "p95": 0.15983381986152378
+            },
+            "backward_host": {
+              "median": 3.9974574316293,
+              "p95": 4.2958880623802544
+            },
+            "optimizer_host": {
+              "median": 0.008903836598619819,
+              "p95": 0.013878008048050096
+            },
+            "diagnostics_host": {
+              "median": 0.5135484461206943,
+              "p95": 0.5978980803163723
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 45.660271644592285,
+          "peak_reserved_gib": 99.85546875,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 5.708397216391425
+        },
+        {
+          "name": "b3_a8_e24_zone128",
+          "microbatch_size": 3,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 86.33409186406061,
+          "frames_per_second": 2.779898355540679,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 8.595903945155442,
+            "p95": 8.798919266532176
+          },
+          "loader_wait_seconds": {
+            "median": 0.00419412343762815,
+            "p95": 0.004887301661074161
+          },
+          "geometry_job_wall_seconds": {
+            "median": 5.908653491875157,
+            "p95": 6.027990386099555
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.34426393592730165,
+            "p95": 0.4331215841230005
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.0033557761926203966,
+              "p95": 0.003992536733858287
+            },
+            "forward_host": {
+              "median": 3.188773235073313,
+              "p95": 3.371108947112225
+            },
+            "loss_host": {
+              "median": 0.13566678622737527,
+              "p95": 0.14613411689642816
+            },
+            "backward_host": {
+              "median": 4.013897901633754,
+              "p95": 4.176577557111159
+            },
+            "optimizer_host": {
+              "median": 0.0082598642911762,
+              "p95": 0.008699174993671477
+            },
+            "diagnostics_host": {
+              "median": 0.4806092740036547,
+              "p95": 0.5073637665715068
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 67.16892623901367,
+          "peak_reserved_gib": 123.9609375,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 13.234550097281762
+        }
+      ]
+    },
+    "L20": {
+      "hardware": "L20",
+      "experiment": "E3",
+      "suite": "batch-combo",
+      "best_variant": "b1_a12_e12_zone128",
+      "ranking": [
+        {
+          "name": "b1_a12_e12_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 12,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.7005482074876554,
+          "peak_allocated_gib": 11.554596900939941,
+          "peak_reserved_gib": 25.580078125,
+          "target_optimizer_updates": 19200,
+          "warmup_optimizer_updates": 960,
+          "validation_interval_updates": 1920
+        },
+        {
+          "name": "b1_a24_e24_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 24,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.6830972838386047,
+          "peak_allocated_gib": 11.554595947265625,
+          "peak_reserved_gib": 25.58203125,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        },
+        {
+          "name": "b1_a48_e48_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 48,
+          "effective_batch_size": 48,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.6679294871511825,
+          "peak_allocated_gib": 11.564286231994629,
+          "peak_reserved_gib": 25.58203125,
+          "target_optimizer_updates": 4800,
+          "warmup_optimizer_updates": 240,
+          "validation_interval_updates": 480
+        },
+        {
+          "name": "b3_a8_e24_zone128",
+          "microbatch_size": 3,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.6071148653539296,
+          "peak_allocated_gib": 32.665892601013184,
+          "peak_reserved_gib": 43.513671875,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        },
+        {
+          "name": "b1_a8_e8_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 8,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.5397994291988266,
+          "peak_allocated_gib": 11.554596900939941,
+          "peak_reserved_gib": 25.580078125,
+          "target_optimizer_updates": 28800,
+          "warmup_optimizer_updates": 1440,
+          "validation_interval_updates": 2880
+        },
+        {
+          "name": "b2_a12_e24_zone128",
+          "microbatch_size": 2,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "frames_per_second": 3.4634531818765617,
+          "peak_allocated_gib": 22.432231426239014,
+          "peak_reserved_gib": 43.5859375,
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960
+        }
+      ],
+      "rankings_by_effective_batch": {
+        "8": [
+          {
+            "name": "b1_a8_e8_zone128",
+            "microbatch_size": 1,
+            "gradient_accumulation_steps": 8,
+            "effective_batch_size": 8,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.5397994291988266,
+            "peak_allocated_gib": 11.554596900939941,
+            "peak_reserved_gib": 25.580078125,
+            "target_optimizer_updates": 28800,
+            "warmup_optimizer_updates": 1440,
+            "validation_interval_updates": 2880
+          }
+        ],
+        "12": [
+          {
+            "name": "b1_a12_e12_zone128",
+            "microbatch_size": 1,
+            "gradient_accumulation_steps": 12,
+            "effective_batch_size": 12,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.7005482074876554,
+            "peak_allocated_gib": 11.554596900939941,
+            "peak_reserved_gib": 25.580078125,
+            "target_optimizer_updates": 19200,
+            "warmup_optimizer_updates": 960,
+            "validation_interval_updates": 1920
+          }
+        ],
+        "24": [
+          {
+            "name": "b1_a24_e24_zone128",
+            "microbatch_size": 1,
+            "gradient_accumulation_steps": 24,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.6830972838386047,
+            "peak_allocated_gib": 11.554595947265625,
+            "peak_reserved_gib": 25.58203125,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          },
+          {
+            "name": "b3_a8_e24_zone128",
+            "microbatch_size": 3,
+            "gradient_accumulation_steps": 8,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.6071148653539296,
+            "peak_allocated_gib": 32.665892601013184,
+            "peak_reserved_gib": 43.513671875,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          },
+          {
+            "name": "b2_a12_e24_zone128",
+            "microbatch_size": 2,
+            "gradient_accumulation_steps": 12,
+            "effective_batch_size": 24,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.4634531818765617,
+            "peak_allocated_gib": 22.432231426239014,
+            "peak_reserved_gib": 43.5859375,
+            "target_optimizer_updates": 9600,
+            "warmup_optimizer_updates": 480,
+            "validation_interval_updates": 960
+          }
+        ],
+        "48": [
+          {
+            "name": "b1_a48_e48_zone128",
+            "microbatch_size": 1,
+            "gradient_accumulation_steps": 48,
+            "effective_batch_size": 48,
+            "geometry_pipeline_depth": 2,
+            "contact_feature_gather_mode": "zone",
+            "pose_chunk_size": 128,
+            "frames_per_second": 3.6679294871511825,
+            "peak_allocated_gib": 11.564286231994629,
+            "peak_reserved_gib": 25.58203125,
+            "target_optimizer_updates": 4800,
+            "warmup_optimizer_updates": 240,
+            "validation_interval_updates": 480
+          }
+        ]
+      },
+      "best_variant_by_effective_batch": {
+        "8": "b1_a8_e8_zone128",
+        "12": "b1_a12_e12_zone128",
+        "24": "b1_a24_e24_zone128",
+        "48": "b1_a48_e48_zone128"
+      },
+      "results": [
+        {
+          "name": "b1_a8_e8_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 8,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "current_baseline",
+          "target_optimizer_updates": 28800,
+          "warmup_optimizer_updates": 1440,
+          "validation_interval_updates": 2880,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 6,
+          "stop_at_successful_step": 36,
+          "credited_frames": 240,
+          "wall_seconds": 67.80045163584873,
+          "frames_per_second": 3.5397994291988266,
+          "successful_updates": 30,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 2.2489451828878373,
+            "p95": 2.4174268771428613
+          },
+          "loader_wait_seconds": {
+            "median": 0.002975319279357791,
+            "p95": 0.0036787196295335885
+          },
+          "geometry_job_wall_seconds": {
+            "median": 1.5949258636683226,
+            "p95": 1.7644863251131027
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.09405012428760529,
+            "p95": 0.15604587232228367
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.00329087907448411,
+              "p95": 0.005521693313494321
+            },
+            "forward_host": {
+              "median": 0.9092585300095379,
+              "p95": 1.0299647897249087
+            },
+            "loss_host": {
+              "median": 0.03427497507072985,
+              "p95": 0.0554483807412907
+            },
+            "backward_host": {
+              "median": 0.9987580138258636,
+              "p95": 1.0461952664423733
+            },
+            "optimizer_host": {
+              "median": 0.005173734622076154,
+              "p95": 0.006168753537349403
+            },
+            "diagnostics_host": {
+              "median": 0.06492881453596056,
+              "p95": 0.09859961024485517
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 11.554596900939941,
+          "peak_reserved_gib": 25.580078125,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 0
+        },
+        {
+          "name": "b1_a12_e12_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 12,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 19200,
+          "warmup_optimizer_updates": 960,
+          "validation_interval_updates": 1920,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 4,
+          "stop_at_successful_step": 24,
+          "credited_frames": 240,
+          "wall_seconds": 64.85525563871488,
+          "frames_per_second": 3.7005482074876554,
+          "successful_updates": 20,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 3.225306461798027,
+            "p95": 3.370295606763102
+          },
+          "loader_wait_seconds": {
+            "median": 0.0037442664615809917,
+            "p95": 0.004373448109254241
+          },
+          "geometry_job_wall_seconds": {
+            "median": 2.341071459464729,
+            "p95": 2.535315122874454
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.10907974047586322,
+            "p95": 0.18810686997603626
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.0038367784582078457,
+              "p95": 0.006089070369489492
+            },
+            "forward_host": {
+              "median": 1.292785509256646,
+              "p95": 1.3630248854169622
+            },
+            "loss_host": {
+              "median": 0.04840444028377533,
+              "p95": 0.05281494464725256
+            },
+            "backward_host": {
+              "median": 1.4836353894788772,
+              "p95": 1.536082122172229
+            },
+            "optimizer_host": {
+              "median": 0.004338529892265797,
+              "p95": 0.0049959632800892
+            },
+            "diagnostics_host": {
+              "median": 0.08596933400258422,
+              "p95": 0.13356262003071612
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 11.554596900939941,
+          "peak_reserved_gib": 25.580078125,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 4.541183236622293
+        },
+        {
+          "name": "b1_a24_e24_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 24,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 65.16254703700542,
+          "frames_per_second": 3.6830972838386047,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 6.442255265777931,
+            "p95": 6.832581210811623
+          },
+          "loader_wait_seconds": {
+            "median": 0.01077268342487514,
+            "p95": 0.3776893825735894
+          },
+          "geometry_job_wall_seconds": {
+            "median": 4.840023834025487,
+            "p95": 5.272592070209794
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.13689615367911756,
+            "p95": 0.2821954915067179
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.008601038716733456,
+              "p95": 0.01115934618283063
+            },
+            "forward_host": {
+              "median": 2.5687896276358515,
+              "p95": 2.640992506011389
+            },
+            "loss_host": {
+              "median": 0.0985180598217994,
+              "p95": 0.10798838560003787
+            },
+            "backward_host": {
+              "median": 3.059007886564359,
+              "p95": 3.1127272290410475
+            },
+            "optimizer_host": {
+              "median": 0.00449832365848124,
+              "p95": 0.005770596023648975
+            },
+            "diagnostics_host": {
+              "median": 0.18884806451387703,
+              "p95": 0.26737617941107594
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 11.554595947265625,
+          "peak_reserved_gib": 25.58203125,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 4.048191359593822
+        },
+        {
+          "name": "b1_a48_e48_zone128",
+          "microbatch_size": 1,
+          "gradient_accumulation_steps": 48,
+          "effective_batch_size": 48,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 4800,
+          "warmup_optimizer_updates": 240,
+          "validation_interval_updates": 480,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 1,
+          "stop_at_successful_step": 6,
+          "credited_frames": 240,
+          "wall_seconds": 65.43201030464843,
+          "frames_per_second": 3.6679294871511825,
+          "successful_updates": 5,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 13.058588043320924,
+            "p95": 13.213951337710023
+          },
+          "loader_wait_seconds": {
+            "median": 0.017828183714300394,
+            "p95": 0.02815974038094282
+          },
+          "geometry_job_wall_seconds": {
+            "median": 9.594215986784548,
+            "p95": 9.80290747936815
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.08714411687105894,
+            "p95": 0.1489984511397779
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.01942732185125351,
+              "p95": 0.023495666123926638
+            },
+            "forward_host": {
+              "median": 5.395045010838658,
+              "p95": 5.491948550567031
+            },
+            "loss_host": {
+              "median": 0.21059956774115562,
+              "p95": 0.2522129108197987
+            },
+            "backward_host": {
+              "median": 6.266738774720579,
+              "p95": 6.3434709883295
+            },
+            "optimizer_host": {
+              "median": 0.005867688916623592,
+              "p95": 0.006678910180926323
+            },
+            "diagnostics_host": {
+              "median": 0.42585977679118514,
+              "p95": 0.43175861267372967
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 11.564286231994629,
+          "peak_reserved_gib": 25.58203125,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 3.619698248873826
+        },
+        {
+          "name": "b2_a12_e24_zone128",
+          "microbatch_size": 2,
+          "gradient_accumulation_steps": 12,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 69.29500339599326,
+          "frames_per_second": 3.4634531818765617,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 6.7554891728796065,
+            "p95": 7.946745843579992
+          },
+          "loader_wait_seconds": {
+            "median": 0.3921280337963253,
+            "p95": 1.576699877576901
+          },
+          "geometry_job_wall_seconds": {
+            "median": 4.5986111930105835,
+            "p95": 4.865775642660446
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.18210329418070614,
+            "p95": 0.3417968605645
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.004564631497487426,
+              "p95": 0.007162802782841027
+            },
+            "forward_host": {
+              "median": 2.7382268013898283,
+              "p95": 2.968285136739723
+            },
+            "loss_host": {
+              "median": 0.07738935202360153,
+              "p95": 0.08000381616875529
+            },
+            "backward_host": {
+              "median": 2.8446901054121554,
+              "p95": 3.0249142157379536
+            },
+            "optimizer_host": {
+              "median": 0.004882059060037136,
+              "p95": 0.006915854942053553
+            },
+            "diagnostics_host": {
+              "median": 0.21795100858435035,
+              "p95": 0.2693562192842364
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 22.432231426239014,
+          "peak_reserved_gib": 43.5859375,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": -2.1567958538132315
+        },
+        {
+          "name": "b3_a8_e24_zone128",
+          "microbatch_size": 3,
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 24,
+          "geometry_pipeline_depth": 2,
+          "gpu_memory_limit_gib": null,
+          "contact_feature_gather_mode": "zone",
+          "pose_chunk_size": 128,
+          "role": "candidate",
+          "target_optimizer_updates": 9600,
+          "warmup_optimizer_updates": 480,
+          "validation_interval_updates": 960,
+          "measurement_status": "complete",
+          "warmup_successful_steps": 2,
+          "stop_at_successful_step": 12,
+          "credited_frames": 240,
+          "wall_seconds": 66.53516978491098,
+          "frames_per_second": 3.6071148653539296,
+          "successful_updates": 10,
+          "skipped_updates": 0,
+          "update_seconds": {
+            "median": 6.663805924588814,
+            "p95": 6.9711570258950815
+          },
+          "loader_wait_seconds": {
+            "median": 0.003262524027377367,
+            "p95": 0.003929564566351473
+          },
+          "geometry_job_wall_seconds": {
+            "median": 4.317219785647467,
+            "p95": 4.852753392467275
+          },
+          "geometry_future_wait_seconds": {
+            "median": 0.19988822168670595,
+            "p95": 0.3469116245862096
+          },
+          "geometry_timing_scope": "Job wall is summed overlapped background time; future wait is exposed host wait. Neither is pure CPU kernel time. Depth-1 job/future fields are not applicable.",
+          "synchronous_geometry_host_seconds": null,
+          "gradients_finite": true,
+          "stage_host_seconds": {
+            "h2d_host": {
+              "median": 0.002513055456802249,
+              "p95": 0.005471750511787829
+            },
+            "forward_host": {
+              "median": 3.1121377053204924,
+              "p95": 3.448669116012752
+            },
+            "loss_host": {
+              "median": 0.069264778168872,
+              "p95": 0.07277156610507518
+            },
+            "backward_host": {
+              "median": 2.6715787071734667,
+              "p95": 2.873192282067612
+            },
+            "optimizer_host": {
+              "median": 0.004994635470211506,
+              "p95": 0.007053798250854014
+            },
+            "diagnostics_host": {
+              "median": 0.19310994469560683,
+              "p95": 0.27117428118363013
+            }
+          },
+          "stage_timing_scope": "Existing host intervals with incidental synchronization, not isolated GPU kernel times; no extra synchronization or trace is inserted.",
+          "peak_allocated_gib": 32.665892601013184,
+          "peak_reserved_gib": 43.513671875,
+          "trainer_phase": "paused",
+          "exit_code": 75,
+          "outcome": "completed",
+          "normal_pause": true,
+          "execution_status": "completed",
+          "throughput_change_from_first_percent": 1.9016737389083938
+        }
+      ]
+    }
+  }
+}

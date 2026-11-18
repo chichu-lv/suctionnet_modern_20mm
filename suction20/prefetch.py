@@ -62,12 +62,18 @@ class TicketBatchSampler:
         self.key_to_index = dict(key_to_index)
         self.camera = camera
         self.issued_schedule = None
+        self._stop_issuing = False
+
+    def stop_issuing(self):
+        """Finish the active producer without advancing the consumed schedule."""
+        self._stop_issuing = True
 
     def __iter__(self):
+        self._stop_issuing = False
         issued = clone_schedule(self.start_state)
         self.issued_schedule = issued
         sequence = self.start_sequence_id
-        while True:
+        while not self._stop_issuing:
             tickets = []
             for _ in range(self.microbatch):
                 key, seed = issued.next()
@@ -132,10 +138,25 @@ def consume_tickets(schedule, tickets, consumed_count):
 
 
 def close_ticket_loader(loader, iterator=None):
-    """Release persistent workers on normal pause/end; prefetched tickets are discarded."""
+    """Quiesce issued CPU work before closing worker/pin-memory transport.
+
+    Stopping the sampler makes the ordinary iterator finite. Drain only batches
+    already issued into its bounded prefetch queue, without consuming tickets or
+    running the model. In particular, keep the result and pin-memory queues alive
+    until workers have delivered their in-flight tensor payloads. Worker errors
+    still propagate; cleanup must never turn a failed producer into a clean pause.
+    """
     active = iterator if iterator is not None else getattr(loader, '_iterator', None)
-    if active is not None and hasattr(active, '_shutdown_workers'):
-        active._shutdown_workers()
-    # Torch 2.5 has no public iterator close; do not persist the issued iterator.
-    if hasattr(loader, '_iterator'):
-        loader._iterator = None
+    try:
+        if active is not None and hasattr(active, '_shutdown_workers'):
+            try:
+                if isinstance(getattr(loader, 'batch_sampler', None), TicketBatchSampler):
+                    loader.batch_sampler.stop_issuing()
+                    for unused in active:
+                        del unused
+            finally:
+                active._shutdown_workers()
+    finally:
+        # Torch 2.5 has no public iterator close; do not persist the issued iterator.
+        if hasattr(loader, '_iterator'):
+            loader._iterator = None

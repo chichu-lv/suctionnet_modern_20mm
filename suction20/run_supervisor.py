@@ -293,10 +293,10 @@ def validate_config(config):
         raise Refused("only H20 and L20 are authorized")
     extra = config.get("extra_authorized_gpus", {})
     if not isinstance(extra, dict) or set(extra) - {"L20"}:
-        raise Refused("extra authorized GPUs must explicitly name L20 index 4")
+        raise Refused("extra authorized GPUs must explicitly name L20 indices 4 or 5")
     authorized_l20 = extra.get("L20", {})
-    if not isinstance(authorized_l20, dict) or set(authorized_l20) - {"4"}:
-        raise Refused("only explicitly authorized L20 index 4 may extend the registry")
+    if not isinstance(authorized_l20, dict) or set(authorized_l20) - {"4", "5"}:
+        raise Refused("only explicitly authorized L20 indices 4 or 5 may extend the registry")
     uuids = []
     for host, maximum in (("H20", 2), ("L20", 4)):
         entry = config["hosts"][host]
@@ -381,18 +381,32 @@ def selected_profile(config, experiment, host):
     profile = resolved.get("runtime_profile", {})
     if budget["contract_version"] != CONTRACT_VERSION or not budget["formal"]:
         raise Refused("selected profile requires formal v3 sample budget")
-    if (profile.get("selection_status") != "selected" or profile.get("training_version") != "v3" or
+    status = profile.get("selection_status")
+    if status == "from_scratch":
+        from suction20.performance import SCHEMA_VERSION_V4
+        performance = selected_performance(config, experiment, host).get("performance_settings", {})
+        if performance.get("schema_version") != SCHEMA_VERSION_V4:
+            raise Refused("from-scratch profile requires a v4 performance sidecar")
+    if (status not in ("selected", "from_scratch") or profile.get("training_version") != "v3" or
             profile.get("profile_id") in (None, "", "pending") or
             profile.get("host") != host or profile.get("experiment") != experiment):
         raise Refused("selected profile host/experiment/version mismatch")
     runtime = resolved.get("runtime", {})
     threads, memory = runtime.get("cpu_threads"), runtime.get("gpu_memory_limit_gib")
-    if type(threads) is not int or threads < 1 or isinstance(memory, bool) or not isinstance(memory, (int, float)) or not 0 < memory < 1000:
-        raise Refused("selected profile must specify positive CPU threads and GPU memory limit")
+    memory_valid = "gpu_memory_limit_gib" in runtime and (
+        memory is None or (type(memory) in (int, float) and 0 < memory < 1000))
+    if type(threads) is not int or threads < 1 or not memory_valid:
+        raise Refused("selected profile must specify positive CPU threads and a positive GPU memory limit or null")
+    selected_runtime = {"cpu_threads": threads, "gpu_memory_limit_gib": memory}
+    if "cpu_affinity_count" in runtime:
+        affinity_count = runtime["cpu_affinity_count"]
+        if type(affinity_count) is not int or affinity_count < 1:
+            raise Refused("selected profile CPU affinity count must be a positive integer")
+        selected_runtime["cpu_affinity_count"] = affinity_count
     return {"config_path": str(path), "config_sha256": selection["config_sha256"],
             "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "runtime_profile": profile, "budget": budget,
-            "runtime": {"cpu_threads": threads, "gpu_memory_limit_gib": memory}}
+            "runtime": selected_runtime}
 
 
 def selected_performance(config, experiment, host):
@@ -476,8 +490,11 @@ def trainer_command(config, assignment):
                "--run-dir", str(run), "--device", "cuda:0", "--source-root", config["source_root"],
                "--label-root", config["label_root"], "--backbone-root", config["backbone_root"],
                "--control-dir", str(control), "--attempt-id", assignment["token"],
-               "--validation-gate", "--cpu-threads", str(runtime["cpu_threads"]), "--gpu-memory-limit-gib",
-               str(runtime["gpu_memory_limit_gib"])]
+               "--validation-gate", "--cpu-threads", str(runtime["cpu_threads"])]
+    if runtime["gpu_memory_limit_gib"] is None:
+        command.append("--no-gpu-memory-limit")
+    else:
+        command.extend(["--gpu-memory-limit-gib", str(runtime["gpu_memory_limit_gib"])])
     if assignment.get("performance_config_path"):
         command.extend(["--performance-config", assignment["performance_config_path"]])
     if assignment.get("resume"):
@@ -524,14 +541,15 @@ class Coordinator:
             raise Refused("superseded experiment requires a separate version namespace")
         selected = selected_profile(self.config, experiment, host)
         gpu = self.config["hosts"][host]["gpus"][str(index)]
-        threads = selected.get("runtime", {}).get("cpu_threads", len(gpu["cpus"]))
-        if threads > len(gpu["cpus"]):
-            raise Refused("profile CPU threads exceed device affinity pool")
+        runtime = selected.get("runtime", {})
+        affinity_count = runtime.get("cpu_affinity_count", runtime.get("cpu_threads", len(gpu["cpus"])))
+        if affinity_count > len(gpu["cpus"]):
+            raise Refused("profile CPU affinity count exceeds device affinity pool")
         for other in self.state["assignments"].values():
             if other["host"] == host and other["gpu_uuid"] == gpu["uuid"]:
                 raise Refused("device already reserved (unknown owners also reserve it)")
         assignment = {"experiment": experiment, "host": host, "gpu_index": index,
-                      "gpu_uuid": gpu["uuid"], "cpus": gpu["cpus"][:threads], "token": uuid.uuid4().hex,
+                      "gpu_uuid": gpu["uuid"], "cpus": gpu["cpus"][:affinity_count], "token": uuid.uuid4().hex,
                       "created_unix": time.time(), "state": "launch_unknown", "resume": resume,
                       "prefix_passed": prefix_passed}
         assignment.update(selected)
@@ -1114,6 +1132,8 @@ def run_worker(config, host, assignment):
                                    OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1",
                                    PYTHONDONTWRITEBYTECODE="1")
                 environment.pop("PYTHONPATH", None)
+                if assignment.get("performance_settings", {}).get("schema_version") == "suction20.performance.v4":
+                    environment["PYTHONPATH"] = str(Path(config["root"]) / "repo")
                 assert_idle(gpu_snapshot(), assignment["gpu_index"], assignment["gpu_uuid"])
                 with (control / "trainer.stdout.log").open("ab") as output:
                     child = subprocess.Popen(["taskset", "--cpu-list", ",".join(map(str, assignment["cpus"]))] + command,
@@ -1181,7 +1201,7 @@ def run_worker(config, host, assignment):
                                     for path in (Path(config["root"]) / "control/attempts").glob("*/worker.json"))
                         if not newer:
                             reasons.append("sustained shared pressure; pause newest local job")
-                    if (sample.get("gpu", {}).get("process_memory_mib", {}).get(str(established_gpu_pid)) or 0) > memory_limit * 1024:
+                    if memory_limit is not None and (sample.get("gpu", {}).get("process_memory_mib", {}).get(str(established_gpu_pid)) or 0) > memory_limit * 1024:
                         reasons.append("GPU process memory budget exceeded")
                     if reasons:
                         if not (control / "pause.request").exists():

@@ -46,15 +46,35 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 ## 正式公开数据预训练
 
-`configs/pretrain_e0.yaml` 至 `pretrain_e5.yaml` 是带 pending profile 的正式模板，不能原样启动。当前正在运行的版本使用 [六份精确 JSON 配置及哈希](../configs/runtime_profiles/cd009-v3/manifest.json)：H20/E5、L20/E0–E4。策略、测量依据和部署/发布版本区别见 [CD-009 当前预训练](CD009_PRETRAINING.md)。
+`configs/pretrain_e0.yaml`至`pretrain_e5.yaml`是带pending profile的正式模板，不能原样启动。[十二档补测](performance/CD010_BATCH_ACCUMULATION_RESULTS.md)已全部完成。当前确认采用 **H20/E5 B4A12/有效batch48、L20/E0–E4 B1A12/有效batch12**；用户明确要求六组全部从头训练。使用[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)在新root生成并启动，不接续旧有效batch8任务，也不继承短测模型。
 
-每组独立 seed42 初始化，90/10 场景划分，230400 有效样本、名义 40 轮；当前 E=4 换算为 57600 成功更新。跳步与故障回放另计，不把 smoke 或旧版本权重接到正式预算。完整训练正在分阶段执行，尚未完成六组与各 10 次开发验证。
+每组独立seed42初始化，90/10场景划分，230,400有效样本、名义40轮。H20有效batch48对应4,800次成功更新、warmup240、每480更新验证；L20有效batch12对应19,200次成功更新、warmup960、每1,920更新验证。两者均10个原定验证节点，峰值学习率保持原值。旧任务进度和短测样本不计入新预算，实际启动与进度以训练机日志为准。
 
-正式多机运行从下方 [supervisor 入口](#cd-009-persistent-multi-host-pretraining) 和 [公共模板](implementation/examples/cd009-supervisor.json) 开始，登记精确 config SHA256，填写本地数据/主干路径、机器身份和授权 GPU。私有控制配置不提交到仓库。冻结运行代码后通过 host evidence、首个 100 步暂停/恢复和稳定性门槛逐级启动；不要跳过 supervisor 的单一 owner 和验证/备份协调。
+本次直接运行`finalize_pretraining.py --benchmark-dir 已完成的batch-combo目录 --training-root 新目录 --launch`，读取已有补测结果并调用`train_pretrain.py`。先结束占用相应GPU的旧任务，再启动新任务；不重新执行性能矩阵、不做续训转换。现有supervisor模板保留为历史管理接口。
+
+## CD-010 独立从头训练
+
+从头初始化时使用 [新性能实现与运行方案](FROM_SCRATCH_PERFORMANCE.md)。`scripts/prepare_from_scratch.py` 从一个现有实验profile生成新的`train.json`、v4 `performance.json`和运行命令。按host选择资源：H20为64k/geometry8/affinity16，L20为64k/geometry4/affinity8；Torch线程均8、worker均4。H20的128k实测收益仅0.50%，默认已保留64k。继续split、FP32原生几何、segment实例广播及E0/E1/E3共享体素头。原始数据与冻结标签直接复用。
+
+`--hardware-preset H20|L20|reference`可显式选择资源，其他数值CLI参数优先。`runtime.cpu_affinity_count`与`runtime.cpu_threads`已解耦：supervisor从实际CPU pool选取前者数量的核，trainer使用后者设置Torch线程。已有[真实短测](performance/CD010_FROM_SCRATCH_RESULTS.md)：H20/E5的B2A2更快，L20/E3支持geometry8/affinity16，E0支持worker6；旧16帧零更新benchmark不代表新v4路径。
+
+[CPU/GPU几何重叠](GEOMETRY_GPU_OVERLAP.md)、[12档原接触头batch扫描](performance/CD010_GEOMETRY_MEMORY_RESULTS.md)及[9档最终接触头比较](performance/CD010_FINAL_OPTIMIZATION_RESULTS.md)均已完成。最终比较使用`--suite final`、有效batch8，按预定3%工程阈值选中zone128，并已启动六组新训练。不要重复执行带`--start-training`的旧启动命令。
+
+后续`benchmark_geometry_overlap.py --suite batch-combo`每机六档也已完成，包含B4A6/zone128和B1A12/zone128；该入口继续只负责短测，不接受`--start-training`。现在用独立`finalize_pretraining.py`读取其已完成结果，按每机最高吞吐选择新正式配置。原`final`套件的有效batch8与3%规则仅用于历史兼容，不限制当前选择。
+
+新生成的H20/L20/reference配置默认`runtime.gpu_memory_limit_gib:null`，不再继承旧profile的112/36 GiB上限。`--no-gpu-memory-limit`显式选择无人工上限；也可用互斥的`--gpu-memory-limit-gib N`指定有限上限，trainer与supervisor均支持。`--effective-batch-size`显式改变训练batch并按样本重新派生步数，不自动调整学习率；`--pose-chunk-size`单独控制接触头。`--contact-feature-gather-mode chunk|zone`选择分块内索引或按区域一次索引；通用生成器默认`chunk`，现有正式接触组和新增组合补测均显式使用已获益的zone128。
+
+精度默认FP16。`--precision bf16`显式选择密集BF16/稀疏FP32；固定spconv 2.3.6不支持全链BF16，该选择已用于新E2训练，但未证明提速。融合AdamW默认开启，局部MLP编译通过`--compile-dense-heads`选择；当前正式部署未启用compile。新配置和代码更新不会自动替换已运行的固定设置。
+
+配置导出与启动入口支持`--resource-map`指定GPU/CPU映射；L20/E0/E1/E2用B1A12/depth1，E3/E4用B1A12/depth2，H20/E5用B4A12/depth2。接触组zone128、geometry8；全部dense64k、无人工显存上限。E0/E1为6 workers，其余4，E2保持BF16 dense/FP32 sparse；E4沿用E3接触执行设置，不把E3的吞吐涨幅当成E4实测。原生checkpoint、日志与原定验证照常运行。
+
+新训练使用本次生成的train/performance两个配置；独立评价/推理使用新run的 `resolved_config.json`。启动器直接运行各实验trainer，新模型和优化器从零初始化。原预算内的正常日志窗口提供实际吞吐判断。
+
+下方P1/P2/P3迁移说明适用于原CD-009运行；其中voxel heads关闭、L20 16k和原生2线程等限制不适用于上述独立从头训练。
 
 ## 性能实现构建与既有运行迁移
 
-**2026-11-13 当前记录：H20/E5 使用 64k + split + native，L20/E0、E1、E3 使用 16k + split 的目标配置，均已迁移续训并取得首 25 次正常更新窗口。** H20/E5 与 L20/E3 的真实四帧配对已通过；E0/E1 不使用接触分组。L20 原 64k 组合未通过原梯度门槛，已延后。[P3 操作说明](PERFORMANCE_PHASE3.md) 分别使用 `configs/performance/cd009-p3-integrated.json`（H20）和 `configs/performance/cd009-p3-l20-16k.json`（L20）；旧 `cd009-p3.json` 保留作几何版本记录。
+**以下为已停止的CD-009历史记录：H20/E5使用64k + split + native，L20/E0、E1、E3使用16k + split，曾迁移续训并取得首25次正常更新窗口。** H20/E5与L20/E3的真实四帧配对当时通过；E0/E1不使用接触分组。L20原64k组合未通过旧梯度门槛，因此旧运行选择16k；该限制不适用于CD-010从头训练。[P3操作说明](PERFORMANCE_PHASE3.md)分别使用`configs/performance/cd009-p3-integrated.json`（H20）和`configs/performance/cd009-p3-l20-16k.json`（L20）；旧`cd009-p3.json`保留作几何版本记录。
 
 本轮实际源 checkpoint 已确认使用 P2 `e73d62e`，保留全点 CPU 网格与坐标快路径；voxel heads 继续关闭。上述正常窗口的训练代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`，后续 GitHub HEAD 与独立 `control_repo` 的 supervisor 代码身份另计，不替换训练身份。[最新实测记录](performance/P3_INTEGRATED_RESULTS.md) 给出源状态、四帧结果及正常窗口。历史报告中的1030/2462/1058步迁移和窗口保留原范围；其他接续仍读取实际 current checkpoint，批准的 original/P1/P2 可直接迁到目标 v3，无需中间迁移。
 
@@ -209,6 +229,10 @@ dense模式换用 `finetune_dense_proxy.yaml`。默认总计1000步：前200步�
 these six runs. H20 owns the local assignment ledger; L20 only executes explicit
 assignments. It does not start TODO2 evaluation. V3 requires a measured, selected
 configuration for each host/experiment; the supervisor never changes it on OOM.
+The independent [CD-010 fresh-start path](FROM_SCRATCH_PERFORMANCE.md) also accepts
+an explicitly generated `from_scratch` profile paired with a v4 performance
+sidecar. It uses a new run/ledger namespace and does not inherit a measured-speed
+claim from the source profile.
 The example [supervisor config](implementation/examples/cd009-supervisor.json)
 contains placeholders for every GPU UUID, host identity and transport alias. Fill
 actual UUIDs, `/etc/machine-id` values and hostnames locally before use. Container machine IDs can be
@@ -278,8 +302,9 @@ immediately before spawn, matching index/UUID, no compute PID and memory below
 1GiB. CPU affinity pools are nonoverlapping; each selected profile chooses a
 thread count within its pool. Target host
 concurrency requires128GiB available RAM per run and200GiB free local/shared
-disk. RSS remains limited to64GiB; GPU allocator and whole-process memory
-budgets come from each measured profile with physical headroom. Disk free
+disk. RSS remains limited to64GiB; numeric GPU allocator and whole-process memory
+budgets come from the selected profile. Explicit `gpu_memory_limit_gib:null`
+removes these artificial GPU caps for fresh-run configurations. Disk free
 below100GiB or task storage above100GiB requests pause. Full-process GPU memory
 is monitored separately. NVML PIDs may be host PIDs while the trainer has a
 container PID. Ownership therefore requires the matching attempt, trainer PID
@@ -408,7 +433,9 @@ Save each selected resolved configuration as `.json` (parsed with the JSON parse
 preserving numeric scientific notation such as `1e-08`),
 with `runtime_profile` containing `profile_id`, `training_version:"v3"`,
 `selection_status:"selected"`, `host`, `experiment`, and measurement references.
-Set positive `runtime.cpu_threads` and `runtime.gpu_memory_limit_gib` explicitly.
+Set positive `runtime.cpu_threads` explicitly. Set `runtime.gpu_memory_limit_gib`
+to a positive GiB cap or explicit JSON `null` for no artificial GPU memory limit;
+new fresh-run presets default to `null`, while existing finite profiles stay unchanged.
 Register its absolute path and raw SHA256 in supervisor `profiles[host][experiment]`.
 The supervisor binds the profile, sample budget and config hash to each assignment,
 then copies the exact config into its attempt directory before launch.

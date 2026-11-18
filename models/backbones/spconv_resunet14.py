@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import threading
+from contextlib import nullcontext
 import torch
 from torch import nn
 
@@ -100,9 +101,24 @@ class SpconvResUNet14(nn.Module):
         import spconv.pytorch as spconv
         # Four stride-2 stages require at least 16 cells along each axis.
         shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
-        sparse = spconv.SparseConvTensor(inputs['voxel_features'].contiguous(), coords, shape,
-                                        len(inputs['g_cam']))
-        output = self.network(sparse)
+        device_type = inputs['voxel_features'].device.type
+        autocast_enabled = torch.is_autocast_enabled(device_type)
+        bf16_dense = (autocast_enabled and
+                      torch.get_autocast_dtype(device_type) == torch.bfloat16)
+        fp32_sparse = bf16_dense or (autocast_enabled and not self.training)
+        # spconv 2.3.6's tensorview bridge has no BF16 dtype and its custom AMP
+        # functions explicitly cast to FP16. Disable autocast for the sparse
+        # network rather than silently running FP16 under a BF16 configuration.
+        # The eval path bypasses spconv's custom AMP cast: a 1x1 torch matmul
+        # can produce FP16 features while the next implicit GEMM still receives
+        # FP32 weights, leaving its tuner without a matching algorithm. Keep
+        # sparse evaluation in FP32; projection/dense heads retain outer AMP.
+        context = torch.autocast(device_type, enabled=False) if fp32_sparse else nullcontext()
+        with context:
+            features = inputs['voxel_features'].float() if fp32_sparse else inputs['voxel_features']
+            sparse = spconv.SparseConvTensor(features.contiguous(), coords, shape,
+                                            len(inputs['g_cam']))
+            output = self.network(sparse)
         features = align_backbone_features(
             coords, output.indices, output.features,
             fastpath=self.backbone_coordinate_fastpath)

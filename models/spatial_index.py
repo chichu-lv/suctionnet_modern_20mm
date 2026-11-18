@@ -1,4 +1,4 @@
-"""Scene-local exact raw-point indices with explicit, independent backends.
+"""Scene-local complete raw-point indices with explicit backend and precision.
 
 XYZ and observation buffers must not be mutated while an index is in use. Native
 handles pin the XYZ exporter; every returned ball owns a separate immutable buffer.
@@ -52,13 +52,17 @@ class SpatialIndex:
     backend = 'kdtree'
 
     @classmethod
-    def from_cpu_geometry(cls, geometry, *, backend='kdtree', cell_size_m=.02):
+    def from_cpu_geometry(cls, geometry, *, backend='kdtree', cell_size_m=.02, precision='float64'):
         started = time.perf_counter()
-        xyz = geometry.xyz64
+        if precision not in ('float32', 'float64'):
+            raise ValueError('geometry precision must be float32 or float64')
+        if precision != 'float64' and backend != 'uniform_grid_cpu':
+            raise ValueError('float32 geometry requires uniform_grid_cpu')
+        xyz = geometry.xyz_cam_m if precision == 'float32' else geometry.xyz64
         if backend == 'uniform_grid_cpu':
             return CpuGridIndex._build(xyz, geometry.instance_id_input, geometry.normal_obs,
                                        geometry.normal_obs_valid, geometry.point_offsets,
-                                       cell_size_m, started)
+                                       cell_size_m, started, precision=precision)
         if backend != 'kdtree':
             raise ValueError(f'Unsupported spatial index backend: {backend}')
         rows = geometry.frame_rows
@@ -66,9 +70,14 @@ class SpatialIndex:
                                 geometry.normal_obs_valid, rows, started)
 
     @classmethod
-    def from_inputs(cls, inputs, *, backend='kdtree', cell_size_m=.02):
+    def from_inputs(cls, inputs, *, backend='kdtree', cell_size_m=.02, precision='float64'):
         started = time.perf_counter()
-        xyz = inputs['xyz_cam_m'].detach().float().cpu().numpy().astype(np.float64)
+        if precision not in ('float32', 'float64'):
+            raise ValueError('geometry precision must be float32 or float64')
+        if precision != 'float64' and backend != 'uniform_grid_cpu':
+            raise ValueError('float32 geometry requires uniform_grid_cpu')
+        dtype = np.float32 if precision == 'float32' else np.float64
+        xyz = np.ascontiguousarray(inputs['xyz_cam_m'].detach().float().cpu().numpy(), dtype=dtype)
         batch = inputs['batch_index'].detach().cpu().numpy()
         instance = inputs['instance_id_input'].detach().cpu().numpy()
         normals = inputs['normal_obs'].detach().float().cpu().numpy()
@@ -79,7 +88,8 @@ class SpatialIndex:
             if len(batch) and (batch.min() < 0 or batch.max() >= frames or np.any(batch[1:] < batch[:-1])):
                 raise ValueError('uniform_grid_cpu requires contiguous packed frames')
             offsets = np.concatenate(([0], np.bincount(batch, minlength=frames).cumsum())).astype(np.int64)
-            return CpuGridIndex._build(xyz, instance, normals, valid, offsets, cell_size_m, started)
+            return CpuGridIndex._build(xyz, instance, normals, valid, offsets, cell_size_m, started,
+                                       precision=precision)
         if backend != 'kdtree':
             raise ValueError(f'Unsupported spatial index backend: {backend}')
         rows = [np.flatnonzero(batch == b) for b in range(frames)]
@@ -118,19 +128,22 @@ class CpuGridIndex:
     backend = 'uniform_grid_cpu'
 
     @classmethod
-    def from_cpu_geometry(cls, geometry, *, cell_size_m=.02):
-        return SpatialIndex.from_cpu_geometry(geometry, backend=cls.backend, cell_size_m=cell_size_m)
+    def from_cpu_geometry(cls, geometry, *, cell_size_m=.02, precision='float64'):
+        return SpatialIndex.from_cpu_geometry(geometry, backend=cls.backend, cell_size_m=cell_size_m,
+                                              precision=precision)
 
     @classmethod
-    def from_inputs(cls, inputs, *, cell_size_m=.02):
-        return SpatialIndex.from_inputs(inputs, backend=cls.backend, cell_size_m=cell_size_m)
+    def from_inputs(cls, inputs, *, cell_size_m=.02, precision='float64'):
+        return SpatialIndex.from_inputs(inputs, backend=cls.backend, cell_size_m=cell_size_m, precision=precision)
 
     @classmethod
-    def _build(cls, xyz, instance, normals, valid, offsets, cell_size_m, started):
+    def _build(cls, xyz, instance, normals, valid, offsets, cell_size_m, started, *, precision='float64'):
         if not np.isfinite(cell_size_m) or cell_size_m <= 0:
             raise ValueError('grid cell size must be positive and finite')
         result = cls()
-        result.xyz = result.xyz64 = np.ascontiguousarray(xyz, dtype=np.float64)
+        result.precision = precision
+        dtype = np.float32 if precision == 'float32' else np.float64
+        result.xyz = np.ascontiguousarray(xyz, dtype=dtype)
         result.instance, result.normals, result.normal_valid = instance, normals, valid
         result.frame_offsets = np.asarray(offsets, dtype=np.int64)
         if (result.frame_offsets.ndim != 1 or not len(result.frame_offsets)
@@ -140,18 +153,28 @@ class CpuGridIndex:
         result.cell_size_m = float(cell_size_m)
         result._native = _compiled_grid()
         prepared = time.perf_counter()
-        result._grids = [result._native.create(result.xyz64, int(start), int(stop), result.cell_size_m)
+        if precision == 'float32':
+            if getattr(result._native, 'GEOMETRY_FLOAT32_VERSION', None) != 1:
+                raise RuntimeError('FP32 geometry requires rebuilding models._spatial_index_cpu')
+            create = result._native.create_float32
+        else:
+            create = result._native.create
+        result._grids = [create(result.xyz, int(start), int(stop), result.cell_size_m)
                          for start, stop in zip(result.frame_offsets[:-1], result.frame_offsets[1:])]
         result.setup_timings = {'geometry_cpu_setup_s': prepared-started,
                                 'index_build_s': time.perf_counter()-prepared,
                                 'spatial_index_backend': result.backend}
         return result
 
+    @property
+    def xyz64(self):
+        return np.ascontiguousarray(self.xyz, dtype=np.float64)
+
     def frame_has_points(self, frame):
         return bool(self.frame_offsets[frame+1] > self.frame_offsets[frame])
 
     def ball(self, frame, center, radius):
-        center = np.asarray(center, dtype=np.float64)
+        center = np.asarray(center, dtype=self.xyz.dtype)
         if center.shape != (3,):
             raise ValueError('ball center must have shape [3]')
         buffer = self._native.ball(self._grids[frame], *center, float(radius))

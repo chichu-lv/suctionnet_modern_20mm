@@ -41,7 +41,9 @@ def make_source_dataset(config, *, split="train", frame_keys=None, augment=False
                                   instance_source=data.get("instance_mask_root") or "gt",
                                   source_format=data.get("source_format", "legacy_dc4ad6b"),
                                   compatibility=data.get("compatibility", "auto"),
-                                  adapter_cache=data.get("adapter_cache"), seed=config.get("seed", 42))
+                                  adapter_cache=data.get("adapter_cache"), seed=config.get("seed", 42),
+                                  scene_cache_size=data.get("scene_cache_size", 2),
+                                  object_cache_size=data.get("object_cache_size", 16))
 
 
 def make_model(config, frozen_config, device):

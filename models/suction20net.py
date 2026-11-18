@@ -1,15 +1,19 @@
 """Shared scene encoder and explicit physical-pose scoring interface."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from functools import partial
+from typing import Callable
+
 import torch
 from torch import nn
 
 from .backbones.spconv_resunet14 import SpconvResUNet14
 from .candidate_sampler import CandidateSampler
 from .geometry_ops import make_fps_backend
-from .heads import AxisHead, chunk_apply, mlp
+from .heads import AxisHead, chunk_apply, compile_dense_modules, mlp
 from .contact_grouping import ContactGrouping, ZONE_LIMITS, ZONE_NAMES
-from .instance_fusion import InstanceFusion, instance_blocks
+from .instance_fusion import InstanceFusion, instance_blocks, segment_broadcast
 
 
 EXPERIMENTS = {
@@ -19,12 +23,31 @@ EXPERIMENTS = {
 }
 
 
+@dataclass
+class PreparedSceneForward:
+    """One in-flight microbatch: graph on the main thread, CPU job detached."""
+    encoded: dict
+    q0: torch.Tensor
+    axis: torch.Tensor
+    seeds: torch.Tensor
+    valid: torch.Tensor
+    rows: torch.Tensor
+    pose: dict
+    sampler_timings: dict
+    geometry_job: Callable | None
+
+
 class Suction20Net(nn.Module):
     def __init__(self, model_config, frozen_config, backbone=None, *, performance=None):
         super().__init__()
         performance = dict(performance or {})
         self.no_instance_voxel_heads = bool(performance.get('no_instance_voxel_heads', False))
-        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'))
+        geometry_precision = performance.get('geometry_precision', 'float64')
+        geometry_threads = performance.get('geometry_threads', 2)
+        fps_fn = make_fps_backend(performance.get('fps_backend', 'numpy'), precision=geometry_precision)
+        self.instance_broadcast_mode = performance.get('instance_broadcast_mode', 'indexed')
+        if self.instance_broadcast_mode not in ('indexed', 'segment'):
+            raise ValueError('instance_broadcast_mode must be indexed or segment')
         self.model_config = dict(model_config)
         self.frozen_config = dict(frozen_config)
         self.experiment = model_config.get('experiment', 'E1')
@@ -75,12 +98,22 @@ class Suction20Net(nn.Module):
             'dense_chunk_override_source': 'profile' if chunk_override is None else 'performance_sidecar',
             'chunk_input_mode': self.chunk_input_mode,
         }
+        # v1-v3 execution records retain their original four-field contract.
+        # Fresh-training sidecars explicitly declare the additional choices.
+        fresh_execution = {'instance_broadcast_mode': self.instance_broadcast_mode,
+                           'geometry_threads': geometry_threads,
+                           'geometry_precision': geometry_precision,
+                           'contact_feature_gather_mode': performance.get('contact_feature_gather_mode', 'chunk'),
+                           'compile_dense_heads': bool(performance.get('compile_dense_heads', False))}
+        self.execution_settings.update({key: value for key, value in fresh_execution.items()
+                                        if key in performance})
         self.checkpoint_dense = bool(model_config.get('checkpoint_dense', True))
         if self.chunk_size <= 0 or self.sampler.num_seeds <= 0:
             raise ValueError('dense_chunk_size and seed_count must be positive')
         # Optional modules are instantiated after the common E1 modules, keeping
         # every E1 state-dict name and its initialization sequence unchanged.
-        self.instance_module = InstanceFusion() if self.use_instance_fusion else None
+        self.instance_module = (InstanceFusion(group_points=self.instance_broadcast_mode == 'segment')
+                                if self.use_instance_fusion else None)
         self.contact_grouping = (ContactGrouping(frozen_config,
                                   chunk_size=model_config.get('pose_chunk_size', 32),
                                   checkpointed=self.checkpoint_dense, fps_fn=fps_fn,
@@ -88,6 +121,9 @@ class Suction20Net(nn.Module):
                                   query_workers=performance.get('query_workers', 1),
                                   spatial_index=performance.get('spatial_index'),
                                   contact_query_backend=performance.get('contact_query_backend', 'numpy'),
+                                  geometry_threads=geometry_threads,
+                                  geometry_precision=geometry_precision,
+                                  feature_gather_mode=performance.get('contact_feature_gather_mode', 'chunk'),
                                   chunk_input_mode=self.chunk_input_mode,
                                   detailed_cpu_timing=performance.get('detailed_cpu_timing', False))
                                  if self.use_contact_grouping else None)
@@ -97,6 +133,18 @@ class Suction20Net(nn.Module):
             self.collision_head = mlp((451, 128, 1), output=True)
         self.last_grouping_timings = {}
         self.epoch = 0
+        if performance.get('compile_dense_heads', False):
+            names = ['fusion', 'axis_head.net', 'q0_head', 'pose_fusion', 'q_head']
+            if self.instance_module is not None:
+                names.append('instance_module.pool_projection')
+            if self.contact_grouping is not None:
+                names.extend(('contact_grouping.local_projection', 'contact_grouping.point_mlp'))
+                names.extend(f'contact_grouping.zone_projections.{zone}' for zone in ZONE_NAMES)
+            if self.use_aux_heads:
+                names.extend(('seal_head', 'wrench_head', 'collision_head'))
+            if self.task_success_head is not None:
+                names.append('task_success_head')
+            compile_dense_modules(self, names)
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
@@ -124,10 +172,22 @@ class Suction20Net(nn.Module):
             stats = self.instance_module(local, batch_input['xyz_cam_m'], batch_input['batch_index'],
                                          batch_input['instance_id_input'],
                                          checkpointed=self.checkpoint_dense and self.training)
-            def fuse(feature, g, xyz, slots):
-                blocks = instance_blocks(stats, xyz, slots)
-                return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
-            fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'], stats['point_instance_index'])
+            if self.instance_broadcast_mode == 'segment':
+                # One differentiable broadcast feeds all dense chunks. Only
+                # instance features are shared: relative coordinates remain
+                # per raw point, including points in the same network voxel.
+                point_features = segment_broadcast(stats['instance_features'],
+                    stats['point_instance_index'], stats['_instance_layout'])
+                def fuse(feature, g, xyz, slots, instance_feature):
+                    blocks = instance_blocks(stats, xyz, slots, point_features=instance_feature)
+                    return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
+                fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'],
+                                     stats['point_instance_index'], point_features)
+            else:
+                def fuse(feature, g, xyz, slots):
+                    blocks = instance_blocks(stats, xyz, slots)
+                    return self.fusion(torch.cat((feature, *(x.to(feature) for x in blocks), g.to(feature)), -1))
+                fused = self._chunks(fuse, local, gravity, batch_input['xyz_cam_m'], stats['point_instance_index'])
         else:
             def fuse(feature, g):
                 zero = feature.new_zeros((len(feature), 134))
@@ -188,8 +248,8 @@ class Suction20Net(nn.Module):
                 anchor[i] = rows[nearest]
         return anchor
 
-    def score_at_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
-                      proposal_q0=None, feature_point_index=None, pose_batch_index=None):
+    def _prepare_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
+                      feature_point_index=None, pose_batch_index=None):
         if pose_batch_index is None:
             if len(encoded['g_cam']) != 1:
                 raise ValueError('Packed explicit poses require pose_batch_index')
@@ -207,14 +267,31 @@ class Suction20Net(nn.Module):
         safe = anchors.clamp_min(0)
         fused = self.gather_fused_features(encoded, safe)
         gravity = encoded['g_cam'][batch].to(fused)
+        return {'point_cam_m': point_cam_m, 'normal': n, 'instance': instance_id,
+                'batch': batch, 'anchors': anchors, 'valid': valid, 'safe': safe,
+                'fused': fused, 'gravity': gravity}
+
+    def score_at_pose(self, encoded, point_cam_m, normal_out_cam, instance_id,
+                      proposal_q0=None, feature_point_index=None, pose_batch_index=None):
+        prepared = self._prepare_pose(encoded, point_cam_m, normal_out_cam, instance_id,
+                                       feature_point_index, pose_batch_index)
         if self.contact_grouping is not None:
-            zones = self.contact_grouping(encoded, point_cam_m, n, instance_id, batch, valid,
+            zones = self.contact_grouping(encoded, point_cam_m, prepared['normal'], instance_id,
+                                          prepared['batch'], prepared['valid'],
                                           random_roll=encoded.get('random_group_roll', self.training))
-            zone_features = torch.cat([zones[name] for name in ZONE_NAMES] +
-                                      [zones['lip_sector_log_counts']], -1).to(fused)
             self.last_grouping_timings = dict(self.contact_grouping.last_timings)
         else:
             zones = None
+        return self._score_prepared_pose(encoded, prepared, zones)
+
+    def _score_prepared_pose(self, encoded, prepared, zones):
+        point_cam_m, n = prepared['point_cam_m'], prepared['normal']
+        anchors, valid, safe = prepared['anchors'], prepared['valid'], prepared['safe']
+        fused, gravity = prepared['fused'], prepared['gravity']
+        if zones is not None:
+            zone_features = torch.cat([zones[name] for name in ZONE_NAMES] +
+                                      [zones['lip_sector_log_counts']], -1).to(fused)
+        else:
             zone_features = fused.new_zeros((len(fused), 328))
         h = self.pose_fusion(torch.cat((fused, zone_features, n.to(fused), gravity), -1))
         q = self.q_head(h).squeeze(-1).sigmoid()
@@ -252,6 +329,51 @@ class Suction20Net(nn.Module):
                                   encoded['instance_id_input'][rows], proposal_q0=q0[rows],
                                   feature_point_index=rows, pose_batch_index=encoded['batch_index'][rows])
         self.last_grouping_timings.update(self.sampler.last_timings)
+        return self._pack_prediction(encoded, q0, axis, seeds, valid, rows, pose)
+
+    def prepare_forward(self, batch_input, *, sampler_mode='inference', targets=None,
+                        cpu_geometry=None, sampler_targets_cpu=None):
+        """GPU/dense prefix, then snapshot a detached CPU geometry job.
+
+        Call on the training thread under the same autocast policy as forward.
+        The returned graph stays alive until finish_forward and backward finish.
+        All candidate and roll RNG draws happen here, before background work.
+        """
+        encoded = self.encode_scene(batch_input, cpu_geometry=cpu_geometry)
+        encoded['random_group_roll'] = self.training and sampler_mode != 'inference'
+        q0, axis = self.predict_dense(encoded)
+        seeds, valid = self.sample(encoded, q0, sampler_mode, targets,
+                                   sampler_targets_cpu=sampler_targets_cpu)
+        rows = seeds[valid]
+        pose = self._prepare_pose(encoded, encoded['xyz_cam_m'][rows], axis[rows],
+                                   encoded['instance_id_input'][rows], rows,
+                                   encoded['batch_index'][rows])
+        job = None
+        if self.contact_grouping is not None:
+            request = self.contact_grouping.prepare_query(encoded, pose['point_cam_m'],
+                pose['normal'], pose['instance'], pose['batch'], pose['valid'],
+                random_roll=encoded['random_group_roll'])
+            job = partial(self.contact_grouping.run_query, request)
+        return PreparedSceneForward(encoded, q0, axis, seeds, valid, rows, pose,
+                                    dict(self.sampler.last_timings), job)
+
+    def finish_forward(self, prepared, *, geometry_result=None):
+        """GPU suffix for one completed query; autograd remains on this thread."""
+        if self.contact_grouping is not None:
+            if geometry_result is None:
+                raise ValueError('finish_forward requires the completed CPU geometry result')
+            zones = self.contact_grouping.encode_query(prepared.encoded, geometry_result)
+            self.last_grouping_timings = dict(self.contact_grouping.last_timings)
+        else:
+            zones = None
+            self.last_grouping_timings = {}
+        pose = self._score_prepared_pose(prepared.encoded, prepared.pose, zones)
+        self.last_grouping_timings.update(prepared.sampler_timings)
+        return self._pack_prediction(prepared.encoded, prepared.q0, prepared.axis,
+                                     prepared.seeds, prepared.valid, prepared.rows, pose)
+
+    @staticmethod
+    def _pack_prediction(encoded, q0, axis, seeds, valid, rows, pose):
         result = {'q0_all': q0, 'normal_out_all': axis,
                   'seed_point_index': seeds, 'seed_valid': valid}
         for name in ['q', 'pose_features', 'pose_feature_valid', 'task_success_logit',

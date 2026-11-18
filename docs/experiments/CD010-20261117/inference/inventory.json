@@ -1,0 +1,12 @@
+{
+  "pretrained": {
+    "frames": 401,
+    "candidates": 205312,
+    "parts": 11
+  },
+  "finetuned": {
+    "frames": 401,
+    "candidates": 205312,
+    "parts": 11
+  }
+}

@@ -2,6 +2,10 @@
 
 > 本文件规定实验，不提供未发生的结果。当前目标是先得到可用于少量自有场景微调的公开数据预训练权重。已有训练数据通过 [adapter](LEGACY_DATA_ADJUSTMENT.md) 直接复用；实验不要求重新制作整套标签。模型定义见 [MODEL.md](MODEL.md)，训练预算见 [TRAINING.md](TRAINING.md)。
 
+公开论文对照的公式、官方 API 口径及本项目 R20 指标的对应关系，见 [SuctionNet 方法对照与评价指标计算规范](../SUCTIONNET_COMPARISON_METRICS.md)。该文档汇总外部方法指标；本文件继续规定项目自身的 R20 实验。
+
+已完成的 E5 RealSense 全90测试场景结果、与SuctionNet/UISN/Diffusion-Suction/MultiGraspNet的比较及候选排序/覆盖分析，见[方法效果对比](../SUCTIONNET_METHOD_COMPARISON.md)。评价沿用冻结权重和既有预测，本次文档更新不增加训练或实验矩阵。
+
 ## 1. 本轮要验证的问题
 
 1. GT-B 中加入 Wrench 后，是否改善同一 R20 最终姿态质量？
@@ -193,3 +197,4 @@ latency_median_ms, latency_p95_ms, peak_memory_mb
 目标实际成功模式另存 `n_success,n_failure,AUROC,PR_AUC,BCE,Brier`，不把它们填进物理质量字段。
 
 旧缓存 adapter、E1–E5 所需模块及有界训练/评价链路已实现。后续实验顺序为：E0–E5 正式同预算预训练对比 → 选定公开权重 → 独立目标场景 zero-shot / 少样本微调对比 → 进入业务时再做执行验证。首轮不要求新做材质专项、全物体质量质心标定、时序跟踪或大规模超参数网格。
+

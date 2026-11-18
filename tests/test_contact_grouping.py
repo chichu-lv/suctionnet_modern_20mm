@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 import torch
@@ -102,3 +104,31 @@ def test_empty_masks_and_shared_projection_retain_feature_gradients():
     assert 'spatial_index' in inputs and 'grouping_timings' in inputs
     with pytest.raises(ValueError, match='frozen'):
         ContactGrouping({})
+
+
+def test_per_zone_gather_preserves_contact_outputs_and_gradients_with_shared_rows():
+    torch.manual_seed(27)
+    reference = ContactGrouping(FROZEN, chunk_size=2, checkpointed=False, chunk_input_mode='split')
+    optimized = copy.deepcopy(reference)
+    optimized.feature_gather_mode = 'zone'
+    inputs = scene([[0., 0., 0.], [.007, 0., 0.], [.020, 0., 0.],
+                    [0., 0., .010], [0., 0., .050], [0., 0., .120]])
+    # Nearby poses reuse source rows across chunk boundaries; the last pose
+    # supplies ordinary empty-zone padding and all five regions are exercised.
+    points = torch.tensor([[0., 0., 0.], [.001, 0., 0.], [0., .001, 0.],
+                           [-.001, 0., 0.], [1., 1., 1.]])
+    normals = torch.tensor([[0., 0., 1.]]).repeat(5, 1)
+    weights = {name: torch.randn(5, 64) for name in ZONE_NAMES}
+    compared = []
+    for group in (reference, optimized):
+        encoded = {**inputs, 'F_local': inputs['F_local'].detach().clone().requires_grad_()}
+        result = group(encoded, points, normals, torch.ones(5, dtype=torch.long),
+                       torch.zeros(5, dtype=torch.long), torch.ones(5, dtype=torch.bool))
+        assert result['zone_counts'][:4].gt(0).all()
+        assert all(result[name][-1].eq(0).all() for name in ZONE_NAMES)
+        sum((result[name] * weights[name]).sum() for name in ZONE_NAMES).backward()
+        assert encoded['F_local'].grad.abs().sum() > 0
+        compared.append([*(result[name].detach() for name in ZONE_NAMES),
+                         encoded['F_local'].grad, *(parameter.grad for parameter in group.parameters())])
+    for actual, expected in zip(compared[1], compared[0]):
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)

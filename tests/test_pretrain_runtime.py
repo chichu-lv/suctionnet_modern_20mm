@@ -240,6 +240,21 @@ def test_cpu_trainer_does_not_claim_cuda_context(tmp_path, harness):
     assert 'gpu_uuid' not in status
 
 
+def test_explicit_null_disables_cuda_cap_and_numeric_legacy_limits_still_apply(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(torch.cuda, 'get_device_properties',
+                        lambda device: SimpleNamespace(total_memory=128 * 1024**3))
+    monkeypatch.setattr(torch.cuda, 'set_per_process_memory_fraction',
+                        lambda fraction, device: calls.append((fraction, device)))
+    device = torch.device('cuda:0')
+    entry.apply_gpu_memory_limit({'runtime': {'gpu_memory_limit_gib': None}}, device)
+    assert calls == []
+    entry.apply_gpu_memory_limit({'runtime': {'gpu_memory_limit_gib': 32}}, device)
+    entry.apply_gpu_memory_limit({}, device)
+    assert calls == [(.25, device), (.5, device)]
+
+
 @pytest.mark.parametrize('prefix', ['', 'GPU-'])
 def test_torch_and_nvml_uuid_formats_have_one_identity(prefix):
     value = '1ec9b2a9-e0aa-6b31-d39f-35ad07f58653'
@@ -530,3 +545,21 @@ def test_v3_e8_prefix_skips_credit_only_success_and_preserves_sampling_regime(tm
     assert manifest['current']['analysis']['counters']['effective_samples_completed']==408
     assert manifest['current']['analysis']['counters']['consumed_samples']==416
     assert not calls
+
+
+def test_explicit_bf16_normal_pause_resume_without_scaling(tmp_path, harness):
+    config, _, _ = harness
+    config["training"]["precision"] = "bf16"
+    config["optimizer"] = {"fused": True}
+    run = tmp_path / "bf16"
+    assert entry.train(config, run, torch.device("cpu"), pause_at_step=1) == 1
+    first = state(run)
+    assert first["scaler_state_dict"] == {}
+    assert entry.train(config, run, torch.device("cpu"), resume=run / "last.pt", pause_at_step=3) == 3
+    saved = state(run)
+    assert saved["global_step"] == 3 and saved["scaler_state_dict"] == {}
+    assert saved["optimizer_state_dict"]["param_groups"][0]["fused"] is False
+    rows = canonical_rows(run)
+    assert [row["global_step"] for row in rows] == [1, 2, 3]
+    assert all(row["updated"] and row["precision"]["dense"] == "bf16" for row in rows)
+    assert all(row["amp_scale"] == 1 for row in rows)

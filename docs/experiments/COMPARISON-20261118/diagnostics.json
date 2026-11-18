@@ -1,0 +1,1623 @@
+{
+  "schema_version": "suctionnet.comparison.diagnostics.v1",
+  "as_of": "2026-11-18",
+  "scope": {
+    "operation": "reaggregate_existing_results_and_extract_published_paper_tables",
+    "new_training": false,
+    "new_inference": false,
+    "new_physical_evaluation": false,
+    "new_robot_trials": false,
+    "source_data_modified": false,
+    "cross_paper_comparison_is_controlled_same_input_experiment": false
+  },
+  "units": {
+    "protocols": "fraction unless a key denotes counts; threshold arrays follow [0.2,0.4,0.6,0.8]",
+    "r20_rows": "fraction for scores and rates; scene_count and view_count are integer counts",
+    "uisn": "percent for *_percent / percent / macro_percent, percentage points for *_pp; seconds for timing",
+    "target_classification": "fraction for AUROC/AP/Brier, natural-log loss for BCE; counts as named",
+    "inference_efficiency": "seconds; counts as named",
+    "model_sizes": "parameters as counts and sizes as bytes",
+    "development": "fraction for scores and rates; counts and steps as named"
+  },
+  "provenance": {
+    "source_files": [
+      {
+        "filename": "uisn_comparison_numbers.json",
+        "sha256": "86d9075aba50bfd701304e13468f414003f50c0d67c54d7dacad7df9df0db762",
+        "use": "UISN Table I-V visual extraction and E5 deltas"
+      },
+      {
+        "filename": "literature.json",
+        "sha256": "3c4f1b5b6061273de3f68dc89fc7575160dd3a66d3d183825a05edc0c9a440f6",
+        "use": "S1B, Diffusion-Suction and MultiGraspNet paper values; stale UISN placeholders replaced by verified extraction"
+      },
+      {
+        "filename": "numeric_notes.json",
+        "sha256": "5b3d31e68bae7b7a9d09841ae6ccdb89af3ff4f6ab8e9a4d2ecc913f03fc4191",
+        "use": "Existing E5 precision tensor aggregation and coverage decomposition"
+      },
+      {
+        "filename": "official_summary.json",
+        "sha256": "952486c6b415b7facc10b5fb0420d9c6ccc5932cf6fa23fb2c535429d8884d9d",
+        "use": "Existing official R10 result summary"
+      },
+      {
+        "filename": "target_classification_summary.json",
+        "sha256": "6004e0198e26205c01e95640af6dce83f8f94c8f687f7a88504ce1fee4b7f1d3",
+        "use": "Historical action classification and fine-tuning summary"
+      },
+      {
+        "filename": "inference_efficiency.json",
+        "sha256": "d7608d8c65769307d60f486b74cb2014aadbfac889bdf1f47276061efc0b8d99",
+        "use": "Existing target inference timing summary"
+      },
+      {
+        "filename": "model_sizes.json",
+        "sha256": "ce375d044d69caec05e2550dcbb89b2f4a5a43477bedc89744d976de488cc61e",
+        "use": "Existing parameter and checkpoint size summary"
+      },
+      {
+        "filename": "development_summary.json",
+        "sha256": "3aa35635cd86eeb3331c63de1eba0fdc15a5b81875758b3a84ab10b14003c69d",
+        "use": "Historical E0-E5 development results"
+      },
+      {
+        "filename": "report_data.json",
+        "sha256": "3ca9f431d03c72d5b28971d92f8f7765fa0c08d5851b76a0e8f6a5dee091f29f",
+        "use": "Existing R20 per-instance results and checkpoint identity"
+      },
+      {
+        "filename": "Uncertainty-Aware_Suction_Grasping_for_Cluttered_Scenes.pdf",
+        "sha256": "17f3cf68c1aec51b076f27a46ca553bc94bc44778e06a7bc4232428f7acfd54c",
+        "use": "Primary UISN paper supplied for verification"
+      }
+    ],
+    "public_sources": {
+      "SuctionNet_Table_IV": "https://arxiv.org/pdf/2103.12311",
+      "Diffusion_Suction_Table_I": "https://arxiv.org/html/2502.07238v2",
+      "MultiGraspNet_Table_I_Vacuum": "https://arxiv.org/html/2602.06504v2",
+      "UISN": "https://doi.org/10.1109/LRA.2024.3385609",
+      "UISN_eval_script": "https://github.com/rcao-hk/UISN/blob/4ad50bfb4c29fc47f1e80eb8e4d95e666e8e48f2/eval.py",
+      "official_API": "https://github.com/graspnet/suctionnetAPI/tree/0dac9f7e5b2f7ea801cddf9655cb82a259681976"
+    }
+  },
+  "e5_configuration": {
+    "variant": "E5 best step2880",
+    "checkpoint_sha256": "5bc2c14c014fbf23cbef48062a0dac523ea243b6c18e540bb5af022ff7d0ea3a",
+    "camera": "realsense",
+    "input_features": [
+      "observed depth",
+      "observed normals",
+      "gravity"
+    ],
+    "input_mask_source": "GT oracle-instance masks",
+    "RGB_role": "visualization only; not scoring input",
+    "training_target": "R20",
+    "train_scene_count": 90,
+    "development_scene_count": 10,
+    "test_scene_count": 90,
+    "test_view_count": 23040,
+    "comparison_label": "R20-trained / official R10 evaluation / GT oracle-instance input"
+  },
+  "aggregation_notes": [
+    "Postprocessed retained top50 only; zero increments conflate invalid/low-quality predictions and missing slots. Protocols use different NMS and physical evaluators; numerical differences are not isolated radius effects.",
+    "AP_top50 is the mean of precision@k over k=1..50 and four quality thresholds, not precision@50 or PR-AUC.",
+    "AP_top1 is a scene-level metric averaged over the same four thresholds; instance_Top1_Q20_at_0_4 remains a separate fixed-threshold per-instance statistic.",
+    "Each split contains 30 scenes and 256 views per scene. Split macro means are unweighted and equal frame weighting here because split sizes match.",
+    "Coverage is evaluated only in the postprocessed retained Top50; it is not coverage of all raw proposals.",
+    "At a fixed threshold, top1_good + good_in_retained50_but_not_top1 + no_good_in_retained50 equals 7680.",
+    "summary_difference records floating-point differences from the previously saved summary; no raw evaluator was rerun."
+  ],
+  "protocols": {
+    "official": {
+      "seen": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.16328757735434324,
+          "AP04_top50": 0.2112597914791617,
+          "AP08_top50": 0.028960365437321913,
+          "AP_top1": 0.4759765625,
+          "AP04_top1": 0.6044270833333333,
+          "AP08_top1": 0.15364583333333334
+        },
+        "summary_difference": {
+          "AP_top50": 0.0,
+          "AP04_top50": 0.0,
+          "AP08_top50": 0.0,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.3019352387597117,
+          0.21125979147905602,
+          0.11099491374098851,
+          0.028960365437327596
+        ],
+        "Top1_each_threshold": [
+          0.727734375,
+          0.6044270833333333,
+          0.4180989583333333,
+          0.15364583333333334
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.998046875,
+          0.9763020833333333,
+          0.814453125,
+          0.30716145833333336
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.7291585127201565,
+          0.6190984262469992,
+          0.5133493205435652,
+          0.5002119542178889
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 5589,
+            "any_retained50_good_frames": 7665,
+            "good_in_retained50_but_not_top1_frames": 2076,
+            "no_good_in_retained50_frames": 15
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 4642,
+            "any_retained50_good_frames": 7498,
+            "good_in_retained50_but_not_top1_frames": 2856,
+            "no_good_in_retained50_frames": 182
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 3211,
+            "any_retained50_good_frames": 6255,
+            "good_in_retained50_but_not_top1_frames": 3044,
+            "no_good_in_retained50_frames": 1425
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 1180,
+            "any_retained50_good_frames": 2359,
+            "good_in_retained50_but_not_top1_frames": 1179,
+            "no_good_in_retained50_frames": 5321
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.6044270833333333,
+          "2": 1.1384114583333333,
+          "5": 2.2916666666666665,
+          "10": 3.3743489583333335,
+          "20": 3.873828125,
+          "50": 3.8920572916666667
+        },
+        "precision_at_k_at04": {
+          "1": 0.6044270833333333,
+          "2": 0.5692057291666667,
+          "5": 0.4583333333333333,
+          "10": 0.33743489583333336,
+          "20": 0.19369140625,
+          "50": 0.07784114583333333
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.4759765625,
+          "2": 0.44532877604166665,
+          "5": 0.3530208333333333,
+          "10": 0.25874348958333326,
+          "20": 0.14970865885416668,
+          "50": 0.06023111979166667
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.6044270833333333,
+          "2-5": 0.42180989583333334,
+          "6-10": 0.21653645833333332,
+          "11-20": 0.04994791666666667,
+          "21-50": 0.0006076388888888905
+        },
+        "scene_AP_min_median_max": [
+          0.09212015163563805,
+          0.1555467155341278,
+          0.22948784215013504
+        ],
+        "scene_count_AP_below_half_percent": 0,
+        "top2_scenes": [
+          {
+            "scene_id": 129,
+            "AP_top50": 0.22948784215013504
+          },
+          {
+            "scene_id": 104,
+            "AP_top50": 0.2241013513923263
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.09259516265550466,
+        "AP_excluding_top2_scenes": 0.15875136168170842,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          100,
+          129
+        ]
+      },
+      "similar": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.20221795596203104,
+          "AP04_top50": 0.26077295034869585,
+          "AP08_top50": 0.04848850238223474,
+          "AP_top1": 0.51494140625,
+          "AP04_top1": 0.6299479166666667,
+          "AP08_top1": 0.22578125
+        },
+        "summary_difference": {
+          "AP_top50": -1.3877787807814457e-16,
+          "AP04_top50": 0.0,
+          "AP08_top50": 1.3877787807814457e-17,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.3393599969467178,
+          0.26077295034857734,
+          0.16025037417027307,
+          0.048488502382240325
+        ],
+        "Top1_each_threshold": [
+          0.7184895833333333,
+          0.6299479166666667,
+          0.485546875,
+          0.22578125
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.9983072916666667,
+          0.9872395833333333,
+          0.9015625,
+          0.4765625
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.7197078387896179,
+          0.6380902136639409,
+          0.5385615251299827,
+          0.4737704918032787
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 5518,
+            "any_retained50_good_frames": 7667,
+            "good_in_retained50_but_not_top1_frames": 2149,
+            "no_good_in_retained50_frames": 13
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 4838,
+            "any_retained50_good_frames": 7582,
+            "good_in_retained50_but_not_top1_frames": 2744,
+            "no_good_in_retained50_frames": 98
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 3729,
+            "any_retained50_good_frames": 6924,
+            "good_in_retained50_but_not_top1_frames": 3195,
+            "no_good_in_retained50_frames": 756
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 1734,
+            "any_retained50_good_frames": 3660,
+            "good_in_retained50_but_not_top1_frames": 1926,
+            "no_good_in_retained50_frames": 4020
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.6299479166666667,
+          "2": 1.2239583333333333,
+          "5": 2.8270833333333334,
+          "10": 4.341796875,
+          "20": 4.8984375,
+          "50": 4.917317708333333
+        },
+        "precision_at_k_at04": {
+          "1": 0.6299479166666667,
+          "2": 0.6119791666666666,
+          "5": 0.5654166666666666,
+          "10": 0.4341796875,
+          "20": 0.244921875,
+          "50": 0.09834635416666669
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.51494140625,
+          "2": 0.4900716145833333,
+          "5": 0.4380013020833334,
+          "10": 0.3332096354166667,
+          "20": 0.18883626302083334,
+          "50": 0.07585091145833335
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.6299479166666667,
+          "2-5": 0.5492838541666667,
+          "6-10": 0.3029427083333333,
+          "11-20": 0.0556640625,
+          "21-50": 0.0006293402777777807
+        },
+        "scene_AP_min_median_max": [
+          0.09536053916701742,
+          0.20953568065616635,
+          0.271601682475478
+        ],
+        "scene_count_AP_below_half_percent": 0,
+        "top2_scenes": [
+          {
+            "scene_id": 149,
+            "AP_top50": 0.271601682475478
+          },
+          {
+            "scene_id": 141,
+            "AP_top50": 0.26187508089498435
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.08793758543555999,
+        "AP_excluding_top2_scenes": 0.19760935412465966,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          130,
+          159
+        ]
+      },
+      "novel": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.05694589416788244,
+          "AP04_top50": 0.07161179115415305,
+          "AP08_top50": 0.005696408316825504,
+          "AP_top1": 0.20224609375,
+          "AP04_top1": 0.2610677083333333,
+          "AP08_top1": 0.03763020833333333
+        },
+        "summary_difference": {
+          "AP_top50": -2.0816681711721685e-17,
+          "AP04_top50": -1.3877787807814457e-17,
+          "AP08_top50": 0.0,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.11855014560046558,
+          0.07161179115416685,
+          0.031925231600073135,
+          0.005696408316825295
+        ],
+        "Top1_each_threshold": [
+          0.3515625,
+          0.2610677083333333,
+          0.15872395833333333,
+          0.03763020833333333
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.7813802083333333,
+          0.5842447916666667,
+          0.3106770833333333,
+          0.06484375
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.449925012497917,
+          0.4468464452863829,
+          0.510896898575021,
+          0.5803212851405622
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 2700,
+            "any_retained50_good_frames": 6001,
+            "good_in_retained50_but_not_top1_frames": 3301,
+            "no_good_in_retained50_frames": 1679
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 2005,
+            "any_retained50_good_frames": 4487,
+            "good_in_retained50_but_not_top1_frames": 2482,
+            "no_good_in_retained50_frames": 3193
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 1219,
+            "any_retained50_good_frames": 2386,
+            "good_in_retained50_but_not_top1_frames": 1167,
+            "no_good_in_retained50_frames": 5294
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 289,
+            "any_retained50_good_frames": 498,
+            "good_in_retained50_but_not_top1_frames": 209,
+            "no_good_in_retained50_frames": 7182
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.2610677083333333,
+          "2": 0.45989583333333334,
+          "5": 0.83125,
+          "10": 1.0763020833333334,
+          "20": 1.226953125,
+          "50": 1.2352864583333334
+        },
+        "precision_at_k_at04": {
+          "1": 0.2610677083333333,
+          "2": 0.22994791666666667,
+          "5": 0.16625000000000004,
+          "10": 0.10763020833333334,
+          "20": 0.06134765625,
+          "50": 0.02470572916666667
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.20224609375,
+          "2": 0.17972005208333333,
+          "5": 0.12998697916666666,
+          "10": 0.08635416666666668,
+          "20": 0.04910481770833333,
+          "50": 0.019870442708333335
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.2610677083333333,
+          "2-5": 0.14254557291666667,
+          "6-10": 0.04901041666666667,
+          "11-20": 0.015065104166666666,
+          "21-50": 0.00027777777777777783
+        },
+        "scene_AP_min_median_max": [
+          0.004165295824030947,
+          0.04586864191070614,
+          0.23087574284178597
+        ],
+        "scene_count_AP_below_half_percent": 1,
+        "top2_scenes": [
+          {
+            "scene_id": 189,
+            "AP_top50": 0.23087574284178597
+          },
+          {
+            "scene_id": 188,
+            "AP_top50": 0.21128023554339176
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.2588164226447744,
+        "AP_excluding_top2_scenes": 0.04522217309468913,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          160,
+          189
+        ]
+      },
+      "macro_metrics": {
+        "AP_top50": 0.14081714249475222,
+        "AP04_top50": 0.1812148443273369,
+        "AP08_top50": 0.02771509204546072,
+        "AP_top1": 0.39772135416666665,
+        "AP04_top1": 0.49848090277777773,
+        "AP08_top1": 0.1390190972222222
+      },
+      "units": "fraction; frame_count and scene_count are counts; mean_hit_count_by_k_at04 is a mean count",
+      "threshold_order": [
+        0.2,
+        0.4,
+        0.6,
+        0.8
+      ],
+      "source_file": "numeric_notes.json",
+      "evaluator": "unmodified official R10 API",
+      "ranking": "model q; official global NMS and per-object cap",
+      "evaluator_commit": "0dac9f7e5b2f7ea801cddf9655cb82a259681976"
+    },
+    "r20": {
+      "seen": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.11352188194674255,
+          "AP04_top50": 0.14374953905315718,
+          "AP08_top50": 0.021690278202659105,
+          "AP_top1": 0.2850260416666667,
+          "AP04_top1": 0.3619791666666667,
+          "AP08_top1": 0.08489583333333334
+        },
+        "summary_difference": {
+          "AP_top50": -4.163336342344337e-17,
+          "AP04_top50": 0.0,
+          "AP08_top50": 0.0,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.20649960397329592,
+          0.14374953905306498,
+          0.08214810655767202,
+          0.02169027820266171
+        ],
+        "Top1_each_threshold": [
+          0.44557291666666665,
+          0.3619791666666667,
+          0.24765625,
+          0.08489583333333334
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.9938802083333333,
+          0.9635416666666666,
+          0.819140625,
+          0.319921875
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.44831652037206865,
+          0.37567567567567567,
+          0.3023366714353839,
+          0.2653642653642654
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 3422,
+            "any_retained50_good_frames": 7633,
+            "good_in_retained50_but_not_top1_frames": 4211,
+            "no_good_in_retained50_frames": 47
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 2780,
+            "any_retained50_good_frames": 7400,
+            "good_in_retained50_but_not_top1_frames": 4620,
+            "no_good_in_retained50_frames": 280
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 1902,
+            "any_retained50_good_frames": 6291,
+            "good_in_retained50_but_not_top1_frames": 4389,
+            "no_good_in_retained50_frames": 1389
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 652,
+            "any_retained50_good_frames": 2457,
+            "good_in_retained50_but_not_top1_frames": 1805,
+            "no_good_in_retained50_frames": 5223
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.3619791666666667,
+          "2": 0.5845052083333333,
+          "5": 1.1044270833333334,
+          "10": 1.9505208333333333,
+          "20": 3.01640625,
+          "50": 3.6361979166666667
+        },
+        "precision_at_k_at04": {
+          "1": 0.3619791666666667,
+          "2": 0.29225260416666665,
+          "5": 0.22088541666666667,
+          "10": 0.19505208333333332,
+          "20": 0.1508203125,
+          "50": 0.07272395833333337
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.2850260416666667,
+          "2": 0.231494140625,
+          "5": 0.17380859375000002,
+          "10": 0.1518033854166667,
+          "20": 0.11762532552083332,
+          "50": 0.0590859375
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.3619791666666667,
+          "2-5": 0.18561197916666666,
+          "6-10": 0.16921875,
+          "11-20": 0.10658854166666666,
+          "21-50": 0.02065972222222222
+        },
+        "scene_AP_min_median_max": [
+          0.0627820267348025,
+          0.11863999319894937,
+          0.1641629498497867
+        ],
+        "scene_count_AP_below_half_percent": 0,
+        "top2_scenes": [
+          {
+            "scene_id": 104,
+            "AP_top50": 0.1641629498497867
+          },
+          {
+            "scene_id": 129,
+            "AP_top50": 0.15881560022577967
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.0948359160768341,
+        "AP_excluding_top2_scenes": 0.11009563958309677,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          100,
+          129
+        ]
+      },
+      "similar": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.12491385924191102,
+          "AP04_top50": 0.15961198619985617,
+          "AP08_top50": 0.02827638797778576,
+          "AP_top1": 0.325390625,
+          "AP04_top1": 0.4108072916666667,
+          "AP08_top1": 0.11588541666666667
+        },
+        "summary_difference": {
+          "AP_top50": 0.0,
+          "AP04_top50": -2.7755575615628914e-17,
+          "AP08_top50": -6.938893903907228e-18,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.2171734229784051,
+          0.15961198619976708,
+          0.09459363981146122,
+          0.028276387977792184
+        ],
+        "Top1_each_threshold": [
+          0.4856770833333333,
+          0.4108072916666667,
+          0.2891927083333333,
+          0.11588541666666667
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.989453125,
+          0.955859375,
+          0.84140625,
+          0.4147135416666667
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.49085405974470325,
+          0.4297779594060755,
+          0.34370164035902195,
+          0.2794348508634223
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 3730,
+            "any_retained50_good_frames": 7599,
+            "good_in_retained50_but_not_top1_frames": 3869,
+            "no_good_in_retained50_frames": 81
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 3155,
+            "any_retained50_good_frames": 7341,
+            "good_in_retained50_but_not_top1_frames": 4186,
+            "no_good_in_retained50_frames": 339
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 2221,
+            "any_retained50_good_frames": 6462,
+            "good_in_retained50_but_not_top1_frames": 4241,
+            "no_good_in_retained50_frames": 1218
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 890,
+            "any_retained50_good_frames": 3185,
+            "good_in_retained50_but_not_top1_frames": 2295,
+            "no_good_in_retained50_frames": 4495
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.4108072916666667,
+          "2": 0.630078125,
+          "5": 1.1208333333333333,
+          "10": 1.9838541666666667,
+          "20": 3.3618489583333333,
+          "50": 4.410546875
+        },
+        "precision_at_k_at04": {
+          "1": 0.4108072916666667,
+          "2": 0.3150390625,
+          "5": 0.22416666666666668,
+          "10": 0.19838541666666665,
+          "20": 0.16809244791666667,
+          "50": 0.0882109375
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.325390625,
+          "2": 0.25021158854166664,
+          "5": 0.1770572916666667,
+          "10": 0.15489908854166667,
+          "20": 0.13030924479166667,
+          "50": 0.06946679687500001
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.4108072916666667,
+          "2-5": 0.17750651041666668,
+          "6-10": 0.17260416666666667,
+          "11-20": 0.13779947916666666,
+          "21-50": 0.03495659722222222
+        },
+        "scene_AP_min_median_max": [
+          0.039931868533309336,
+          0.12212062747858746,
+          0.185983771092809
+        ],
+        "scene_count_AP_below_half_percent": 0,
+        "top2_scenes": [
+          {
+            "scene_id": 151,
+            "AP_top50": 0.185983771092809
+          },
+          {
+            "scene_id": 149,
+            "AP_top50": 0.18200898789451045
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.09819907393799976,
+        "AP_excluding_top2_scenes": 0.12069367922392897,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          130,
+          159
+        ]
+      },
+      "novel": {
+        "shape": [
+          30,
+          256,
+          50,
+          4
+        ],
+        "metrics": {
+          "AP_top50": 0.02177383952272559,
+          "AP04_top50": 0.024065429009186488,
+          "AP08_top50": 0.0025313947889264365,
+          "AP_top1": 0.07307942708333333,
+          "AP04_top1": 0.084375,
+          "AP08_top1": 0.009765625
+        },
+        "summary_difference": {
+          "AP_top50": 0.0,
+          "AP04_top50": 0.0,
+          "AP08_top50": 0.0,
+          "AP_top1": 0.0,
+          "AP04_top1": 0.0,
+          "AP08_top1": 0.0
+        },
+        "AP_top50_each_threshold": [
+          0.05088883030661813,
+          0.02406542900918997,
+          0.009609703986184336,
+          0.002531394788926324
+        ],
+        "Top1_each_threshold": [
+          0.15455729166666668,
+          0.084375,
+          0.043619791666666664,
+          0.009765625
+        ],
+        "postprocessed_any_retained50_pass_each_threshold": [
+          0.49609375,
+          0.2630208333333333,
+          0.12604166666666666,
+          0.05
+        ],
+        "top1_capture_given_retained50_has_pass_each_threshold": [
+          0.3115485564304462,
+          0.3207920792079208,
+          0.34607438016528924,
+          0.1953125
+        ],
+        "exact_frame_counts": [
+          {
+            "threshold": 0.2,
+            "top1_good_frames": 1187,
+            "any_retained50_good_frames": 3810,
+            "good_in_retained50_but_not_top1_frames": 2623,
+            "no_good_in_retained50_frames": 3870
+          },
+          {
+            "threshold": 0.4,
+            "top1_good_frames": 648,
+            "any_retained50_good_frames": 2020,
+            "good_in_retained50_but_not_top1_frames": 1372,
+            "no_good_in_retained50_frames": 5660
+          },
+          {
+            "threshold": 0.6,
+            "top1_good_frames": 335,
+            "any_retained50_good_frames": 968,
+            "good_in_retained50_but_not_top1_frames": 633,
+            "no_good_in_retained50_frames": 6712
+          },
+          {
+            "threshold": 0.8,
+            "top1_good_frames": 75,
+            "any_retained50_good_frames": 384,
+            "good_in_retained50_but_not_top1_frames": 309,
+            "no_good_in_retained50_frames": 7296
+          }
+        ],
+        "mean_hit_count_by_k_at04": {
+          "1": 0.084375,
+          "2": 0.12109375,
+          "5": 0.20104166666666667,
+          "10": 0.3359375,
+          "20": 0.48880208333333336,
+          "50": 0.5359375
+        },
+        "precision_at_k_at04": {
+          "1": 0.084375,
+          "2": 0.060546875,
+          "5": 0.04020833333333333,
+          "10": 0.03359375,
+          "20": 0.024440104166666664,
+          "50": 0.010718750000000003
+        },
+        "precision_at_k_avg_thresholds": {
+          "1": 0.07307942708333333,
+          "2": 0.053759765625,
+          "5": 0.036315104166666674,
+          "10": 0.031077473958333334,
+          "20": 0.02179850260416667,
+          "50": 0.009794270833333334
+        },
+        "rank_group_pass_fraction_at04": {
+          "1-1": 0.084375,
+          "2-5": 0.029166666666666667,
+          "6-10": 0.026979166666666665,
+          "11-20": 0.015286458333333334,
+          "21-50": 0.0015711805555555555
+        },
+        "scene_AP_min_median_max": [
+          0.0,
+          0.0119916575687107,
+          0.12828570183048632
+        ],
+        "scene_count_AP_below_half_percent": 10,
+        "top2_scenes": [
+          {
+            "scene_id": 189,
+            "AP_top50": 0.12828570183048632
+          },
+          {
+            "scene_id": 188,
+            "AP_top50": 0.11371971450275621
+          }
+        ],
+        "top2_scene_share_of_total_AP": 0.3704834511473564,
+        "AP_excluding_top2_scenes": 0.014686063191018756,
+        "frame_count": 7680,
+        "scene_count": 30,
+        "complete": true,
+        "scene_id_range": [
+          160,
+          189
+        ]
+      },
+      "macro_metrics": {
+        "AP_top50": 0.08673652690379306,
+        "AP04_top50": 0.10914231808739995,
+        "AP08_top50": 0.0174993536564571,
+        "AP_top1": 0.22783203124999998,
+        "AP04_top1": 0.2857204861111111,
+        "AP08_top1": 0.07018229166666667
+      },
+      "units": "fraction; frame_count and scene_count are counts; mean_hit_count_by_k_at04 is a mean count",
+      "threshold_order": [
+        0.2,
+        0.4,
+        0.6,
+        0.8
+      ],
+      "source_file": "numeric_notes.json",
+      "evaluator": "saved frozen project R20 physical values",
+      "ranking": "model q; saved project per-instance NMS then scene Top50"
+    }
+  },
+  "r20_rows": [
+    {
+      "split": "seen",
+      "scene_count": 30,
+      "view_count": 7680,
+      "complete": true,
+      "AP_top50": 0.11352188194674259,
+      "AP04_top50": 0.14374953905315718,
+      "AP08_top50": 0.021690278202659105,
+      "AP_top1": 0.2850260416666667,
+      "AP04_top1": 0.3619791666666667,
+      "AP08_top1": 0.08489583333333334,
+      "instance_Top1_Q20_at_0_4": 0.1227695105820106,
+      "collision_rate": 0.5601580584490741,
+      "no_candidate_rate": 0.00037724247685185197
+    },
+    {
+      "split": "similar",
+      "scene_count": 30,
+      "view_count": 7680,
+      "complete": true,
+      "AP_top50": 0.12491385924191102,
+      "AP04_top50": 0.1596119861998562,
+      "AP08_top50": 0.028276387977785766,
+      "AP_top1": 0.325390625,
+      "AP04_top1": 0.4108072916666667,
+      "AP08_top1": 0.11588541666666667,
+      "instance_Top1_Q20_at_0_4": 0.20532175362253485,
+      "collision_rate": 0.5276343372339466,
+      "no_candidate_rate": 0.0001335762761544012
+    },
+    {
+      "split": "novel",
+      "scene_count": 30,
+      "view_count": 7680,
+      "complete": true,
+      "AP_top50": 0.02177383952272559,
+      "AP04_top50": 0.024065429009186488,
+      "AP08_top50": 0.0025313947889264365,
+      "AP_top1": 0.07307942708333333,
+      "AP04_top1": 0.084375,
+      "AP08_top1": 0.009765625,
+      "instance_Top1_Q20_at_0_4": 0.024077897652116396,
+      "collision_rate": 0.5600972945601851,
+      "no_candidate_rate": 0.00021830563822751328
+    }
+  ],
+  "r20_rows_source": {
+    "filename": "report_data.json",
+    "json_path": "r20_rows",
+    "meaning": "Legacy per-instance Top1 and collision/no-candidate rates remain separate from scene-level AP."
+  },
+  "uisn": {
+    "source_file": "uisn_comparison_numbers.json",
+    "paper_source": "https://doi.org/10.1109/LRA.2024.3385609",
+    "main_table_evidence": {
+      "table": "I",
+      "pdf_page_1_based": 6,
+      "printed_page": 4939,
+      "verified_by": "visual render",
+      "camera_pair_order": [
+        "kinect",
+        "realsense"
+      ],
+      "columns_per_split": [
+        "AP",
+        "AP0.8",
+        "AP0.4"
+      ],
+      "rank_blocks": [
+        "Top-50",
+        "Top-1"
+      ]
+    },
+    "paper_inconsistencies": [
+      {
+        "location": "PDF page 5 / printed 4938, Section IV-B prose",
+        "issue": "The prose names the slash-pair order Realsense/Kinect; Table I footnote explicitly gives Kinect/RealSense. This extraction follows Table I footnote; keep this discrepancy visible."
+      },
+      {
+        "location": "PDF page 7 / printed 4940, Table V vs accompanying prose",
+        "issue": "The prose claims RGB-D improves both metrics, but novel Top-1 AP is 12.43 for Only Depth versus 11.83 for RGB-D."
+      }
+    ],
+    "baseline_source_policy": "S1B in method_metrics.csv follows the original SuctionNet Table IV; do not replace its values with the slightly different Cao et al. row in UISN Table I.",
+    "baseline_camera_crosscheck": {
+      "UISN_Table_I_Cao_RealSense_seen_AP_top50_percent": 28.32,
+      "original_S1B_Table_IV_RealSense_seen_AP_top50_percent": 28.31,
+      "camera_order": "Kinect/RealSense per Table I footnote; original baseline values confirm the camera association",
+      "difference_interpretation": "Some cells differ by 0.01 percentage points across the published tables; retain each source exactly."
+    },
+    "macro_average_definition": "Unweighted arithmetic mean across seen, similar, novel, calculated separately for each metric; no averaging of dissimilar metrics.",
+    "macro_percent": {
+      "E5_official_R10": {
+        "AP_top50": 14.081714249475224,
+        "AP08_top50": 2.771509204546072,
+        "AP04_top50": 18.121484432733688,
+        "AP_top1": 39.772135416666664,
+        "AP08_top1": 13.901909722222221,
+        "AP04_top1": 49.84809027777778
+      },
+      "UOIS-Net+UISN_RealSense": {
+        "AP_top50": 28.426666666666666,
+        "AP08_top50": 6.683333333333334,
+        "AP04_top50": 37.27,
+        "AP_top1": 41.46333333333333,
+        "AP08_top1": 17.066666666666666,
+        "AP04_top1": 50.70666666666666
+      },
+      "UOAIS-Net+UISN_RealSense": {
+        "AP_top50": 27.963333333333335,
+        "AP08_top50": 6.78,
+        "AP04_top50": 36.79666666666667,
+        "AP_top1": 42.416666666666664,
+        "AP08_top1": 18.186666666666667,
+        "AP04_top1": 51.733333333333334
+      },
+      "UISN_Only_Depth": {
+        "AP_top50": 11.416666666666666,
+        "AP_top1": 28.263333333333332
+      }
+    },
+    "e5_minus_uisn_pp": {
+      "UOIS-Net+UISN": {
+        "seen": {
+          "AP_top50": -21.651242264566,
+          "AP08_top50": -7.093963456268,
+          "AP04_top50": -28.704020852084,
+          "AP_top1": -16.28234375,
+          "AP08_top1": -16.355416666667,
+          "AP04_top1": -16.197291666667
+        },
+        "similar": {
+          "AP_top50": -17.608204403797,
+          "AP08_top50": -4.041149761777,
+          "AP04_top50": -23.27270496513,
+          "AP_top1": 2.814140625,
+          "AP08_top1": 5.858125,
+          "AP04_top1": 2.984791666667
+        },
+        "novel": {
+          "AP_top50": -3.775410583212,
+          "AP08_top50": -0.600359168317,
+          "AP04_top50": -5.468820884585,
+          "AP_top1": 8.394609375,
+          "AP08_top1": 1.003020833333,
+          "AP04_top1": 10.636770833333
+        },
+        "macro": {
+          "AP_top50": -14.344952417192,
+          "AP08_top50": -3.911824128787,
+          "AP04_top50": -19.148515567266,
+          "AP_top1": -1.691197916667,
+          "AP08_top1": -3.164756944445,
+          "AP04_top1": -0.858576388889
+        }
+      },
+      "UOAIS-Net+UISN": {
+        "seen": {
+          "AP_top50": -21.941242264566,
+          "AP08_top50": -7.663963456268,
+          "AP04_top50": -29.444020852084,
+          "AP_top1": -18.51234375,
+          "AP08_top1": -19.925416666667,
+          "AP04_top1": -17.907291666667
+        },
+        "similar": {
+          "AP_top50": -16.318204403797,
+          "AP08_top50": -3.891149761777,
+          "AP04_top50": -21.69270496513,
+          "AP_top1": 2.294140625,
+          "AP08_top1": 5.378125,
+          "AP04_top1": 1.544791666667
+        },
+        "novel": {
+          "AP_top50": -3.385410583212,
+          "AP08_top50": -0.470359168317,
+          "AP04_top50": -4.888820884585,
+          "AP_top1": 8.284609375,
+          "AP08_top1": 1.693020833333,
+          "AP04_top1": 10.706770833333
+        },
+        "macro": {
+          "AP_top50": -13.881619083858,
+          "AP08_top50": -4.008490795454,
+          "AP04_top50": -18.675182233933,
+          "AP_top1": -2.64453125,
+          "AP08_top1": -4.284756944445,
+          "AP04_top1": -1.885243055556
+        }
+      }
+    },
+    "ablations": {
+      "geometry_vs_network": {
+        "table": "II",
+        "pdf_page_1_based": 6,
+        "printed_page": 4939,
+        "geometry_percent": {
+          "seen": {
+            "AP_top50": 22.63,
+            "AP_top1": 30.97
+          },
+          "similar": {
+            "AP_top50": 29.47,
+            "AP_top1": 40.68
+          },
+          "novel": {
+            "AP_top50": 6.5,
+            "AP_top1": 8.73
+          }
+        },
+        "network_percent": {
+          "seen": {
+            "AP_top50": 37.98,
+            "AP_top1": 63.88
+          },
+          "similar": {
+            "AP_top50": 37.83,
+            "AP_top1": 48.68
+          },
+          "novel": {
+            "AP_top50": 9.47,
+            "AP_top1": 11.83
+          }
+        },
+        "network_minus_geometry_pp": {
+          "seen": {
+            "AP_top50": 15.35,
+            "AP_top1": 32.91
+          },
+          "similar": {
+            "AP_top50": 8.36,
+            "AP_top1": 8.0
+          },
+          "novel": {
+            "AP_top50": 2.97,
+            "AP_top1": 3.1
+          },
+          "macro": {
+            "AP_top50": 8.893333333333,
+            "AP_top1": 14.67
+          }
+        },
+        "meaning": "Geometry scoring combines Normal STD with analytic wrench scoring, instance mean centroid and fixed camera-coordinate gravity (0,0,1). This is a full geometry-versus-network scoring comparison, not an isolated local-contact module ablation.",
+        "camera_status": "not_explicitly_named_in_ablation_table",
+        "camera_association": "inferred from full-model values matching the RealSense UOIS-Net+UISN Table I row"
+      },
+      "uncertainty_modeling": {
+        "table": "III",
+        "pdf_page_1_based": 6,
+        "printed_page": 4939,
+        "metric": "AP_top50",
+        "percent": {
+          "baseline_single_MLP": {
+            "seen": 38.85,
+            "similar": 36.23,
+            "novel": 8.35
+          },
+          "aleatoric_only": {
+            "seen": 37.05,
+            "similar": 37.02,
+            "novel": 8.89
+          },
+          "epistemic_only": {
+            "seen": 37.23,
+            "similar": 36.73,
+            "novel": 9.3
+          },
+          "aleatoric_and_epistemic": {
+            "seen": 37.98,
+            "similar": 37.83,
+            "novel": 9.47
+          }
+        },
+        "both_minus_baseline_pp": {
+          "seen": -0.87,
+          "similar": 1.6,
+          "novel": 1.12
+        },
+        "both_minus_baseline_macro_pp": 0.616666666667,
+        "meaning": "Baseline is single MLP scoring; aleatoric adds variance head; epistemic applies test-time dropout; both combines them. Top-1 and threshold-specific ablation metrics are not reported.",
+        "camera_status": "not_explicitly_named_in_ablation_table",
+        "camera_association": "inferred from full-model values matching the RealSense UOIS-Net+UISN Table I row"
+      },
+      "mc_samples": {
+        "table": "IV",
+        "pdf_page_1_based": 6,
+        "printed_page": 4939,
+        "split": "seen",
+        "columns": [
+          "T",
+          "AP_top50_percent",
+          "AP_top1_percent",
+          "scoring_inference_seconds"
+        ],
+        "rows": [
+          [
+            2,
+            35.52,
+            60.35,
+            0.03
+          ],
+          [
+            4,
+            37.61,
+            63.28,
+            0.068
+          ],
+          [
+            8,
+            37.88,
+            63.42,
+            0.134
+          ],
+          [
+            10,
+            37.86,
+            63.69,
+            0.162
+          ],
+          [
+            20,
+            37.98,
+            63.88,
+            0.331
+          ],
+          [
+            50,
+            37.89,
+            63.81,
+            0.782
+          ]
+        ],
+        "hardware": "Intel i7-10700 CPU + GeForce RTX 2070 GPU",
+        "meaning": "Times are scoring prediction per scene, not necessarily complete segmentation and robot pipeline latency; default T=20.",
+        "camera_status": "not_explicitly_named_in_ablation_table",
+        "camera_association": "inferred from full-model values matching the RealSense UOIS-Net+UISN Table I row"
+      },
+      "input_mode": {
+        "table": "V",
+        "pdf_page_1_based": 7,
+        "printed_page": 4940,
+        "only_depth_percent": {
+          "seen": {
+            "AP_top50": 14.37,
+            "AP_top1": 36.11
+          },
+          "similar": {
+            "AP_top50": 15.75,
+            "AP_top1": 36.25
+          },
+          "novel": {
+            "AP_top50": 4.13,
+            "AP_top1": 12.43
+          }
+        },
+        "RGBD_percent": {
+          "seen": {
+            "AP_top50": 37.98,
+            "AP_top1": 63.88
+          },
+          "similar": {
+            "AP_top50": 37.83,
+            "AP_top1": 48.68
+          },
+          "novel": {
+            "AP_top50": 9.47,
+            "AP_top1": 11.83
+          }
+        },
+        "RGBD_minus_only_depth_pp": {
+          "seen": {
+            "AP_top50": 23.61,
+            "AP_top1": 27.77
+          },
+          "similar": {
+            "AP_top50": 22.08,
+            "AP_top1": 12.43
+          },
+          "novel": {
+            "AP_top50": 5.34,
+            "AP_top1": -0.6
+          },
+          "macro": {
+            "AP_top50": 17.01,
+            "AP_top1": 13.2
+          }
+        },
+        "e5_minus_only_depth_pp": {
+          "seen": {
+            "AP_top50": 1.958757735434,
+            "AP_top1": 11.48765625
+          },
+          "similar": {
+            "AP_top50": 4.471795596203,
+            "AP_top1": 15.244140625
+          },
+          "novel": {
+            "AP_top50": 1.564589416788,
+            "AP_top1": 7.794609375
+          },
+          "macro": {
+            "AP_top50": 2.665047582808,
+            "AP_top1": 11.508802083333
+          }
+        },
+        "meaning": "Only Depth keeps the architecture and uses all-ones initial features instead of RGB before voxel quantization. It is a closer input-modality comparison to depth-only E5, but does not isolate other model, segmentation, training and postprocessing differences. AP0.4 and AP0.8 are not reported for Only Depth.",
+        "camera_status": "not_explicitly_named_in_ablation_table",
+        "camera_association": "inferred from full-model values matching the RealSense UOIS-Net+UISN Table I row"
+      },
+      "local_contact_module": {
+        "independent_ablation_reported": false,
+        "meaning": "No isolated local-contact module ablation appears in Tables II-V or Section IV-C. UISN predicts the combined suction score with one head rather than separate seal/wrench heads (PDF page 3 / printed 4936). Surface normals use a 1.5 cm neighborhood radius (PDF page 5 / printed 4938); this is approach-direction estimation, not an explicitly ablated suction-cup radius or local-contact scoring module."
+      }
+    },
+    "comparison_limits": [
+      "These are cross-paper numerical comparisons of E5 official R10 results and published UISN tables, not UISN reruns in the E5 evaluator.",
+      "UISN says it follows SuctionNet-1Billion evaluation with NMS and uses shared normals/collision detection for its own baselines (PDF pages 4-5). Table I baseline is the paper-reported Cao et al. [3] row; do not silently substitute another paper's rounded baseline numbers.",
+      "Do not combine per-metric maxima from UOIS-Net+UISN and UOAIS-Net+UISN as though they were one evaluated system.",
+      "Ablation sensor is not explicitly named in Tables II-V; their full-model values exactly match the RealSense UOIS-Net+UISN main-table row, so the association is inferred from equality."
+    ]
+  },
+  "development": {
+    "source_file": "development_summary.json",
+    "rows": [
+      {
+        "experiment": "E0",
+        "checkpoint_step": 11520,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.07415561666185454,
+        "instance_Top1_Q20_at_0_4": 0.07887073863636364,
+        "collision_rate": 0.6444673295454545,
+        "no_candidate_rate": 0.0009154040404040408
+      },
+      {
+        "experiment": "E1",
+        "checkpoint_step": 19200,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.07948120072810663,
+        "instance_Top1_Q20_at_0_4": 0.09601697781385281,
+        "collision_rate": 0.6334962346681097,
+        "no_candidate_rate": 0.0009154040404040408
+      },
+      {
+        "experiment": "E2",
+        "checkpoint_step": 19200,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.09460881910582948,
+        "instance_Top1_Q20_at_0_4": 0.10748489357864358,
+        "collision_rate": 0.6206280438311688,
+        "no_candidate_rate": 0.0009154040404040408
+      },
+      {
+        "experiment": "E3",
+        "checkpoint_step": 19200,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.0946235109742526,
+        "instance_Top1_Q20_at_0_4": 0.10917173971861471,
+        "collision_rate": 0.5714613771645023,
+        "no_candidate_rate": 0.0009154040404040408
+      },
+      {
+        "experiment": "E4",
+        "checkpoint_step": 1920,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.0941634155949106,
+        "instance_Top1_Q20_at_0_4": 0.11539468344155845,
+        "collision_rate": 0.5555840773809525,
+        "no_candidate_rate": 0.0009154040404040408
+      },
+      {
+        "experiment": "E5",
+        "checkpoint_step": 2880,
+        "split": "development_val",
+        "scene_count": 10,
+        "view_count": 320,
+        "AP_R20": 0.1060493595409296,
+        "instance_Top1_Q20_at_0_4": 0.1312047934704185,
+        "collision_rate": 0.5116184163059163,
+        "no_candidate_rate": 0.0009154040404040408
+      }
+    ],
+    "meaning": "Historical 10-scene x 32-view development validation; selected checkpoint steps differ. These are not E0-E4 complete official-test runs or isolated equal-budget module effects."
+  },
+  "target_classification": {
+    "source_file": "target_classification_summary.json",
+    "split": "validation_used_for_checkpoint_selection",
+    "physical_AP_available": false,
+    "source_metric_score": "pretrained q",
+    "finetuned_metric_score": "task_success_score",
+    "meaning": "Fixed historical planning commands associated with completed pick-and-transfer labels; not measured execution pose or policy success rate.",
+    "baseline": {
+      "global_step": 0,
+      "frame_count": 399,
+      "group_count": 3,
+      "n_success": 209,
+      "n_failure": 190,
+      "attempt_AUROC": 0.6214555530073611,
+      "attempt_PR_AUC": 0.6234430900845535,
+      "attempt_count": 399,
+      "evaluated_attempt_count": 399,
+      "skipped_attempt_count": 0
+    },
+    "best": {
+      "global_step": 1000,
+      "frame_count": 399,
+      "group_count": 3,
+      "n_success": 209,
+      "n_failure": 190,
+      "attempt_AUROC": 0.7121128147075835,
+      "attempt_PR_AUC": 0.7119204346496404,
+      "attempt_BCE": 0.6329506039619446,
+      "attempt_Brier": 0.22085705074590758,
+      "attempt_count": 399,
+      "evaluated_attempt_count": 399,
+      "skipped_attempt_count": 0
+    },
+    "initial_checkpoint_sha256": "5bc2c14c014fbf23cbef48062a0dac523ea243b6c18e540bb5af022ff7d0ea3a",
+    "best_checkpoint_sha256": "d55f1c2cda980ad0b874d14a267f834047794bf05dbb17bad3215026cd6bed18",
+    "successful_updates": 1000,
+    "attempted_updates": 1001,
+    "skipped_updates": 1,
+    "validation_nodes": 11,
+    "limitations": [
+      "Validation records were used for checkpoint selection.",
+      "Labels concern historical planning commands and completed pick-and-transfer outcomes, not independently measured contact pose or new-policy robot success.",
+      "No complete fine-tuned public R10/R20 evaluation is supplied."
+    ],
+    "delta_finetuned_minus_pretrained": {
+      "attempt_AUROC": 0.09065726170022237,
+      "attempt_PR_AUC": 0.08847734456508694
+    }
+  },
+  "inference_efficiency": {
+    "source_file": "inference_efficiency.json",
+    "device": "NVIDIA H20-3e",
+    "batch": 1,
+    "model_cpu_threads": 8,
+    "measurement": "load includes file hashes, input geometry and observed normals; inference includes collation, transfer, model, output CPU transfer; total includes NMS/render, excludes final NPZ/JSON save and 3D viewer. Original cohort1139 vs stereo1158; not controlled paired benchmark.",
+    "rows": [
+      {
+        "variant": "pretrained_original",
+        "count": 1139,
+        "timings_seconds": {
+          "load_seconds": {
+            "mean": 0.2660166170358939,
+            "median": 0.26218772726133466,
+            "p95_nearest_rank": 0.2904457487165928
+          },
+          "inference_seconds": {
+            "mean": 0.4113583775282992,
+            "median": 0.40952529618516564,
+            "p95_nearest_rank": 0.4290620442479849
+          },
+          "total_seconds": {
+            "mean": 0.7510463596073071,
+            "median": 0.7443555477075279,
+            "p95_nearest_rank": 0.8043783563189209
+          }
+        }
+      },
+      {
+        "variant": "finetuned_original",
+        "count": 1139,
+        "timings_seconds": {
+          "load_seconds": {
+            "mean": 0.2647764240718619,
+            "median": 0.26142474729567766,
+            "p95_nearest_rank": 0.28872950514778495
+          },
+          "inference_seconds": {
+            "mean": 0.41036089273828674,
+            "median": 0.4097458338364959,
+            "p95_nearest_rank": 0.4262225041165948
+          },
+          "total_seconds": {
+            "mean": 0.7671388375889298,
+            "median": 0.7626908090896904,
+            "p95_nearest_rank": 0.8090446838177741
+          }
+        }
+      },
+      {
+        "variant": "pretrained_stereo",
+        "count": 1158,
+        "timings_seconds": {
+          "load_seconds": {
+            "mean": 0.29781742518307686,
+            "median": 0.2939179874956608,
+            "p95_nearest_rank": 0.31937818694859743
+          },
+          "inference_seconds": {
+            "mean": 0.4543943326194032,
+            "median": 0.4514162631239742,
+            "p95_nearest_rank": 0.47386609390378
+          },
+          "total_seconds": {
+            "mean": 0.82571636380335,
+            "median": 0.818970654392615,
+            "p95_nearest_rank": 0.8726550103165209
+          }
+        }
+      },
+      {
+        "variant": "finetuned_stereo",
+        "count": 1158,
+        "timings_seconds": {
+          "load_seconds": {
+            "mean": 0.29482899384817596,
+            "median": 0.29266771115362644,
+            "p95_nearest_rank": 0.31465258076786995
+          },
+          "inference_seconds": {
+            "mean": 0.4569863681962942,
+            "median": 0.45601077005267143,
+            "p95_nearest_rank": 0.47369513381272554
+          },
+          "total_seconds": {
+            "mean": 0.8421554374001882,
+            "median": 0.8372904311399907,
+            "p95_nearest_rank": 0.8769027530215681
+          }
+        }
+      }
+    ],
+    "additional_exclusions": [
+      "camera capture",
+      "front-end instance segmentation",
+      "stereo depth generation"
+    ],
+    "comparison_limit": "Different hardware and measurement boundaries prevent direct paper timing speedup claims; original and stereo cohorts are not paired."
+  },
+  "model_sizes": {
+    "source_file": "model_sizes.json",
+    "rows": [
+      {
+        "variant": "pretrained",
+        "parameter_count": 15645319,
+        "parameter_tensor_bytes": 62581276,
+        "checkpoint_bytes": 188175006,
+        "checkpoint_step": 2880,
+        "note": "Parameter count from CPU architecture; checkpoint includes optimizer and training state, not inference-only weights. No forward pass or GPU use."
+      },
+      {
+        "variant": "finetuned",
+        "parameter_count": 15679112,
+        "parameter_tensor_bytes": 62716448,
+        "checkpoint_bytes": 158210574,
+        "checkpoint_step": 1000,
+        "note": "Parameter count from CPU architecture; checkpoint includes optimizer and training state, not inference-only weights. No forward pass or GPU use."
+      }
+    ],
+    "parameter_increase": 33793,
+    "parameter_increase_fraction": 0.0021599431753357027
+  }
+}

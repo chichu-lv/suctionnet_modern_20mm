@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -22,10 +23,30 @@ ZONE_NAMES = ('core', 'lip', 'cup', 'mount', 'approach')
 ZONE_LIMITS = {'core': 32, 'lip': 64, 'cup': 32, 'mount': 32, 'approach': 32}
 
 
+@dataclass
+class ContactQueryRequest:
+    """CPU-only state retained by one background geometry job."""
+    geometry: object
+    index: object
+    arrays: tuple
+    rolls: np.ndarray
+    pose_d2h_host_s: float
+    detailed: bool
+
+
+@dataclass
+class ContactQueryResult:
+    query: dict
+    used: np.ndarray
+    positions: dict | None
+    timings: dict
+
+
 class ContactGrouping(nn.Module):
     def __init__(self, frozen_config, *, chunk_size=32, checkpointed=True, fps_fn=fps_indices,
                  query_chunk_size=None, query_workers=1, detailed_cpu_timing=False, spatial_index=None,
-                 contact_query_backend='numpy', chunk_input_mode='slice'):
+                 contact_query_backend='numpy', chunk_input_mode='slice',
+                 geometry_threads=2, geometry_precision='float64', feature_gather_mode='chunk'):
         super().__init__()
         if not np.isclose(frozen_config.get('radius_m', np.nan), .020, rtol=0, atol=1e-9):
             raise ValueError('Contact grouping requires frozen 20mm contact radius')
@@ -46,8 +67,23 @@ class ContactGrouping(nn.Module):
             raise ValueError('pose_chunk_size must be positive')
         self.checkpointed = checkpointed
         self.chunk_input_mode = chunk_input_mode
+        if feature_gather_mode not in ('chunk', 'zone'):
+            raise ValueError('Contact feature gather mode must be chunk or zone')
+        self.feature_gather_mode = feature_gather_mode
         self.fps_fn = fps_fn
         self.spatial_index_config = dict(spatial_index or {})
+        if geometry_precision not in ('float32', 'float64'):
+            raise ValueError('geometry_precision must be float32 or float64')
+        if type(geometry_threads) is not int or not 1 <= geometry_threads <= 256:
+            raise ValueError('geometry_threads must be an integer in 1..256')
+        if geometry_precision == 'float32' and (
+                self.spatial_index_config.get('backend') != 'uniform_grid_cpu' or
+                contact_query_backend != 'native_cpu'):
+            raise ValueError('float32 contact geometry requires the native CPU grid path')
+        self.geometry_precision = geometry_precision
+        self.geometry_threads = geometry_threads
+        if geometry_precision != 'float64':
+            self.spatial_index_config['precision'] = geometry_precision
         if contact_query_backend not in ('numpy', 'native_cpu'):
             raise ValueError('Unsupported contact query backend')
         self.contact_query_backend = contact_query_backend
@@ -175,11 +211,12 @@ class ContactGrouping(nn.Module):
         return result
 
     @torch.no_grad()
-    def query(self, index, points, normals, instances, batch, valid, *, random_roll=False):
-        """Four-ball queries, via the P2 NumPy path or fused native CPU path."""
+    def _query_inputs(self, points, normals, instances, batch, valid, *, random_roll=False):
+        """Snapshot predicted poses and RNG on the training thread."""
         started = time.perf_counter()
-        points = points.detach().float().cpu().numpy().astype(np.float64)
-        normals = normals.detach().float().cpu().numpy().astype(np.float64)
+        dtype = np.float32 if self.geometry_precision == 'float32' else np.float64
+        points = np.ascontiguousarray(points.detach().float().cpu().numpy(), dtype=dtype)
+        normals = np.ascontiguousarray(normals.detach().float().cpu().numpy(), dtype=dtype)
         instances = instances.detach().cpu().numpy()
         batch = batch.detach().cpu().numpy()
         valid = valid.detach().cpu().numpy()
@@ -187,6 +224,21 @@ class ContactGrouping(nn.Module):
         # Exactly one draw for all input poses, before frame grouping/valid masks.
         rolls = (torch.rand(len(points)).numpy() * (2 * math.pi) if random_roll else
                  np.zeros(len(points)))
+        return (points, normals, instances, batch, valid), rolls, transferred-started
+
+    @torch.no_grad()
+    def query(self, index, points, normals, instances, batch, valid, *, random_roll=False):
+        """Synchronous query, retained for the existing model/inference API."""
+        arrays, rolls, transfer_s = self._query_inputs(points, normals, instances, batch, valid,
+                                                       random_roll=random_roll)
+        result, stats = self._query_cpu(index, arrays, rolls, transfer_s,
+                                         detailed=self.detailed_cpu_timing)
+        self.last_query_timings = stats
+        return result
+
+    def _query_cpu(self, index, arrays, rolls, pose_d2h_host_s, *, detailed):
+        """Only CPU arrays enter here; no CUDA calls, RNG draws or shared stats."""
+        points, normals, instances, batch, valid = arrays
         result = {name: {'indices': np.zeros((len(points), limit), np.int64),
                          'mask': np.zeros((len(points), limit), bool),
                          'geometry': np.zeros((len(points), limit, 7), np.float32),
@@ -195,9 +247,8 @@ class ContactGrouping(nn.Module):
         sectors = np.zeros((len(points), 8), np.int64)
         selected = np.flatnonzero(valid)
         axes, tangent_u, tangent_v = (np.zeros_like(points) for _ in range(3))
-        detailed = self.detailed_cpu_timing
         native_query = self.contact_query_backend == 'native_cpu'
-        stats = dict(pose_d2h_host_s=transferred-started, valid_candidates=len(selected),
+        stats = dict(pose_d2h_host_s=pose_d2h_host_s, valid_candidates=len(selected),
                      ball_calls=4*len(selected), ball_api_calls=0, ball_returned_points=0,
                      fps_calls=0, fps_input_points=0)
         if detailed and not native_query:
@@ -218,9 +269,9 @@ class ContactGrouping(nn.Module):
             result['lip_sector_counts'] = sectors
             stats.update(native_contact_query(index, points, axes, tangent_u, tangent_v,
                          instances, batch, selected, self.segments, self.self_ignore,
-                         result, detailed=detailed))
-            self.last_query_timings = stats
-            return result
+                         result, detailed=detailed, workers=self.geometry_threads,
+                         precision=self.geometry_precision))
+            return result, stats
 
         def chunks():
             if self.query_chunk_size is None:
@@ -320,8 +371,54 @@ class ContactGrouping(nn.Module):
             # Do not retain a previous block while allocating the next ball lists.
             del balls
         result['lip_sector_counts'] = sectors
-        self.last_query_timings = stats
-        return result
+        return result, stats
+
+    def prepare_query(self, encoded, points, normals, instances, batch, valid, *, random_roll=False):
+        """Detach a query request before submitting its CPU work to an executor."""
+        index, geometry = encoded.get('spatial_index'), encoded.get('cpu_geometry')
+        if index is None and geometry is None:
+            raise ValueError('Pipelined geometry requires the packed CPU geometry context')
+        arrays, rolls, transfer_s = self._query_inputs(points, normals, instances, batch, valid,
+                                                       random_roll=random_roll)
+        return ContactQueryRequest(geometry, index, arrays, rolls, transfer_s,
+                                   self.detailed_cpu_timing)
+
+    @staticmethod
+    def _encoding_arrays(query):
+        used = np.unique(np.concatenate([query[name]['indices'][query[name]['mask']]
+                                         for name in ZONE_NAMES]))
+        positions = {}
+        for name in ZONE_NAMES:
+            q = query[name]
+            position = np.full(q['indices'].shape, len(used), np.int64)
+            position[q['mask']] = np.searchsorted(used, q['indices'][q['mask']])
+            positions[name] = position
+        return used, positions
+
+    def run_query(self, request):
+        """Build/query/remap on CPU, returning all timing state with this job."""
+        started = time.perf_counter()
+        index = request.index
+        if index is None:
+            index = SpatialIndex.from_cpu_geometry(request.geometry, **self.spatial_index_config)
+            setup = dict(index.setup_timings)
+        else:
+            field = 'index_build_s' if index.backend == 'uniform_grid_cpu' else 'tree_build_s'
+            setup = {'geometry_cpu_setup_s': 0., field: 0., 'spatial_index_backend': index.backend}
+        built = time.perf_counter()
+        query, query_stats = self._query_cpu(index, request.arrays, request.rolls,
+                                             request.pose_d2h_host_s, detailed=request.detailed)
+        queried = time.perf_counter()
+        used, positions = self._encoding_arrays(query)
+        finished = time.perf_counter()
+        timings = {**setup, **query_stats,
+                   'spatial_index_seconds': built-started,
+                   'query_cpu_seconds': queried-built,
+                   'geometry_remap_cpu_s': finished-queried,
+                   'cpu_geometry_job_s': finished-started,
+                   'cpu_geometry_started_monotonic': started,
+                   'cpu_geometry_finished_monotonic': finished}
+        return ContactQueryResult(query, used, positions, timings)
 
     def forward(self, encoded, points, normals, instances, batch, valid, *, random_roll=False):
         started = time.perf_counter()
@@ -340,13 +437,25 @@ class ContactGrouping(nn.Module):
         query = self.query(encoded['spatial_index'], points, normals.detach(), instances, batch,
                            valid, random_roll=random_roll)
         queried = time.perf_counter()
+        # Preserve the synchronous path's original launch order: enqueue the
+        # local projection before remapping each zone. Background jobs perform
+        # both CPU operations before the main thread consumes their result.
+        used = np.unique(np.concatenate([query[name]['indices'][query[name]['mask']]
+                                         for name in ZONE_NAMES]))
+        result = ContactQueryResult(query, used, None,
+            {**setup_timings, **self.last_query_timings,
+             'spatial_index_seconds': built-started, 'query_cpu_seconds': queried-built})
+        return self.encode_query(encoded, result, transfer_started=queried)
+
+    def encode_query(self, encoded, result, *, transfer_started=None):
+        """Gather differentiable features and encode the completed CPU query."""
+        started = time.perf_counter() if transfer_started is None else transfer_started
+        query = result.query
         device = encoded['F_local'].device
         local = encoded['F_local']
         # Project just the union of selected points; this is exactly the same
         # pointwise projection as projecting the entire raw scene first.
-        used = np.unique(np.concatenate([query[name]['indices'][query[name]['mask']]
-                                         for name in ZONE_NAMES]))
-        used_rows = torch.as_tensor(used, dtype=torch.long, device=device)
+        used_rows = torch.as_tensor(result.used, dtype=torch.long, device=device)
         projected = chunk_apply(self.local_projection, local[used_rows],
                                 input_mode=self.chunk_input_mode,
                                 checkpointed=self.checkpointed and self.training)
@@ -355,8 +464,11 @@ class ContactGrouping(nn.Module):
         prepared = {}
         for name in ZONE_NAMES:
             q = query[name]
-            positions = np.full(q['indices'].shape, len(used), np.int64)
-            positions[q['mask']] = np.searchsorted(used, q['indices'][q['mask']])
+            if result.positions is None:
+                positions = np.full(q['indices'].shape, len(result.used), np.int64)
+                positions[q['mask']] = np.searchsorted(result.used, q['indices'][q['mask']])
+            else:
+                positions = result.positions[name]
             prepared[name] = {
                 'indices': torch.as_tensor(positions, device=device),
                 'mask': torch.as_tensor(q['mask'], device=device),
@@ -366,8 +478,10 @@ class ContactGrouping(nn.Module):
         transferred = time.perf_counter()
         features = {}
         for name, q in prepared.items():
-            def encode_zone(rows, mask, geometry, count, name=name):
-                p = torch.cat((projected[rows], geometry.to(projected)), -1)
+            def encode_zone(rows_or_features, mask, geometry, count, name=name):
+                selected = (rows_or_features if self.feature_gather_mode == 'zone'
+                            else projected[rows_or_features])
+                p = torch.cat((selected, geometry.to(projected)), -1)
                 p = self.point_mlp(p)
                 # Pool and log counts in FP32 even under AMP.
                 p = p.float()
@@ -377,15 +491,17 @@ class ContactGrouping(nn.Module):
                 stats = torch.stack((count.float().log1p(), (count > 0).float()), -1)
                 output = self.zone_projections[name](torch.cat((maximum, mean, stats), -1))
                 return output * (count > 0)[:, None]
-            features[name] = chunk_apply(encode_zone, q['indices'], q['mask'], q['geometry'], q['counts'],
+            # A single gather per zone joins its gradient before scattering
+            # into projected. With split inputs this avoids one full-source
+            # indexing backward branch for every small pose chunk.
+            zone_input = projected[q['indices']] if self.feature_gather_mode == 'zone' else q['indices']
+            features[name] = chunk_apply(encode_zone, zone_input, q['mask'], q['geometry'], q['counts'],
                                          chunk_size=self.chunk_size,
                                          input_mode=self.chunk_input_mode,
                                          checkpointed=self.checkpointed and self.training)
         finished = time.perf_counter()
-        self.last_timings = {**setup_timings, **self.last_query_timings,
-                             'spatial_index_seconds': built-started,
-                             'query_cpu_seconds': queried-built,
-                             'feature_projection_and_transfer_seconds': transferred-queried,
+        self.last_timings = {**result.timings,
+                             'feature_projection_and_transfer_seconds': transferred-started,
                              'feature_encoding_enqueue_seconds': finished-transferred}
         # CUDA feature encoding is asynchronous; the enqueue timing is explicitly
         # named and is not reported as synchronized GPU kernel latency.
