@@ -1,6 +1,6 @@
 # B 模型设计：共享图像编码与姿态条件环查询
 
-模型 `InstanceSuction2DFastV3` 已实现在 `models/instance_route_b.py`，同时提供别名 `InstanceRouteB`。数值依据为[B v3 原规范](../ROUTE_B.md)与[机器可读设计](../reference/route_b.json)；架构全图见[方法图说明](../METHOD_ARCHITECTURE_B.md)。ResNet-18/GN、原生纹理和接触分支直接用PyTorch实现，不依赖torchvision、spconv或逐候选局部栅格。真实网络CPU前向、反向和边界测试已通过，真实数据训练、GPU性能与部署导出尚未验证。
+模型 `InstanceSuction2DFastV3` 已实现在 `models/instance_route_b.py`，同时提供别名 `InstanceRouteB`。设计依据见[B v3 规格](../ROUTE_B.md)与[机器可读设计](../reference/route_b.json)；本页说明生产实现的支撑门槛和新版坐标图，运行身份以 `configs/instance_b.yaml` 与 `architecture_metadata()` 为准。冻结的NumPy旧版本参考仍采用原坐标图，不能把其旧阈值当作当前默认。架构全图见[方法图说明](../METHOD_ARCHITECTURE_B.md)。ResNet-18/GN、原生纹理和接触分支直接用PyTorch实现，不依赖torchvision、spconv或逐候选局部栅格。真实网络CPU前向、反向和边界测试已通过，真实数据训练、GPU性能与部署导出尚未验证。
 
 ## 1. 编码一次，多姿态共用
 
@@ -15,7 +15,9 @@ scores = model.score_at_pose(
 
 encoded 保留共享上下文和纹理特征、原始 organized 几何/有效性、相机与裁图变换、可见中心和尺寸。`score_at_pose` 接受任意合法的有向 p/n；canonical 与历史规划动作调用同一接口，历史轴不能改成该像素的观测法向。默认最多256查询，按64查询分块可控制内存；分块顺序和大小不改变分数。
 
-输出包含 q_inst、seal、wrench、ell、task_logit、query_valid 和诊断。query 的合法中心支持与各环槽的 contact_valid 是不同层次；环全空按空集合同返回特征/摘要，不自动制造失败标签或额外硬阈值。[数据和精确动作合同](../DATA_AND_LABELS.md)
+`min_support_points=100` 是模型内部的实例有效性门槛。`prepare_shared_images` 在目标 organized mask 内计数所有有限、正深度 XYZ 像素，保存 `support_count`、`support_sufficient`，并令 `instance_valid=support_sufficient`；不按有效法向数量计数，也不信任外部列表虚增的 `support_points` 长度。`score_at_pose` 自身应用该门控，因此直接调用模型、目标动作损失和目标评价也会拒绝不足100点的碎片。该参数必须为正整数，属于模型语义，不属于运行时分块选项。
+
+输出包含 q_inst、seal、wrench、ell、task_logit、query_valid 和诊断。实例支撑门槛、query 的合法中心支持与各环槽的 contact_valid 是三个层次；环全空按空集合同返回特征/摘要，不自动制造失败标签或额外硬阈值。[数据和精确动作合同](../DATA_AND_LABELS.md)
 
 ## 2. 两条共享编码路径
 
@@ -38,11 +40,13 @@ query 原图投影映射到 `(u_ctx,v_ctx)`，L1/L2 特征坐标分别是 `(u_ct
 
 ## 3. 姿态坐标图与理想环
 
-使用冻结的两个 Z 轴 Rodrigues 图。默认 `a=(0,0,-1)`、`b1=(1,0,0)`、`b2=(0,-1,0)`；令 `v=a×n`、`c=a·n`：
+默认特征坐标图版本为 `two_fixed_z_charts_rodrigues_z05_v1`。对有限单位法向，`n_z<=0.5` 使用 `a=(0,0,-1)`、`b1=(1,0,0)`、`b2=(0,-1,0)`；`n_z>0.5` 使用 `a=(0,0,+1)`、`b1=(1,0,0)`、`b2=(0,1,0)`。令 `v=a×n`、`c=a·n`：
 
 $$R_a=I+[v]_\times+\frac{[v]_\times^2}{1+c},\qquad e_1=R_a b_1,\quad e_2=R_a b_2.$$
 
-当 `1+c<=1e-4` 时切到 `a=(0,0,+1)`、`b1=(1,0,0)`、`b2=(0,1,0)`，记录 chart；历史 n 保持符号。此特征坐标图不是输出工具 roll，也不保证全球连续。
+`-Z` 图的分母为 `1-n_z`，奇点在 `n_z→+1`，在朝向相机的 `n_z≈-1` 处稳定。新切换规则使 `-Z` 分支分母至少0.5、`+Z` 分支大于1.5，**全域下界是0.5**。历史轴保持原有向符号，不能为避开坐标图切换而翻转。旧版本 `two_fixed_z_charts_rodrigues_v2` 仍可显式指定，仅在 `1-n_z<=1e-4` 时使用 `+Z` 图，供旧权重按原采样规则读取；旧实现使用float64，接近极点会恶化条件数，并不意味着原1°示例必然出现非有限数值。
+
+切换阈值移离奇点只改善数值条件，**没有消除两图接缝处的切平面基跳变**。接缝的面内旋转与法向方位有关，不保证为90°或5°的整数倍。72角槽的循环卷积/池化对已采样序列的整数槽循环移位一致，不能据此宣称重投影后的任意连续roll严格不变；训练随机phase也不构成这一保证。此图只用于特征采样，与输出工具roll分别管理。改变 `feature_frame` 会改变部分姿态的实际采样位置，即使网络张量维度相同，也必须作为模型语义变更；兼容性规则见[训练方案](TRAINING_PLAN.md#6-恢复状态和训练准入验收)。
 
 | 分支 | 名义半径/mm | 实际允许区域/mm |
 |---|---|---|
@@ -83,7 +87,11 @@ $$m_{contact}=m_{obs}\land[\rho\in I_{region}]\land[|\rho-r|\le .003]
 
 支持摘要固定按core/inner/lip及列出的半径顺序，每个半径依次拼接 `(contact_fraction, gap_fraction)`，共18维；raw摘要按每个区域依次拼接 `(observed_fraction, rejection_fraction, max_positive_height, max_negative_height)`，共12维。不能改成先拼全部9个coverage、再拼全部9个gap。
 
-raw摘要按**名义模板区域**汇总门控前观测；实际rho越区也保留。中心72复制只占一个半径权重，中心支持摘要只能是(1,0)或(0,1)。离散覆盖不是面积覆盖，raw高度不是完整自碰认证。
+raw摘要按**名义模板区域**汇总门控前观测；实际rho越区也保留。r=0是同一个物理观测读取一次后广播72槽，其接触支持摘要为 `(c,1-c)`，其中c只能是0或1。这两维相关且保留在既有18维合同中，不能当成圆周覆盖信息。
+
+core按0、5、9mm三个半径等槽数统计，中心的72个广播槽占 `observed_count/216` 的 **1/3权重**；仅中心有观测时raw core观测比例就是1/3，不代表72个独立深度点或1/3真实表面积。诊断 `unique_source_pixels_per_radius` 按真实source ID去重，中心有效时最多为1。广播的是中心采样的观测及有效性，完整25维token仍可能因 `g·e_r` 等逐角字段不同；不能说72个token必然完全相同。
+
+本次保留中心权重、`support18 + raw12` 和330维融合，不对旧权重静默改摘要含义。若后续独立编码中心或改用独立观测加权，需另立特征版本与消融实验。raw高度仍不是完整自碰认证。
 
 ## 6. 330维融合及五个独立头
 
@@ -96,7 +104,10 @@ raw摘要按**名义模板区域**汇总门控前观测；实际rho越区也保�
 ```python
 from models.instance_route_b import InstanceSuction2DFastV3
 
-model = InstanceSuction2DFastV3(query_chunk=64, phase_seed=42)
+model = InstanceSuction2DFastV3(
+    query_chunk=64, phase_seed=42, min_support_points=100,
+    feature_frame='two_fixed_z_charts_rodrigues_z05_v1',
+)
 model.eval()
 encoded = model.encode_instance(observation)  # prepare_instance或缓存读取的单实例字典
 scores = model.score_at_pose(encoded, observation['query_points'], observation['query_normals'])
@@ -105,10 +116,12 @@ scores = model.score_at_pose(encoded, observation['query_points'], observation['
 
 首版仅支持单实例编码；`query_batch_index` 省略或全部为0，其他值明确报错。`parameter_groups()` 返回互斥且覆盖全部参数的encoder/decoder/contact/heads：encoder为ResNet-18；decoder包括中层/G投影和纹理stem；contact包括三个环编码器及融合MLP；heads为五个输出头。训练器通过 `set_training_context(update, seed)` 设置相位身份。
 
+`architecture_metadata()` 返回可直接序列化的实际结构：13/5输入通道、纹理16、G128、Fq64、ring96、support18、raw12、descriptor12、fusion330、9个米制半径/72角/577个不同模板位置，以及支撑门槛与计数语义、实际 `feature_frame`、非连续接缝、float64几何、GN/LN和Laplace尺度定义。推理报告的 `checkpoint['architecture']` 因此有明确内容。查询chunk属于执行配置，不进入这份结构身份；元数据可核对结构，但不能替代权重或数据语义检查。
+
 ## 7. 模型交付验收
 
 必须核验 Fq 梯度定位到L1/L2相应位置；stride4/8单像素脉冲无固定偏移；任意合法历史轴确实改变本次投影条件；共享编码不随query重跑；chunk64与完整查询一致。45°、h=-6mm的18mm理想环两侧actual rho约24.254558/12.254558mm，应拒绝lip但保留负高度。反向槽、中心相位不变、71→0缺口、全空LN/池化、GN padding、输入精度和非有限grid均须覆盖。
 
 整数角槽循环移位的一致性可检查，但有限插值不提供任意连续SO(2)不变性；连续phase敏感性另测。拟导出的Conv/GN/LN、投影、gather/grid_sample及mask组合必须实际解析和对照，不能仅凭“普通二维算子”宣称完整TensorRT已可用。后处理与导出边界见[下一页](POSTPROCESSING.md)。
 
-`python -m pytest -q tests/test_instance_route_b.py` 当前通过12项CPU测试，覆盖真实网络前后向、Fq位置及梯度、chunk一致性、掩码LN、循环缺口、视差反例、原生四角采样/回退、空query/实例、NaN/Inf和超大有限坐标的有限反向梯度、相位身份及参数组。另已连接共同 `prepare_instance` 做合成RGB-D输入到网络的验证。以上不是实物成功率、真实teacher重算或GPU时延证据。
+模型检查入口为 `python -m pytest -q tests/test_instance_route_b.py`，覆盖真实网络前后向、Fq位置及梯度、chunk一致性、掩码LN、循环缺口、视差反例、原生四角采样/回退、空query/实例、NaN/Inf和超大有限坐标的有限反向梯度、相位身份及参数组。本轮还须覆盖门槛上下界、无有效法向但深度充足、实际organized支撑计数、结构元数据、两图极点与切换边界，以及中心广播摘要。具体通过数量以当前命令输出为准。另已连接共同 `prepare_instance` 做合成RGB-D输入到网络的验证。以上不是实物成功率、真实teacher重算或GPU时延证据。

@@ -6,6 +6,8 @@ rgb_augmentation: true
 max_grad_norm: 10.0
 max_draw_multiplier: 20
 model:
+  min_support_points: 100
+  feature_frame: two_fixed_z_charts_rodrigues_z05_v1
   query_chunk: 64
   phase_seed: 42
   training_phase: true

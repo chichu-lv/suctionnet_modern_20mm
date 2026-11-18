@@ -1,6 +1,6 @@
 # B 训练方案：同姿态物理预训练与规划动作适配
 
-本页给出已实现训练器 `scripts/train_instance.py` / `suction20/instance_training.py` 的B运行方式，使用 `configs/instance_b.yaml`。设计依据为[route_b.json](../reference/route_b.json)，该JSON继续作为设计合同，不直接传给训练CLI。源域直接100场景从头训练，best只使用source test全部90场景各固定8帧的子集选择；公开半径评价协议待定。本阶段不预设15–20个epoch或数小时收敛。
+本页给出已实现训练器 `scripts/train_instance.py` / `suction20/instance_training.py` 的B运行方式，使用 `configs/instance_b.yaml`。设计依据为[route_b.json](../reference/route_b.json)，该JSON继续作为设计合同，不直接传给训练CLI；当前支撑门槛和坐标图版本须与运行YAML及模型结构元数据一致。源域直接100场景从头训练，best只使用source test全部90场景各固定8帧的子集选择；公开半径评价协议待定。本阶段不预设15–20个epoch或数小时收敛。
 
 ## 1. 进入训练的条件与环境
 
@@ -9,6 +9,8 @@
 B的学习网络从新架构初始化，ResNet-18不加载外部预训练权重；实现直接使用PyTorch 2.5.1，不依赖torchvision或spconv，也不自动下载ImageNet权重。离线teacher仍有其科学计算和数据依赖。参考脚本的Python3.12.14/NumPy2.3.5环境与既有GPU环境分开，完整环境说明见[共同复现页](../TRAIN_EVAL_REPRODUCE.md)。
 
 每次真实运行保存代码commit、环境/硬件、配置、源/目标manifest与标签路径、实际标定和已知physics、normal/sampler/输入/精度合同、RNG与参数组。旧8通道E5或A权重不能通过改key或补零静默恢复为B。
+
+新运行的模型配置显式设置 `min_support_points: 100` 与 `feature_frame: two_fixed_z_charts_rodrigues_z05_v1`；前者统一模型、训练与评价的实例门槛，后者将两套Rodrigues图的切换移到 `n_z>0.5`。两者都属于模型语义，不能像 `query_chunk` 一样在读取checkpoint后仅作为执行覆盖替换。GN/LN、330维融合及中心广播摘要保持现有结构。
 
 ## 2. 源域物理损失和正确归约
 
@@ -63,7 +65,7 @@ RGB jitter与灰度化遵循[预处理](PREPROCESSING.md)，同一实例的上�
 
 周期源评价只遍历全部90场景的固定8帧、共720帧对应实例，`evaluation_stepXXXXXX.json`保存该子集指标/选择键、selection范围和`record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；最终步明细仍是固定子集，不代表已完成完整test。可选 `all` 保留各节点、`none` 完全不写明细；不内嵌records数组，也不把全部明细常驻内存。该策略减少长期存储，仍有一次临时压缩流写入。
 
-共享训练器读取模型的 `min_support_points`；当前B构造器没有该参数，因此回退默认100，不能在B YAML中加入该未支持选项。无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算；builder的准备阈值另存metadata，不以缓存trainable代替运行门槛。
+共享训练器读取模型的 `min_support_points`，B构造器和YAML显式支持该参数，默认100；模型还会按实际organized图内的有限正深度点执行独立门控，因此直接目标动作评分也不能绕过。该计数与有效法向数量分开，不能以法向缺测删除真实深度支持。无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算；builder的准备阈值另存metadata，不以缓存trainable代替运行门槛。
 
 ## 4. 目标域1000次成功更新
 
@@ -93,11 +95,15 @@ B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每�
 
 ## 6. 恢复状态和训练准入验收
 
-checkpoint至少包含：模型类/版本、13/5通道输入、330融合及环门控/LN/summary合同、normal/sampler/precision与query/label精确ID、p/n对齐合同、INST/self配置、归一化/padding、精度/ranking、权重/优化器/scaler、成功步/监督实例/已消费draw、参数组、sampler/loader/RNG、源目标清单路径与采样ID序列，以及完整config_definition和显式runtime_contract。初始化与resume互斥；按模型/配置/已知physics/预处理和状态结构检查兼容性。旧校验和字段忽略，未知physics保留null，不计算文件或数组校验和，也不要求为迁移metadata重算全部teacher。
+checkpoint至少包含：模型类/版本、由 `architecture_metadata()` 产生的 `identity.model_architecture`、13/5通道输入、330融合及环门控/LN/summary合同、`min_support_points` 与实际 `feature_frame`、normal/sampler/precision与query/label精确ID、p/n对齐合同、INST/self配置、归一化/padding、精度/ranking、权重/优化器/scaler、成功步/监督实例/已消费draw、参数组、sampler/loader/RNG、源目标清单路径与采样ID序列，以及完整config_definition和显式runtime_contract。初始化与resume互斥；按模型/配置/已知physics/预处理和状态结构检查兼容性。旧校验和字段忽略，未知physics保留null，不计算文件或数组校验和，也不要求为迁移metadata重算全部teacher。
 
-`--init-checkpoint`用于开始新的微调运行：先检查源checkpoint配置与已有`identity.config_definition`自洽，再比较模型语义。B的`model`配置仅允许执行分块`query_chunk`不同；`phase_seed`、`training_phase`及其他结构/几何参数仍严格匹配，路线、质量、数据/teacher合同不放宽，权重使用`strict=True`加载。路线A的执行例外是`backbone_root`和`query_chunk_size`，其点采样、几何和BN策略仍严格匹配；B不接受`backbone_root`，也不能用A权重初始化。不能先覆盖执行字段再忽略源配置矛盾。
+`--init-checkpoint`用于开始新的微调运行：先检查源checkpoint配置与已有`identity.config_definition`自洽，再比较模型语义。B的`model`配置仅允许执行分块`query_chunk`不同；`min_support_points`、`feature_frame`、`phase_seed`、`training_phase`及其他结构/几何参数仍严格匹配，路线、质量、数据/teacher合同不放宽，权重使用`strict=True`加载。路线A的执行例外是`backbone_root`和`query_chunk_size`，其点采样、几何和BN策略仍严格匹配；B不接受`backbone_root`，也不能用A权重初始化。不能先覆盖执行字段再忽略源配置矛盾。
 
-微调初始化在`model_compatibility`中记录`semantic_model`、`source_execution`及`target_execution`。普通`--resume`继续要求完整配置相等，包含chunk、phase、评价节点及保存间隔，并恢复优化器、采样和RNG；新微调允许的chunk变化不扩展到同一次运行的resume。已省略的模型参数按实际构造器默认值参与语义比对，未知新增参数也保留在比较中。
+微调初始化在`model_compatibility`中记录`semantic_model`、`source_execution`及`target_execution`。普通`--resume`继续要求完整配置及模型结构身份相等，包含chunk、phase、评价节点及保存间隔，并恢复优化器、采样和RNG；新微调允许的chunk变化不扩展到同一次运行的resume。未知新增模型参数也保留在语义比较中。
+
+旧B checkpoint未声明 `feature_frame` 时固定解释为 `two_fixed_z_charts_rodrigues_v2`，不能采用当前构造器的新图默认值；未声明支撑门槛时解释为100。新YAML显式选择 `two_fixed_z_charts_rodrigues_z05_v1`，所以用旧图源权重直接初始化该新图微调会报语义不匹配。若需要延续旧采样规则，应复制运行配置到新的运行目录并显式写入旧 `feature_frame`，再以 `--init-checkpoint` 开始新的微调；旧源权重仍可按旧图推理。
+
+缺少 `identity.model_architecture` 的旧B训练checkpoint不能按同一次运行 `--resume`，需要明确拒绝。即使旧图权重张量形状完全一致，新修复也改变了低支撑实例的目标动作有效性；不能把它声称为原训练轨迹的无差别恢复。已经保存新结构身份、相同语义与完整状态的checkpoint才进入严格resume。上述版本兼容通过可读配置和语义字段检查，不增加文件内容校验。
 
 运行配置校验 `instance_runtime_v1`、route=b、source scene范围和 `public_evaluation.status=deferred`。CLI支持严格resume和finetune初始化，参数见第7节；不通过旧E5参数或替换文件名绕过模型/数据身份。
 

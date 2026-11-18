@@ -170,7 +170,7 @@ manifest和summary分别使用唯一临时文件原子替换，清单最后发�
 
 旧布局的缓存和清单**不会自动搬迁**，仍可按其原路径读取或传给合并器；新显式分片请求只查找自己的新目录，不会自动从旧输出根查找或复制NPZ。合并也只改写路径引用，不搬迁源资产，因此必须保留被合并清单引用的分片目录。所有检查继续基于schema、实际数组、姿态/标签关系、已知配置和覆盖声明，不生成或验证文件内容摘要。
 
-builder的 `--min-support-points` 默认100，写入观测、清单与summary；A读取模型 `min_support_points`，B当前未暴露该构造参数、训练/评价helper回退100；不要在B YAML中加入未支持的构造参数。数据的 `has_supervision` 只看有效标签，构建时 `trainable` 只作诊断，不能替代运行门槛。
+builder的 `--min-support-points` 默认100，写入观测、清单与summary；A/B均读取模型 `min_support_points`，B YAML已显式设为100，直接模型评分和目标动作评价也执行该门槛。B的支撑计数取同实例有限且正深度的原始像素，独立于法向有效性。数据的 `has_supervision` 只看有效标签，构建时 `trainable` 只作诊断，不能替代运行门槛。
 
 Teacher的可调用接口为：
 

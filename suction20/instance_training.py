@@ -102,6 +102,7 @@ def checkpoint_interval(stage_config):
 
 def load_instance_config(path):
     from .instance_selection import validate_selection_config
+    from .instance_config import B_FEATURE_FRAME
     with Path(path).open() as stream:
         config = yaml.safe_load(stream)
     if not isinstance(config, dict) or config.get('schema') != 'instance_runtime_v1':
@@ -109,6 +110,12 @@ def load_instance_config(path):
     config = clean_metadata(config)
     if config.get('route') not in ('a', 'b'):
         raise ValueError('route must be a or b')
+    if config['route'] == 'b':
+        options = config.setdefault('model', {})
+        if not isinstance(options, dict):
+            raise ValueError('Instance model configuration must be a mapping')
+        options.setdefault('min_support_points', 100)
+        options.setdefault('feature_frame', B_FEATURE_FRAME)
     if config.get('quality_contract') != QUALITY_CONTRACT:
         raise ValueError('Instance quality identity mismatch')
     if config.get('public_evaluation', {}).get('status') != 'deferred':
@@ -137,7 +144,11 @@ def create_instance_model(config, device='cpu'):
         from models.instance_route_a import InstanceSuction3D
         model = InstanceSuction3D(**options)
     elif route == 'b':
+        from .instance_config import B_LEGACY_FEATURE_FRAME
         from models.instance_route_b import InstanceSuction2DFastV3
+        # Saved configs predating the chart field retain their original grid.
+        # load_instance_config materializes the new default for fresh runs.
+        options.setdefault('feature_frame', B_LEGACY_FEATURE_FRAME)
         model = InstanceSuction2DFastV3(**options)
     else:
         raise ValueError(f'Unknown route: {route}')
@@ -578,6 +589,17 @@ class InstanceTrainer:
         if stage == 'finetune' and target_dataset is None:
             raise ValueError('Finetuning requires target training observations')
         self.model, self.config = model, clean_metadata(config)
+        architecture = getattr(model, 'architecture_metadata', None)
+        b_architecture = architecture() if config['route'] == 'b' and callable(architecture) else None
+        if b_architecture is not None:
+            # Programmatic constructors also save their actual chart/gate, so
+            # their checkpoints cannot be mistaken for historical defaults.
+            options = self.config.setdefault('model', {})
+            for key, actual in (('min_support_points', model.min_support_points),
+                                ('feature_frame', model.feature_frame)):
+                if key in options and options[key] != actual:
+                    raise ValueError(f'Route B configuration differs from the constructed model: {key}')
+                options[key] = actual
         self.source, self.selection, self.target = source_dataset, selection_dataset, target_dataset
         if stage == 'pretrain':
             from .instance_selection import select_source_evaluation, validate_selection_config
@@ -616,7 +638,7 @@ class InstanceTrainer:
             [{'params': values, 'name': name, 'lr': 0.} for name, values in groups.items() if values],
             betas=(.9, .999), eps=1e-8, weight_decay=.01)
         self.identity = {
-            'route': config['route'], 'stage': stage, 'config_definition': clean_metadata(config),
+            'route': config['route'], 'stage': stage, 'config_definition': clean_metadata(self.config),
             'source': _dataset_identity(self.source), 'selection': _dataset_identity(self.selection),
             'target': _dataset_identity(self.target) if self.target else None,
             'quality_contract': QUALITY_CONTRACT, 'runtime_contract': RUNTIME_CONTRACT,
@@ -624,6 +646,8 @@ class InstanceTrainer:
             'torch_version': str(torch.__version__), 'numpy_version': str(np.__version__),
             'device_type': next(model.parameters()).device.type,
         }
+        if b_architecture is not None:
+            self.identity['model_architecture'] = clean_metadata(b_architecture)
         self._apply_phase()
 
     @property
@@ -779,6 +803,12 @@ class InstanceTrainer:
             raise ValueError('Resume configuration differs from the saved run')
         validate_source_selection_checkpoint(state)
         old_identity = state.get('identity', {})
+        if 'model_architecture' in self.identity:
+            if 'model_architecture' not in old_identity:
+                raise ValueError('Resume checkpoint predates the route-B support/chart contract; '
+                                 'start a new run with explicit compatible weight initialization')
+            if clean_metadata(old_identity['model_architecture']) != self.identity['model_architecture']:
+                raise ValueError('Resume model architecture differs from the saved run')
         # A fixed subset must retain its exact ordered instance definition,
         # including when reading an otherwise legacy runtime identity.
         old_selection = old_identity.get('selection') or {}
@@ -836,6 +866,9 @@ class InstanceTrainer:
                 or semantic_model_config(route, source_config.get('model', {}))
                    != semantic_model_config(route, self.config.get('model', {}))):
             raise ValueError('Finetune initialization requires the same source instance architecture/quality')
+        if (route == 'b' and 'model_architecture' in source_identity and
+                clean_metadata(source_identity['model_architecture']) != self.identity.get('model_architecture')):
+            raise ValueError('Finetune source model architecture differs from the target runtime')
         old_data = state['identity']['source'].get('data_identity') or {}
         new_data = self.identity['source'].get('data_identity') or {}
         check_data_contract(old_data, new_data)

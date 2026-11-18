@@ -14,7 +14,7 @@
 
 先读取`query_valid`，只对True槽位检查p/n数值、归一化法向和调用`score_at_pose`。False槽位允许零法向等占位值，跳过评分并按原`query_id`写入`rejected_queries`，原因为`ineligible_query`。过滤只压缩执行数组，不重新编号：输出`query_id`、`source_point_id`及环支持诊断按原行映射，不能错配到邻近合法query。
 
-输入结构合法后，支撑点不足`getattr(model, 'min_support_points', 100)`时优先返回`status=no_pose, reason=insufficient_support`，包括空候选或全部无效的情况。当前B没有可配置的`min_support_points`构造器参数，使用100点门槛；支撑足够但没有有效query才返回`reason=no_eligible_queries`。有效槽位的非法p/n、模型输出NaN/Inf或错形状仍显式报错，运行数值错误不作为合法`no_pose`吞掉。
+输入结构合法后，支撑点不足模型配置的`min_support_points`时优先返回`status=no_pose, reason=insufficient_support`，包括空候选或全部无效的情况。B构造器与YAML显式支持该参数，默认100；`prepare_shared_images`还会在实际organized目标mask中重新统计有限、正深度XYZ像素，模型`score_at_pose`自身按此门槛拒绝。法向无效不减少这一深度支撑计数，外部列表虚增点数也不能绕过模型门控。支撑足够但没有有效query才返回`reason=no_eligible_queries`。有效槽位的非法p/n、模型输出NaN/Inf或错形状仍显式报错，运行数值错误不作为合法`no_pose`吞掉。
 
 单个环或全部接触槽无支持时，模型内部遵循全零接触特征加显式摘要合同，不能在此擅自将其改成Seal=0或成功概率0。默认不要求某个覆盖率才能参与排序；若未来启用支持过滤，须独立登记配置并重测覆盖/失效率。
 
@@ -65,6 +65,8 @@ $$T_{base,TCP}=T_{base,cam}\,T_{cam,contact}\,T_{contact,TCP}.$$
 | 分数 | q_inst、seal、wrench、ell、task_probability、ranking_score、ranking_alpha、quality_contract |
 | 观测证据 | 逐半径coverage/gap、raw高度摘要、独立source像素数、门控/插值回退/低分辨率诊断 |
 | 执行边界 | pose_source、actual_execution_verified、标定变换身份、是否做分数校准、计时范围 |
+
+`checkpoint['architecture']` 由B的 `architecture_metadata()` 生成，记录实际13/5输入通道、G128/Fq64、ring96/support18/raw12/descriptor12、fusion330，以及 `minimum_support_points`、实际 `feature_frame`、半径/角槽、归一化和精度合同。接触诊断同时记录真实支撑计数与 `support_sufficient`。中心r=0的覆盖/缺口只能表示一个中心观测是否受支持，raw core中的中心槽占1/3权重；解释诊断时应结合独立source像素数，不能把广播的72槽报告为72次独立观测。
 
 历史动作预测保留 `planned_pipeline_contact` 与 `actual_execution_verified=false`。没有任务头训练身份时明确标记任务分数不可用于决策，不伪造有效概率。no_pose记录不含伪造的零坐标姿态；评价仍保留原始实例分母。诊断的coverage不是碰撞通过或密封概率。
 
@@ -120,4 +122,6 @@ python scripts/evaluate_instance.py --checkpoint /data/runs/b_target/best.pt --m
 
 `infer_instance.py`和`evaluate_instance.py`均支持正整数`--query-chunk-size`，与`train_instance.py`同名；对B映射为`model.query_chunk`，不指定时沿用checkpoint，构造器默认64。可在上述命令后附加`--query-chunk-size 32`控制执行内存，不改变候选预算、phase语义或权重结构；B不接受`--backbone-root`。
 
-加载先核验checkpoint保存配置与已有`config_definition`自洽，以及路线/阶段、质量、预处理和选模身份，再在副本上覆盖chunk，以`strict=True`加载权重。原checkpoint配置不改写，输出`model_compatibility`保存`semantic_model`、`checkpoint_execution`、`runtime_execution`。B的`phase_seed`、`training_phase`和其他结构/几何选项不属于执行覆盖；新微调初始化与普通resume的不同兼容性要求见[训练方案](TRAINING_PLAN.md)。普通resume仍检查完整配置，不能借推理chunk覆盖绕过。A另外允许固定骨干的挂载路径覆盖，且A训练遇到未填写的`backbone_root: null`会在读取manifest前报错。
+加载先核验checkpoint保存配置与已有`config_definition`自洽，以及路线/阶段、质量、预处理和选模身份，再在副本上覆盖chunk，以`strict=True`加载权重。原checkpoint配置不改写，输出`model_compatibility`保存`semantic_model`、`checkpoint_execution`、`runtime_execution`。B的`min_support_points`、`feature_frame`、`phase_seed`、`training_phase`和其他结构/几何选项不属于执行覆盖；新微调初始化与普通resume的不同兼容性要求见[训练方案](TRAINING_PLAN.md)。普通resume仍检查完整配置及模型结构身份，不能借推理chunk覆盖绕过。A另外允许固定骨干的挂载路径覆盖，且A训练遇到未填写的`backbone_root: null`会在读取manifest前报错。
+
+旧B checkpoint缺少 `feature_frame` 时按旧 `two_fixed_z_charts_rodrigues_v2` 解释，禁止因构造器默认值变化而静默使用新的 `two_fixed_z_charts_rodrigues_z05_v1`。旧权重可以按旧坐标图推理，但现在模型内部同样执行默认100点支撑门槛；这是对旧低支撑行为的修复，不能声称旧新所有输入逐位一致。新运行默认采用新坐标图；旧坐标图权重向新图微调必须因语义不匹配而明确拒绝，不能仅凭权重形状相同放行。需要沿用旧采样语义时，在新的微调运行配置中显式选择旧 `feature_frame`，详细准入与旧版本resume限制见训练页。

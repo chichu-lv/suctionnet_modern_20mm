@@ -80,7 +80,7 @@ python scripts/merge_instance_manifests.py \
 
 同一分片或同一最终发布目录由非阻塞文件锁保护，第二个writer在写入前报错；不同分片独立写入。manifest/summary通过唯一临时文件原子替换。合并器拒绝用遗漏已有帧的结果覆盖已发布清单，因此串行后续分片也不会缩减既有覆盖。旧manifest仍可读取和合并，不自动搬迁旧缓存；分片路径直接编码ID范围，不计算内容摘要。
 
-当前builder按请求范围生成缓存，不宣称实现了全量异步/按需缓存服务。可先用 `--scenes 0 --frames 0 --train-queries 64` 做真实资产成本检查；相应清单被标记partial，正式训练默认拒绝。无标签推理缓存可用 `--without-labels`，不需要label-root。`--min-support-points` 默认100，写入观测/清单/summary；A的训练与评价实际读取 `model.min_support_points`（默认100）；B当前未暴露该构造参数，helper使用默认100，缓存中的 `trainable` 只是构建时诊断。少支持或无法向实例仍进入test清单并记no_pose；无GT实例帧单独登记在summary中。
+当前builder按请求范围生成缓存，不宣称实现了全量异步/按需缓存服务。可先用 `--scenes 0 --frames 0 --train-queries 64` 做真实资产成本检查；相应清单被标记partial，正式训练默认拒绝。无标签推理缓存可用 `--without-labels`，不需要label-root。`--min-support-points` 默认100，写入观测/清单/summary；A/B的训练与评价实际读取 `model.min_support_points`（默认100），模型内部也执行同一门槛。B按实例内有限正深度的原始像素数计数，不以法向有效数或另传的点表替代。缓存中的 `trainable` 只是构建时诊断。少支持或无法向实例仍进入test清单并记no_pose；无GT实例帧单独登记在summary中。
 
 ## 3. 直接100场景预训练
 
@@ -128,6 +128,8 @@ YAML默认 `selection_frames_per_scene: 8`、`evaluate_every: 875`。可将帧�
 A使用自己的run目录并保留相同 `--backbone-root`。完整恢复模型、Adam状态、阶段、学习率、成功预算、数据采样器、RGB增强RNG，以及Python/NumPy/Torch/CUDA RNG。当前checkpoint按完整配置、route/stage、运行合同、已知物理/预处理定义、清单路径/数量与实际采样ID序列检查恢复兼容性；不读取文件字节来计算身份。不能改总预算后继续声称精确resume。A/B、旧E5和新架构不能混用。
 
 微调 `--init-checkpoint` 是新的运行：A允许更换 `model.backbone_root` 和 `model.query_chunk_size`，B允许更换 `model.query_chunk`。其余已知或未知model字段均参与严格语义比较；省略的已知构造默认值先补齐，网络权重仍以 `strict=True` 加载。先检查源checkpoint保存配置和 `config_definition` 自洽，再使用新运行的执行参数；来源记录保留源/目标执行设置。普通 `--resume` 继续比较完整配置，包含路径和分块设置。
+
+B的新运行显式保存 `min_support_points=100` 和 `feature_frame=two_fixed_z_charts_rodrigues_z05_v1`，并在 `identity.model_architecture` 保存真实模型结构合同。新图在n_z>0.5切换，分母整体下界0.5；两图接缝仍存在。缺少图字段的历史checkpoint按 `two_fixed_z_charts_rodrigues_v2` 加载，推理报告列出解析后的旧图和当前100点门槛。旧图权重不能直接初始化新图微调；可在新运行显式选择旧图后初始化。缺少新B结构身份的旧checkpoint不允许精确resume；同配置的新checkpoint正常恢复。该检查不改变A的恢复身份，也不要求为只改变环采样图而重算teacher标签。
 
 训练、推理、评价三条CLI统一提供 `--query-chunk-size N`，分别映射到A的 `query_chunk_size` 和B的 `query_chunk`；不传时使用配置原值。A的 `backbone_root: null` 是待提供的路径，须通过YAML或 `--backbone-root` 指定，训练CLI在加载大清单前就检查这一点。分块影响临时内存与执行形状，不能据此承诺跨GPU分块的浮点结果逐位相同。
 

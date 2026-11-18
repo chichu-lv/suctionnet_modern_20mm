@@ -6,10 +6,10 @@ import pytest
 import torch
 
 from suction20.instance_config import (apply_model_runtime_overrides,
-    model_execution_options, semantic_model_config)
+    B_FEATURE_FRAME, B_LEGACY_FEATURE_FRAME, model_execution_options, semantic_model_config)
 from suction20.instance_inference import load_instance_checkpoint
 import suction20.instance_inference as inference
-from suction20.instance_training import InstanceTrainer
+from suction20.instance_training import InstanceTrainer, load_instance_config
 from test_instance_training import (MemorySource, MemoryAttempts, TinyInstanceModel,
                                     config as engine_config, assert_nested_equal)
 from test_instance_inference import FixedScorer, checkpoint_state
@@ -55,6 +55,7 @@ def test_finetune_allows_relocation_and_query_batching_without_changing_weights(
     ('a', 'backbone_points', 1024), ('a', 'min_support_points', 50),
     ('a', 'backbone_coordinate_fastpath', True), ('a', 'singleton_bn_policy', 'error'),
     ('b', 'phase_seed', 5), ('b', 'training_phase', False),
+    ('b', 'min_support_points', 101), ('b', 'feature_frame', B_FEATURE_FRAME),
     ('a', 'future_model_parameter', 17),
 ])
 def test_finetune_still_rejects_model_semantic_changes(tmp_path, route, field, value):
@@ -69,7 +70,133 @@ def test_omitted_and_explicit_constructor_defaults_are_semantically_equal():
         'backbone_points': 2048, 'min_support_points': 100,
         'backbone_coordinate_fastpath': False, 'singleton_bn_policy': 'running_stats'})
     assert semantic_model_config('b', {}) == semantic_model_config('b', {
-        'phase_seed': 42, 'training_phase': True})
+        'phase_seed': 42, 'training_phase': True, 'min_support_points': 100,
+        'feature_frame': B_LEGACY_FEATURE_FRAME})
+
+
+def test_new_b_run_and_historical_b_checkpoint_resolve_different_explicit_charts(tmp_path):
+    config = engine_config()
+    path = tmp_path/'config.json'
+    path.write_text(json.dumps(config))
+    fresh = load_instance_config(path)
+    assert fresh['model']['feature_frame'] == B_FEATURE_FRAME
+    assert fresh['model']['min_support_points'] == 100
+    historical = apply_model_runtime_overrides(config, query_chunk_size=7)
+    assert historical['model']['feature_frame'] == B_LEGACY_FEATURE_FRAME
+    assert historical['model']['min_support_points'] == 100
+    assert historical['model']['query_chunk'] == 7
+    assert config['model'] == {}  # Loading must not rewrite saved provenance.
+    assert apply_model_runtime_overrides(fresh)['model']['feature_frame'] == B_FEATURE_FRAME
+    config['model'] = {'feature_frame': B_LEGACY_FEATURE_FRAME, 'min_support_points': 101}
+    path.write_text(json.dumps(config))
+    assert load_instance_config(path)['model'] == config['model']
+
+
+class MetadataBModel(TinyInstanceModel):
+    """Small engine fixture for the model-identity checkpoint contract."""
+    def __init__(self, *, feature_frame=B_FEATURE_FRAME, min_support_points=100):
+        super().__init__()
+        self.feature_frame = feature_frame
+        self.min_support_points = min_support_points
+
+    def architecture_metadata(self):
+        return {'architecture_id': 'test_fixture_not_production',
+                'feature_frame': self.feature_frame,
+                'minimum_support_points': self.min_support_points}
+
+
+def _metadata_trainer(path, *, options=None, model=None, stage='pretrain'):
+    config = engine_config()
+    config['model'] = deepcopy(options or {})
+    return InstanceTrainer(model or MetadataBModel(), config, MemorySource(),
+        MemorySource('test') if stage == 'pretrain' else MemoryAttempts('val'), path,
+        stage=stage, target_dataset=MemoryAttempts() if stage == 'finetune' else None,
+        allow_partial=True)
+
+
+def test_b_trainer_records_actual_constructor_semantics_and_resumes(tmp_path):
+    source = _metadata_trainer(tmp_path/'source')
+    assert source.config['model'] == {'feature_frame': B_FEATURE_FRAME, 'min_support_points': 100}
+    assert source.identity['config_definition'] == source.config
+    assert source.identity['model_architecture'] == source.model.architecture_metadata()
+    source.train_one_update()
+    source.save()
+    resumed = _metadata_trainer(tmp_path/'resumed')
+    resumed.resume(tmp_path/'source/last.pt')
+    assert resumed.step == source.step
+    assert_nested_equal(resumed.model.state_dict(), source.model.state_dict())
+    # Resume applies the next update's scheduled LR; saved Adam moments persist.
+    assert_nested_equal(resumed.optimizer.state_dict()['state'], source.optimizer.state_dict()['state'])
+
+
+@pytest.mark.parametrize('mutation,match', [('missing', 'predates the route-B'),
+                                          ('changed', 'model architecture differs')])
+def test_b_resume_rejects_missing_or_changed_behavior_contract(tmp_path, mutation, match):
+    source = _metadata_trainer(tmp_path/'source')
+    source.train_one_update()
+    state = source.state_dict()
+    if mutation == 'missing':
+        state['identity'].pop('model_architecture')
+    else:
+        state['identity']['model_architecture']['feature_frame'] = B_LEGACY_FEATURE_FRAME
+    checkpoint = tmp_path/'checkpoint.pt'
+    torch.save(state, checkpoint)
+    with pytest.raises(ValueError, match=match):
+        _metadata_trainer(tmp_path/'resumed').resume(checkpoint)
+
+
+@pytest.mark.parametrize('options', [{'feature_frame': B_LEGACY_FEATURE_FRAME},
+                                    {'min_support_points': 99}])
+def test_b_trainer_rejects_configuration_that_misdescribes_constructed_model(tmp_path, options):
+    with pytest.raises(ValueError, match='configuration differs from the constructed model'):
+        _metadata_trainer(tmp_path, options=options)
+
+
+@pytest.mark.parametrize('field,value', [('feature_frame', B_LEGACY_FEATURE_FRAME),
+                                       ('minimum_support_points', 101)])
+def test_b_finetune_checks_existing_architecture_identity(tmp_path, field, value):
+    source = _metadata_trainer(tmp_path/'source')
+    source.train_one_update()
+    source.save('best.pt')
+    checkpoint = tmp_path/'source/best.pt'
+    target = _metadata_trainer(tmp_path/'target', stage='finetune')
+    target.initialize_finetune(checkpoint)
+    assert_nested_equal(target.model.state_dict(), source.model.state_dict())
+    state = torch.load(checkpoint, weights_only=False)
+    state['identity']['model_architecture'][field] = value
+    torch.save(state, checkpoint)
+    with pytest.raises(ValueError, match='source model architecture differs'):
+        target.initialize_finetune(checkpoint)
+
+
+def test_historical_b_weights_can_initialize_explicit_legacy_new_run(tmp_path):
+    source, checkpoint = _source(tmp_path/'source', 'b', {})
+    target = _metadata_trainer(tmp_path/'target', stage='finetune',
+                               model=MetadataBModel(feature_frame=B_LEGACY_FEATURE_FRAME))
+    target.initialize_finetune(checkpoint)
+    assert target.config['model']['feature_frame'] == B_LEGACY_FEATURE_FRAME
+    assert target.config['model']['min_support_points'] == 100
+    assert_nested_equal(target.model.state_dict(), source.model.state_dict())
+
+
+def test_b_inference_rejects_inconsistent_declared_architecture(tmp_path, monkeypatch):
+    class MetadataScorer(FixedScorer):
+        def architecture_metadata(self):
+            return {'architecture_id': 'test_fixture', 'feature_frame': B_FEATURE_FRAME}
+    model = MetadataScorer()
+    state = checkpoint_state(model, route='b')
+    state['config']['model'] = {'feature_frame': B_FEATURE_FRAME}
+    state['identity']['config_definition'] = deepcopy(state['config'])
+    state['identity']['model_architecture'] = model.architecture_metadata()
+    checkpoint = tmp_path/'model.pt'
+    torch.save(state, checkpoint)
+    monkeypatch.setattr(inference, 'create_instance_model', lambda *a, **k: MetadataScorer())
+    _, report = load_instance_checkpoint(checkpoint)
+    assert report['architecture'] == model.architecture_metadata()
+    state['identity']['model_architecture']['feature_frame'] = B_LEGACY_FEATURE_FRAME
+    torch.save(state, checkpoint)
+    with pytest.raises(ValueError, match='model architecture differs'):
+        load_instance_checkpoint(checkpoint)
 
 
 @pytest.mark.parametrize('mutation,match', [

@@ -8,6 +8,8 @@
 
 在全部 keep 像素计算 `c_vis` 与可见实例三轴尺寸，在主干图像缩放或 query 抽样后不重算中心。invalid 数据先通过选择排除，不能用 `NaN*0` 参与求和。几何正确性基线从输入构造开始保留 float64；网络特征最终转 FP32，不能先量化 XYZ 再升精度冒充同一基线。[精度合同](../BOUNDARY_REVIEW.md)
 
+模型构造器与 `prepare_shared_images(..., min_support_points=100)` 使用同一实例门槛：对实际organized目标mask重新取 `isfinite(XYZ).all(-1) & (Z>0)` 并计数，输出 `support_count`、`support_sufficient` 和同值的 `instance_valid`。少于100点的实例不能通过模型评分；100是默认值，允许显式配置其他正整数，但须进入模型身份。该计数独立于 `normal_valid`，不因差分法向缺测删除合法深度支持，也不以额外传入的 `support_points` 长度代替实际图像计数。无效实例仍保留明确的诊断与评价分母，不能填充重复点来凑门槛。
+
 ## 2. 唯一默认法向
 
 `normal-spec=organized_masked3x3_span3_v3`：
@@ -62,11 +64,13 @@ $$
 
 预处理输出原图→上下文/ROI 的变换，模型按 query 投影位置读取 Fq 和投影环。几何 nearest 必须读取原始深度/法向/身份；纹理只在四角同目标有效且深度范围≤10mm时双线性，否则退回同一 nearest source pixel。特征图半像素和 gate 的完整算式集中在[模型设计](MODEL_DESIGN.md)。
 
+环的切平面坐标图属于模型采样身份：新默认 `two_fixed_z_charts_rodrigues_z05_v1` 在 `n_z>0.5` 时切到 `+Z` 图，其余使用 `-Z` 图；旧 `two_fixed_z_charts_rodrigues_v2` 只作为显式兼容选项保留。该改变不修改缓存中的原始p/n、默认观测法向或teacher标签，却会改变部分query的投影槽位，因此不能把两个版本当成同一网络输入。图间接缝仍存在，圆周循环池化不保证任意roll重投影后分数严格一致。
+
 对投影非有限、z≤0、越界或无原深度支持的槽，保留 missing mask；送入 `grid_sample` 前替换为有限占位坐标，再按 mask 清零。不给 grid 传 NaN，不使用 border/reflection 制造观察到的表面。
 
 ## 7. 实施产物和验收
 
-输出包至少包括 `context[13,128,128]`、`texture[5,H_pad,W_pad]`、原始 organized 几何/法向/mask、K及仿射/逆变换、c_vis/尺寸、RGB/normal有效性、query清单、所有显式版本、query ID与统计。固定几何和 query 可缓存；随机光度增强与训练环 phase 不能混入无身份的静态缓存。
+输出包至少包括 `context[13,128,128]`、`texture[5,H_pad,W_pad]`、原始 organized 几何/法向/mask、K及仿射/逆变换、c_vis/尺寸、RGB/normal有效性、`support_count/support_sufficient/instance_valid`、query清单、所有显式版本、query ID与统计。固定几何和 query 可缓存；随机光度增强与训练环 phase 不能混入无身份的静态缓存。
 
 必须通过：原始投反影；上下文边界/ROI原点回读；大小物体完整性；fx≠fy；不同深度层不混合；法向断层/空洞拒绝且原点不变；稀疏mask回填、无重复、64/128前缀；空实例/全invalid无NaN。法向宽stencil和纹理不足的真实比例另报，不能只凭合成参考通过即宣告预处理成本和质量达标。
 

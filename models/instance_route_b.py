@@ -15,6 +15,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from suction20.instance_config import B_FEATURE_FRAME, B_LEGACY_FEATURE_FRAME
+
 
 RADII_M = (0., .005, .009, .010, .014, .017, .018, .020, .022)
 ANGLES = 72
@@ -115,10 +117,21 @@ class MaskedRingEncoder(nn.Module):
         return masked_mean_max(h, angle_valid)
 
 
-def fixed_z_frames(normals):
-    """Two-chart Rodrigues basis; input normals must already be finite/unit."""
+def fixed_z_frames(normals, *, feature_frame=B_FEATURE_FRAME):
+    """Two-chart Rodrigues basis; input normals must already be finite/unit.
+
+    The current chart switches at nz > .5, keeping the Rodrigues denominator
+    at least .5.  The legacy chart is explicit for saved model compatibility.
+    Both choices retain a discontinuous in-plane basis at the chart seam;
+    changing the policy therefore changes the feature sampling contract.
+    """
     n = normals.to(torch.float64)
-    positive = (1. - n[..., 2]) <= 1e-4
+    if feature_frame == B_FEATURE_FRAME:
+        positive = n[..., 2] > .5
+    elif feature_frame == B_LEGACY_FEATURE_FRAME:
+        positive = (1. - n[..., 2]) <= 1e-4
+    else:
+        raise ValueError("Unsupported route-B feature_frame")
     a = torch.zeros_like(n)
     a[..., 2] = torch.where(positive, torch.ones_like(n[..., 2]), -torch.ones_like(n[..., 2]))
     b1 = torch.zeros_like(n)
@@ -134,8 +147,8 @@ def fixed_z_frames(normals):
     return rotate(b1), rotate(b2), positive
 
 
-def ring_directions(normals, phase):
-    e1, e2, chart = fixed_z_frames(normals)
+def ring_directions(normals, phase, *, feature_frame=B_FEATURE_FRAME):
+    e1, e2, chart = fixed_z_frames(normals, feature_frame=feature_frame)
     theta = 2 * math.pi * (torch.arange(ANGLES, device=normals.device, dtype=torch.float64) + .5) / ANGLES
     theta = theta[None, :] + phase[:, None]
     radial = e1[:, None, :] * theta.cos()[..., None] + e2[:, None, :] * theta.sin()[..., None]
@@ -143,9 +156,10 @@ def ring_directions(normals, phase):
     return radial, tangent, chart
 
 
-def projected_ring_gate(observed_points, observed_valid, points, normals, phase):
+def projected_ring_gate(observed_points, observed_valid, points, normals, phase,
+                        *, feature_frame=B_FEATURE_FRAME):
     """Float64 v3 contact gates, with raw observations retained independently."""
-    radial, angular, chart = ring_directions(normals, phase)
+    radial, angular, chart = ring_directions(normals, phase, feature_frame=feature_frame)
     delta = torch.where(observed_valid[..., None], observed_points, points[:, None, None, :]) - points[:, None, None, :]
     height = (delta * normals[:, None, None, :]).sum(-1)
     tangent = delta - height[..., None] * normals[:, None, None, :]
@@ -223,12 +237,17 @@ def _nearest_map(image, uv):
     return values, inside, iy * w + ix, torch.stack((ix, iy), dim=-1)
 
 
-def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=torch.float32):
+def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=torch.float32,
+                          min_support_points=100):
     """Build context13 and native texture5 without changing the raw geometry.
 
     RGB photometric augmentation, when requested, must already have been
     applied once to observation['rgb']; both branches then use that same RGB.
+    Support counts finite positive-depth instance pixels, independently of
+    normal validity or an optional flattened observation['support_points'].
     """
+    if isinstance(min_support_points, bool) or not isinstance(min_support_points, int) or min_support_points < 1:
+        raise ValueError("min_support_points must be a positive integer")
     xyz = _tensor(observation["xyz_map"], device, torch.float64)
     if xyz.ndim != 3 or xyz.shape[-1] != 3 or min(xyz.shape[:2]) < 1:
         raise ValueError("xyz_map must be a nonempty HxWx3 array")
@@ -262,6 +281,8 @@ def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=t
     if not torch.allclose(intrinsics[2], intrinsics.new_tensor((0., 0., 1.)), atol=1e-12, rtol=0):
         raise ValueError("intrinsics must use the standard pinhole homogeneous row")
     points = xyz[valid]
+    support_count = len(points)
+    support_sufficient = support_count >= min_support_points
     centroid = points.mean(0) if len(points) else xyz.new_zeros(3)
     extent = points.amax(0) - points.amin(0) if len(points) else xyz.new_zeros(3)
     nonzero = torch.nonzero(full_mask, as_tuple=False)
@@ -310,7 +331,8 @@ def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=t
             "intrinsics_context": affine @ intrinsics,
             "texture_origin_uv": xyz.new_tensor((x0, y0)), "texture_roi_hw": (roi_h, roi_w),
             "texture_padded_hw": (pad_h, pad_w), "bbox_xyxy": (xmin, ymin, xmax + 1, ymax + 1),
-            "instance_valid": bool(valid.any()),
+            "support_count": support_count, "support_sufficient": support_sufficient,
+            "instance_valid": support_sufficient,
             "sample_uid": str(observation.get("sample_uid", observation.get("instance_uid", "instance"))),
             "observation": observation}
 
@@ -318,13 +340,24 @@ def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=t
 class InstanceSuction2DFastV3(nn.Module):
     """The route-B architecture with a shared encode / arbitrary-pose score API."""
 
-    def __init__(self, *, query_chunk=64, phase_seed=42, training_phase=True):
+    route = "b"
+    architecture_id = "instance_route_b_v3_support100_chart_policy_v1"
+    quality_contract = "gt_INST20_pose_v2"
+
+    def __init__(self, *, query_chunk=64, phase_seed=42, training_phase=True,
+                 min_support_points=100, feature_frame=B_FEATURE_FRAME):
         super().__init__()
         if query_chunk < 1:
             raise ValueError("query_chunk must be positive")
+        if isinstance(min_support_points, bool) or not isinstance(min_support_points, int) or min_support_points < 1:
+            raise ValueError("min_support_points must be a positive integer")
+        if feature_frame not in (B_FEATURE_FRAME, B_LEGACY_FEATURE_FRAME):
+            raise ValueError("Unsupported route-B feature_frame")
         self.query_chunk = int(query_chunk)
         self.phase_seed = int(phase_seed)
         self.training_phase = bool(training_phase)
+        self.min_support_points = min_support_points
+        self.feature_frame = feature_frame
         self.successful_update = 0
         self.encoder = ResNet18GN()
         self.midlevel_query_projections = nn.ModuleList([nn.Conv2d(64, 32, 1, bias=True),
@@ -348,6 +381,41 @@ class InstanceSuction2DFastV3(nn.Module):
     def feature_dtype(self):
         return next(self.parameters()).dtype
 
+    def architecture_metadata(self):
+        """Inspectable feature and geometry semantics, without execution sizes."""
+        return {
+            "architecture_id": self.architecture_id, "route": self.route,
+            "quality_contract": self.quality_contract,
+            "encoder": "ResNet18GN", "input_channels": 13,
+            "texture_input_channels": 5, "texture_feature_channels": 16,
+            "global_feature_channels": 128, "query_feature_channels": 64,
+            "ring_feature_channels": 96, "support_summary_channels": 18,
+            "raw_summary_channels": 12, "query_descriptor_channels": 12,
+            "fusion_channels": 330, "ring_token_channels": 25,
+            "ring_encoder_input_channels": 75,
+            "minimum_support_points": self.min_support_points,
+            "support_count_semantics": "finite positive-depth instance pixels; independent of normal validity",
+            "geometry_contract": GEOMETRY_CONTRACT, "geometry_dtype": "float64",
+            "feature_frame": self.feature_frame,
+            "feature_frame_switch": ("nz > 0.5" if self.feature_frame == B_FEATURE_FRAME
+                                     else "1 - nz <= 1e-4"),
+            "feature_frame_seam_continuous": False,
+            "feature_frame_seam_semantics": "in-plane chart transition can rotate the finite angular sample grid",
+            "radii_m": list(RADII_M), "angles": ANGLES,
+            "unique_projected_slots": 1 + (len(RADII_M) - 1) * ANGLES,
+            "broadcast_projected_slots": len(RADII_M) * ANGLES,
+            "encoder_normalization": "GroupNorm(8)",
+            "texture_normalization": "GroupNorm(8)",
+            "ring_normalization": "LayerNorm(16) per angle across channels; masked before and after each layer",
+            "center_summary_semantics": {
+                "zero_radius_is_center_support_not_circumference_coverage": True,
+                "center_broadcast_counts_as_one_radius_weight": True,
+                "center_core_raw_coverage_weight": 1 / 3,
+                "unique_source_pixels_per_radius_deduplicates_center": True,
+            },
+            "scale_semantics": "ell=log_laplace_scale; log_variance=log(2)+2*ell",
+        }
+
     def set_training_context(self, update, seed=None):
         self.successful_update = int(update)
         if seed is not None:
@@ -361,7 +429,8 @@ class InstanceSuction2DFastV3(nn.Module):
                 "heads": list(self.output_heads.parameters())}
 
     def encode_instance(self, observation):
-        encoded = prepare_shared_images(observation, device=self.device, feature_dtype=self.feature_dtype)
+        encoded = prepare_shared_images(observation, device=self.device, feature_dtype=self.feature_dtype,
+                                        min_support_points=self.min_support_points)
         l1, l2, l4 = self.encoder(encoded["context"])
         mask4 = F.adaptive_max_pool2d(encoded["context"][:, -1:], l4.shape[-2:]) > 0
         pooled = masked_mean_max(l4.flatten(2), mask4[:, 0].flatten(1))
@@ -463,7 +532,7 @@ class InstanceSuction2DFastV3(nn.Module):
 
     def contact_features(self, encoded, points, normals, phase):
         """Return learned ring features and auditable raw/contact diagnostics."""
-        radial, _, _ = ring_directions(normals, phase)
+        radial, _, _ = ring_directions(normals, phase, feature_frame=self.feature_frame)
         radii = points.new_tensor(RADII_M[1:])
         ring_points = points[:, None, None, :] + radii[None, :, None, None] * radial[:, None, :, :]
         unique_points = torch.cat((points[:, None, :], ring_points.flatten(1, 2)), 1)
@@ -475,7 +544,8 @@ class InstanceSuction2DFastV3(nn.Module):
             return torch.cat((centre, x[:, 1:].reshape(len(points), 8, ANGLES, *tail)), 1)
 
         slots = {key: expand(value) for key, value in unique.items()}
-        gates = projected_ring_gate(slots["points"], slots["observed"], points, normals, phase)
+        gates = projected_ring_gate(slots["points"], slots["observed"], points, normals, phase,
+                                    feature_frame=self.feature_frame)
         normal_alignment = (slots["normal"] * normals[:, None, None, :]).sum(-1)
         normal_alignment = torch.where(slots["normal_valid"], normal_alignment, torch.zeros_like(normal_alignment))
         gravity = encoded["gravity"]
@@ -549,6 +619,8 @@ class InstanceSuction2DFastV3(nn.Module):
                       valid=valid, query_valid=valid, points_cam_m=points,
                       normals_out_cam=torch.where(finite[:, None], normal, torch.zeros_like(normal)),
                       diagnostics={**diagnostics, "fq": fq, "fusion": fusion,
+                                   "support_count": torch.full_like(valid, encoded["support_count"], dtype=torch.long),
+                                   "support_sufficient": torch.full_like(valid, encoded["support_sufficient"]),
                                    "query_input_valid": finite, "query_support_valid": valid})
         return result
 
