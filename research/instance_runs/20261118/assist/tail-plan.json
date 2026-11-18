@@ -1,0 +1,226 @@
+[
+  {
+    "scene": 47,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 104,
+    "projected_minutes": 190
+  },
+  {
+    "scene": 49,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 107,
+    "projected_minutes": 179
+  },
+  {
+    "scene": 48,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 108,
+    "projected_minutes": 178
+  },
+  {
+    "scene": 2,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 109,
+    "projected_minutes": 170
+  },
+  {
+    "scene": 0,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 110,
+    "projected_minutes": 169
+  },
+  {
+    "scene": 17,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 115,
+    "projected_minutes": 169
+  },
+  {
+    "scene": 1,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 112,
+    "projected_minutes": 167
+  },
+  {
+    "scene": 11,
+    "start": 168,
+    "end": 255,
+    "reached_when_planned": 117,
+    "projected_minutes": 161
+  },
+  {
+    "scene": 30,
+    "start": 172,
+    "end": 255,
+    "reached_when_planned": 119,
+    "projected_minutes": 159
+  },
+  {
+    "scene": 39,
+    "start": 169,
+    "end": 255,
+    "reached_when_planned": 114,
+    "projected_minutes": 159
+  },
+  {
+    "scene": 40,
+    "start": 169,
+    "end": 255,
+    "reached_when_planned": 114,
+    "projected_minutes": 159
+  },
+  {
+    "scene": 16,
+    "start": 170,
+    "end": 255,
+    "reached_when_planned": 115,
+    "projected_minutes": 158
+  },
+  {
+    "scene": 38,
+    "start": 172,
+    "end": 255,
+    "reached_when_planned": 116,
+    "projected_minutes": 157
+  },
+  {
+    "scene": 9,
+    "start": 175,
+    "end": 255,
+    "reached_when_planned": 118,
+    "projected_minutes": 154
+  },
+  {
+    "scene": 29,
+    "start": 177,
+    "end": 255,
+    "reached_when_planned": 119,
+    "projected_minutes": 153
+  },
+  {
+    "scene": 10,
+    "start": 181,
+    "end": 255,
+    "reached_when_planned": 119,
+    "projected_minutes": 148
+  },
+  {
+    "scene": 15,
+    "start": 181,
+    "end": 255,
+    "reached_when_planned": 119,
+    "projected_minutes": 148
+  },
+  {
+    "scene": 31,
+    "start": 181,
+    "end": 255,
+    "reached_when_planned": 119,
+    "projected_minutes": 148
+  },
+  {
+    "scene": 32,
+    "start": 191,
+    "end": 255,
+    "reached_when_planned": 125,
+    "projected_minutes": 142
+  },
+  {
+    "scene": 22,
+    "start": 194,
+    "end": 255,
+    "reached_when_planned": 127,
+    "projected_minutes": 139
+  },
+  {
+    "scene": 23,
+    "start": 199,
+    "end": 255,
+    "reached_when_planned": 127,
+    "projected_minutes": 135
+  },
+  {
+    "scene": 25,
+    "start": 199,
+    "end": 255,
+    "reached_when_planned": 127,
+    "projected_minutes": 135
+  },
+  {
+    "scene": 26,
+    "start": 199,
+    "end": 255,
+    "reached_when_planned": 127,
+    "projected_minutes": 135
+  },
+  {
+    "scene": 21,
+    "start": 201,
+    "end": 255,
+    "reached_when_planned": 128,
+    "projected_minutes": 134
+  },
+  {
+    "scene": 44,
+    "start": 202,
+    "end": 255,
+    "reached_when_planned": 129,
+    "projected_minutes": 133
+  },
+  {
+    "scene": 45,
+    "start": 209,
+    "end": 255,
+    "reached_when_planned": 130,
+    "projected_minutes": 128
+  },
+  {
+    "scene": 33,
+    "start": 213,
+    "end": 255,
+    "reached_when_planned": 130,
+    "projected_minutes": 124
+  },
+  {
+    "scene": 34,
+    "start": 215,
+    "end": 255,
+    "reached_when_planned": 131,
+    "projected_minutes": 123
+  },
+  {
+    "scene": 24,
+    "start": 220,
+    "end": 255,
+    "reached_when_planned": 131,
+    "projected_minutes": 119
+  },
+  {
+    "scene": 46,
+    "start": 223,
+    "end": 255,
+    "reached_when_planned": 133,
+    "projected_minutes": 117
+  },
+  {
+    "scene": 37,
+    "start": 229,
+    "end": 255,
+    "reached_when_planned": 140,
+    "projected_minutes": 114
+  },
+  {
+    "scene": 8,
+    "start": 236,
+    "end": 255,
+    "reached_when_planned": 141,
+    "projected_minutes": 110
+  }
+]
