@@ -1,5 +1,22 @@
 # 模型验证与当前训练状态
 
+## E5完整测试与公开方法对比（2026-11-18）
+
+E0–E5从头预训练和E5目标微调的完成记录见[实验资料](experiments/CD010-20261117/README.md)。本次汇总冻结的 **E5 best step2880**（checkpoint SHA256 `5bc2c14c014fbf23cbef48062a0dac523ea243b6c18e540bb5af022ff7d0ea3a`）的完整公开测试，使用RealSense、GT实例输入、模型排序分数`q`，覆盖scene100–189的全部256视角，三组各7,680帧，共23,040帧。
+
+| 划分 | 官方R10 AP Top50 | 官方R10 AP Top1 | 项目R20 AP Top50 | 项目R20 AP Top1 |
+| --- | ---: | ---: | ---: | ---: |
+| Seen | 16.33% | 47.60% | 11.35% | 28.50% |
+| Similar | 20.22% | 51.49% | 12.49% | 32.54% |
+| Novel | 5.69% | 20.22% | 2.18% | 7.31% |
+
+官方评价使用`suctionnetAPI`固定提交`0dac9f7e5b2f7ea801cddf9655cb82a259681976`；R20复用保存的冻结物理评价值。两套结果共用源预测，但后处理和物理协议不同，不属于纯半径消融。六份precision数组重新聚合与原汇总一致。本轮是已有预测的评价/分析，不包含新训练、GPU吞吐测量或机器人动作。
+
+[完整方法对比](SUCTIONNET_METHOD_COMPARISON.md)给出SuctionNet、Diffusion-Suction、MultiGraspNet、UISN两种完整变体及Only Depth消融的六指标表、来源与输入条件；[紧凑数值](experiments/COMPARISON-20261118/README.md)保留论文报告值与本项目计算值的身份。R20阈值0.4下，保留Top50的候选覆盖率为96.35/95.59/26.30%，首选通过率为36.20/41.08/8.44%，用于区分选择缺口与保留集合覆盖限制，不等同于proposal@512或实机成功率。
+
+目标域step1000的AUROC0.7121来自399条参与选模的历史动作验证；不在本轮改称独立测试或新策略成功率。已完成项与尚待执行的正常业务对比同步见[README Done/TODO](../README.md)和[项目路线](ROADMAP.md)。
+
+
 ## P3 整合：真实配对与正常续训（2026-11-13）
 
 根据 [最新 P3 结果](performance/P3_INTEGRATED_RESULTS.md)，本轮实际源 checkpoint 已确认为 P2 `e73d62e`。**H20/E5 的 64k 与 L20/E3 的 16k 组合已通过真实四帧配对；H20/E5、L20/E0、E1、E3 均已迁移续训并取得首 25 次正常更新窗口。** 方案调整与各阶段证据见 [性能优化全程总览](PERFORMANCE_HISTORY.md)，原 [H20](performance/H20_P2_BATCH_DIAGNOSIS.md) / [L20](performance/L20_P2_BATCH_DIAGNOSIS.md) 诊断保留其历史范围。
@@ -122,3 +139,4 @@ E5两帧分别有11、9个可见实例；两帧Top-1 Q20@0.4均为0。该checkpo
 阶段边界对照使用已有合成权重、Adam和随机状态，将成功步数设置为199，再执行到202；它验证阶段切换与恢复，不代表已完成199步真实目标训练。两种模式均保留同一optimizer，阶段切换没有丢失heads的Adam状态。
 
 当前具备继续按既定方案预训练与消融的代码条件。完整40轮、正式同预算比较、真实目标微调及业务效果仍按 [项目路线](ROADMAP.md) 执行；本次复核没有新增数据制作或额外实验前置要求。
+

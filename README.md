@@ -4,10 +4,13 @@
 
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
-**当前实验状态（2026-11-17，北京时间）：** E0–E5 六组从头预训练均已完成，每组230,400有效样本及10次固定开发验证。按预定Top-1主指标采用 **E5 best step2880**；由它初始化的真实场景微调也已完成，当前采用 **step1000**，固定399条历史规划动作验证AUROC由0.6215提高到0.7121。两模型各401帧新候选的推理记录已发布；它们尚不代表新策略实际吸取成功率。完整数据见[实验资料](docs/experiments/CD010-20261117/README.md)，模型选择、模块收益、微调轨迹和动作变化见[独立分析报告](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)。历史训练硬件配方与启动命令继续保留在[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)和[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)。
+**当前实验状态（2026-11-18，北京时间）：** E0–E5 六组从头预训练均已完成，每组230,400有效样本及10次固定开发验证。按预定Top-1主指标采用 **E5 best step2880**；由它初始化的真实场景微调也已完成，当前采用 **step1000**，固定399条历史规划动作验证AUROC由0.6215提高到0.7121。两模型各401帧新候选的推理记录已发布；它们尚不代表新策略实际吸取成功率。完整数据见[实验资料](docs/experiments/CD010-20261117/README.md)，模型选择、模块收益、微调轨迹和动作变化见[独立分析报告](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)。历史训练硬件配方与启动命令继续保留在[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)和[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)。
+
+**公开方法对比（2026-11-18）：** E5 best 已完成 RealSense 官方三个测试划分的全量评价（90场景、23,040帧）。官方 R10 的 Seen/Similar/Novel AP Top50 为 **16.33/20.22/5.69%**，AP Top1 为 **47.60/51.49/20.22%**。与 SuctionNet、Diffusion-Suction、MultiGraspNet、UISN 完整版及 Only Depth 的对照、R20候选覆盖分析见[方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)，紧凑数值见[结果表与来源](docs/experiments/COMPARISON-20261118/README.md)。这些是 GT 实例输入、R20 训练条件下的结果；论文值与本项目计算值分别标明。
 
 ## Done（已完成）
 
+- [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
 - [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
 
 - [x] [E0–E5完整预训练与开发验证](docs/experiments/CD010-20261117/pretraining/REPORT.md)：每组230,400有效样本，合计100,800次成功更新与60个验证节点；E5 best step2880的Top-1为13.12%。E2已完成BF16 dense/FP32 sparse训练与原定开发验证。
@@ -21,7 +24,7 @@
 - [x] 预训练、checkpoint 保存与恢复、无标签推理、NMS 和按实际姿态重算的 R20 评价。
 - [x] `dense_proxy` / `attempt_success` 微调：200+800 步阶段、源域回放、固定查询验证及独立成功头。
 - [x] 模型实现阶段 CPU 测试复跑 **129 passed / 1 skipped**，梯度 checkpoint 一致性和两种微调跨阶段恢复复核；跳过项需要真实 release 路径。这里保留历史测试范围，各轮后续记录见 [验证说明](docs/MODEL_VALIDATION.md)。
-- [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录链路验证，完整训练效果见下方 TODO。
+- [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录历史链路验证，完整训练与测试效果见上方实验资料和方法对比。
 
 - [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
 - [x] [P1 性能优化历史方案与实现](docs/PERFORMANCE_OPTIMIZATION.md)：精确 C FPS、core/lip 局部几何复用、CPU 几何上下文、按需读取与体素整理、有序预取和显式 checkpoint 迁移；该轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [P1 真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
@@ -45,7 +48,6 @@
 ## TODO（待完成）
 
 - [ ] 在已有87条未参与选模的有标签test历史动作上，对冻结的E5预训练best与微调best完成一次同动作评分比较；开发验证和401帧新候选推理已完成。
-- [ ] 按[原实验方案](docs/implementation/EXPERIMENTS.md)报告锁定模型的官方test_seen/test_similar/test_novel结果；本轮发布的是开发集结果。
 - [ ] 接入原定正常工况业务执行对比，以新动作的实际吸取和搬运结果判断部署收益。
 
 可选派生数据 sidecar 缓存与 residual uncertainty 工具尚未实现，仅在实际需要时安排，不是上述训练的前置条件。现有测试和短训练记录没有替代全量数据生产验收或真实场景效果实验。
@@ -57,6 +59,7 @@
 | 内容 | 文档 |
 |---|---|
 | 最新预训练、微调与推理结果 | [完整实验数据](docs/experiments/CD010-20261117/README.md) · [独立分析与选模](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md) |
+| 公开方法效果与UISN对比 | [完整结果、输入条件与差距分析](docs/SUCTIONNET_METHOD_COMPARISON.md) · [机器可读表与来源](docs/experiments/COMPARISON-20261118/README.md) |
 | 公开方法对照与指标算法 | [四项 SuctionNet 方法、官方 AP 计算与 R20 对应](docs/SUCTIONNET_COMPARISON_METRICS.md) |
 | 论文式方法架构图 | [三子图总览、双语图注与代码对应](docs/METHOD_ARCHITECTURE.md) · [矢量 PDF](docs/figures/paper-architecture.pdf) · [可编辑 SVG](docs/figures/paper-architecture.svg) |
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
@@ -111,5 +114,6 @@ bash scripts/run_data_pipeline.sh
 - 不重新发布第三方原始标注脚本或数据；需要在本地拉取上游开源仓库。
 
 原始数据使用和科研结果均需遵守 SuctionNet/GraspNet 的相应许可证。
+
 
 

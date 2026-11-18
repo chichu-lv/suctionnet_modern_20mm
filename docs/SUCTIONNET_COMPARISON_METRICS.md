@@ -1,15 +1,17 @@
 # SuctionNet 方法对照与评价指标计算规范
 
-更新：2026-11-17（北京时间）。项目依据：`cd010/from-scratch-performance`，提交 `ba3d6463386cd7287550e3464358ad4825003104`。
+更新：2026-11-18。原规范项目依据：`cd010/from-scratch-performance`，提交 `ba3d6463386cd7287550e3464358ad4825003104`。
 
 本文选择四项使用 SuctionNet-1Billion 的代表工作，确定其评价指标，并给出可直接用于计算的公式、输入格式和汇总方法。范围是**指标与比较口径**；本次不复现对方网络，不启动训练或补测。
+
+**2026-11-18 结果补记：** E5 的 RealSense 三个完整测试 split 已有官方 R10 与项目 R20 结果，UISN 原论文 Table I、III、V 已核实。完整对照见 [方法比较报告](SUCTIONNET_METHOD_COMPARISON.md)，数值与证据索引见 [结果目录](experiments/COMPARISON-20261118/README.md)。本次更新重新聚合已有结果并摘录论文，不运行新实验。E5 保留 **GT oracle-instance input / R20-trained / 90 个训练场景** 的条件说明；跨论文差额不能视为同输入、同训练配置的受控实验。
 
 ## 1. 选择哪些方法
 
 | 方法 | 年份与代表性 | SuctionNet 使用证据 | 本次对照的指标 | 来源 |
 |---|---|---|---|---|
 | **SuctionNet 原基线 / S1B** | 2021；基准提出者，RGB-D 稠密吸取预测 | 原论文 §III-C、表 IV | Top-50 与 Top-1 的 AP、AP₀.₄、AP₀.₈；实机 R_grasp、R_object、R_mixture | [论文][S1]、[官方评价代码][S2] |
-| **UISN**：Uncertainty-Aware Suction Grasping for Cluttered Scenes | 2024；实例点云、不确定性与候选选择，与本项目实例路线相关 | 作者安装官方 API，`eval.py` 直接调用三个官方测试集评价函数 | 作者脚本返回 Top-50 AP、Top-1 AP；阈值分项由同一 API 产生 | [作者文献页][S6]、[评价脚本][S7] |
+| **UISN**：Uncertainty-Aware Suction Grasping for Cluttered Scenes | 2024；实例点云、不确定性与候选选择，与本项目实例路线相关 | 原论文 Table I 及作者官方 API 评价脚本均已核对 | Top-50 / Top-1 各自的 AP、AP₀.₄、AP₀.₈；Table III 不确定性消融、Table V 输入消融 | [原论文][S13]、[作者文献页][S6]、[评价脚本][S7] |
 | **Diffusion-Suction** | 2025；扩散模型生成吸取评分，代表不同建模路线 | 论文 Table I 为 SuctionNet，V-A 明确沿用其协议，作者 README 链接官方评价代码 | Top-50 / Top-1 各自的 AP、AP₀.₄、AP₀.₈；实机 R_grasp、R_object；推理时间 | [论文 v2][S9]、[作者仓库][S10] |
 | **MultiGraspNet-vac. / MultiGraspNet** | 2026；稀疏 3D U-Net，单吸取与双夹具联合训练 | 论文 §IV-A、Table I 的 Vacuum 部分使用对齐后的 SuctionNet RealSense 数据 | Top-50 AP、AP₀.₄、AP₀.₈；实机 R_grasp、R_object、R_mix、R_seen；参数量、模型大小、FPS、延迟 | [论文 v2][S11]、[作者项目][S12] |
 
@@ -255,7 +257,11 @@ novel_metrics = summarize_official_result(res_novel)
 
 ### 6.2 UISN
 
-作者 `eval.py` 直接调用官方 `eval_seen/eval_similar/eval_novel`，并保存返回的 `res`。发布的评价 shell 脚本使用 RealSense；Python 入口也支持 Kinect。本文确认的是**作者公开脚本的计算方式**；没有据此补写未核对的论文表格数值或实机指标。[S7]
+作者 `eval.py` 直接调用官方 `eval_seen/eval_similar/eval_novel`，并保存返回的 `res`。发布的评价 shell 脚本使用 RealSense；Python 入口也支持 Kinect。2026-11-18 已核实用户提供的原论文 **Table I、III、V**，因此论文数值不再处于“未取得/未核对”状态。Table I 的 **UOIS-Net+UISN** 与 **UOAIS-Net+UISN** 是两种完整配置，分别报告，不跨行挑最大值拼成一个系统；本次没有复现 UISN。[S7][S13]
+
+Table I 位于 PDF 第 6 页（印刷页 4939），表注明确斜杠顺序为 **Kinect / RealSense**，因此本项目读取斜杠后数值。PDF 第 5 页 §IV-B 正文将顺序写反；这里依据表注，并与 SuctionNet 原基线的两相机结果交叉核对。UISN 表内 Cao 等人的基线与原 SuctionNet Table IV 个别值相差 0.01 个百分点，主比较的 S1B 行仍按原论文摘录，不静默互换。原表阈值列顺序为 AP、AP₀.₈、AP₀.₄，结果文件已按字段名转换为本文的 AP、AP₀.₄、AP₀.₈ 顺序。[S1][S13]
+
+Table III 的不确定性消融只报告 Top-50 AP：同时使用两种不确定性相对单 MLP 基线，在 Seen / Similar / Novel 分别变化 **−0.87 / +1.60 / +1.12 个百分点**；没有对应 Top-1 或阈值分项，不能补造。Table V 的 **Only Depth** 保留架构并以全 1 初始特征替代 RGB，只报告 Top-50 AP 与 Top-1 AP。该表未写明相机，其 RGB-D 行的六个 AP 数值恰与 Table I 的 RealSense UOIS-Net+UISN 行一致，故与 RealSense 的关联属于**据数值一致性作出的推断**。Novel 的 Top-1 从 Only Depth 的 12.43% 变为 RGB-D 的 11.83%，不能沿用正文“两个指标均提升”的概括。Only Depth 的 AP₀.₄ / AP₀.₈ 保持未报告。完整数字及页码见 [结果目录](experiments/COMPARISON-20261118/README.md)。[S13]
 
 公开推理代码中，不确定性校准的 `mean_score * (1-normalized_uncertainty)` 用于实例内预选 200 点，实际提交数组首列保存的是相应点的 `mean_score`。评价器再按提交分数排序。这改变候选选择，但不改变官方物理质量、阈值与 AP 定义。[S8]
 
@@ -279,19 +285,21 @@ Table II 是自建 Parcel-Suction-Dataset，其标签/评价额外包含 visibil
 
 | 指标 | 公式 | 方向 | 本次文献中的使用 |
 |---|---|---|---|
-| 抓取成功率 `R_grasp` | `N_success / N_attempt` | ↑ | SuctionNet、Diffusion-Suction、MultiGraspNet |
-| 清场率 `R_object` | `N_clear / N_object` | ↑ | 上述三项 |
+| 抓取成功率 `R_grasp` | `N_success / N_attempt` | ↑ | SuctionNet、UISN（SR）、Diffusion-Suction、MultiGraspNet |
+| 清场率 `R_object` | `N_clear / N_object` | ↑ | SuctionNet、Diffusion-Suction、MultiGraspNet |
 | SuctionNet `R_mixture` | `N_clear / N_attempt_clear` | ↑ | 原 SuctionNet |
 | MultiGraspNet `R_mix` | `N_attempt_clear / N_clear` | ↓ | MultiGraspNet |
 | MultiGraspNet `R_seen` | `N_detected / N_object` | ↑ | 感知到的物体比例，与 test_seen 划分无关 |
 
 **两篇论文的 mixture/mix 方向相反。** 按各自文字定义，在相同计数下互为倒数，不能作为同名百分率直接比较。MultiGraspNet 没有在该指标段详细规定检测实例跨帧合并规则，因此本文不补造其实现。[S1][S11]
 
-这些论文的清场实验使用连续三次无法抓取物体的停止条件；实验统计必须包含实际动作结果。我们的历史规划动作 AUROC、几何 AP、模型最高预测分，都不能代入这些分子。当前任务是整理指标，**不以此安排新一轮机器人试验**。[S1][S9][S11]
+UISN 的实机 SR 同样表示成功次数 / 总尝试数，TA 表示总尝试数；只按原文的实际尝试统计理解，不与几何 AP 等同。[S13]
+
+SuctionNet、Diffusion-Suction、MultiGraspNet 的清场实验使用连续三次无法抓取物体的停止条件；实验统计必须包含实际动作结果。我们的历史规划动作 AUROC、几何 AP、模型最高预测分，都不能代入这些分子。当前任务是整理指标，**不以此安排新一轮机器人试验**。[S1][S9][S11]
 
 ### 7.2 效率指标
 
-Diffusion-Suction 报告推理时间；MultiGraspNet Table IV 报告参数量、模型大小、FPS 和延迟。[S9][S11]
+Diffusion-Suction 报告推理时间；MultiGraspNet Table IV 报告参数量、模型大小、FPS 和延迟。UISN Table IV 报告不同 Monte Carlo 采样数的**评分预测模块时间**，不代表含实例分割的完整流程延迟。[S9][S11][S13]
 
 | 指标 | 计算口径 | 本项目记录建议 |
 |---|---|---|
@@ -316,8 +324,8 @@ Diffusion-Suction 报告推理时间；MultiGraspNet Table IV 报告参数量、
 | NMS | 全局 20 mm、181° | 每输入实例 10 mm、15°；位置与方向同时满足才抑制 |
 | 每物体/实例上限 | 按评价器关联物体，每物体 10 个 | 按输入实例 ID，每实例 10 个 |
 | AP 聚合 | 4 阈值 × 50 个前缀 | 同样的聚合结构 |
-| Top-1 | 每帧全场景最高分，通常再平均 4 阈值 | **每可见 GT 实例**最高分、固定 Q20≥0.4；在全场景 Top-50 截断前取 |
-| 当前已发布结果 | 论文通常用官方测试集 | 本项目为 10 场景 ×32 帧开发验证 |
+| Top-1 | 每帧全场景最高分，通常再平均 4 阈值 | 原主指标为**每可见 GT 实例**最高分、固定 Q20≥0.4，在场景 Top-50 截断前取；本轮另聚合**场景级**四阈值 Top-1 AP 及阈值分项，两种统计分列 |
+| 已有结果范围（截至 2026-11-18） | 论文通常用官方测试集；E5 官方 R10 已覆盖 RealSense 90 测试场景 ×256 帧 | E5 项目 R20 同样覆盖完整 23,040 测试帧；另保留历史 10 场景 ×32 帧开发验证 |
 
 依据：[官方 API][S2][S3]、[项目指标实现](../suction20/metrics.py)、[R20 物理评价](../suction20/eval_r20.py)、[实验规格](implementation/EXPERIMENTS.md)。
 
@@ -327,7 +335,7 @@ Diffusion-Suction 报告推理时间；MultiGraspNet Table IV 报告参数量、
 
 ### 8.2 实例输入和训练范围也要明确
 
-本轮公开预训练验证使用 GT 实例 mask；UISN 的实例输入来自 UOIS/UOAIS，其他方法也有各自可用输入。官方评估器内部使用 GT 模型判分，并不能消除“GT mask 已经进入网络”这一输入差异。[S6][S8][已有实验资料](experiments/CD010-20261117/pretraining/REPORT.md)
+本次 E5 公开测试使用 GT 实例 mask；UISN 的实例输入来自 UOIS/UOAIS，其他方法也有各自可用输入。官方评估器内部使用 GT 模型判分，并不能消除“GT mask 已经进入网络”这一输入差异。[S6][S8][已有实验资料](experiments/CD010-20261117/pretraining/REPORT.md)
 
 若后续使用已有前置预测 mask 做公开对照，写明分割来源；若继续用 GT mask，标为 **oracle-instance input**，保留为相应条件结果。无需为此训练新的分割模型。现有权重训练使用 90 个官方训练场景、10 个场景留作开发验证，也应如实说明，不为补齐文献训练数量而重新训练。
 
@@ -337,7 +345,7 @@ Diffusion-Suction 报告推理时间；MultiGraspNet Table IV 报告参数量、
 
 **项目 R20 表：** 保留当前物理评价和 AP-R20、每实例 Top-1、碰撞率；如需论文式读法，可从同一批逐候选 Q20 额外聚合 `R20 AP₀.₄/₀.₈ (Top-50)` 和 `R20 scene AP (Top-1)`。新列明确标 R20，不能填入文献 R10 列。比较其他方法的 R20 效果需要其预测姿态在同一 R20 评价器下重算，仅有论文表格无法完成换算。
 
-这两套口径均不要求复现或重训其他方法。**本次只确定规范，不启动这两套评估。**
+这两套口径均不要求复现或重训其他方法。E5 的两套完整测试结果已经计算；2026-11-18 本次发布只重新聚合和解释既有结果，并补齐论文摘录，不启动新评估。结果见 [方法比较报告](SUCTIONNET_METHOD_COMPARISON.md)。
 
 ## 9. 建议最终保留的最小指标集合
 
@@ -364,11 +372,11 @@ AP_top1, AP04_top1, AP08_top1
 
 项目 `attempt_PR_AUC` 的实现为 `sum((recall_j-recall_{j-1}) * precision_j)`，按相同预测分数分组后累计，属于分类 average precision；`attempt_AUROC` 是另一类排序指标。这些不是公开论文的物理 AP，保留原名即可。[项目实现](../suction20/metrics.py)
 
-当前发布的逐帧预训练验证记录只保留聚合指标，没有完整逐候选姿态和物理分解，不能从现有 `AP_R20` 一个标量反推出 AP₀.₄、AP₀.₈ 或整帧 Top-1。已有官方 `res` 张量可直接汇总；已有完整姿态可直接评价；只有汇总日志的部分，需要以后对选定冻结模型做一次推理/评价导出，**不需要重新训练，也不需要将六组实验全部再跑一遍**。[已有数据说明](experiments/CD010-20261117/pretraining/REPORT.md)
+2026-11-17 发布的历史开发验证记录只保留聚合指标，不能从其中 `AP_R20` 一个标量反推出 AP₀.₄、AP₀.₈ 或整帧 Top-1。2026-11-18 的 E5 完整测试已有官方 R10 和项目 R20 的 precision 张量，六个场景级指标均可直接汇总；同时单列原有每实例 Top-1、碰撞率与缺候选率。上述完整测试仅属于 E5，不应外推为 E0–E4 已完成同样测试。[历史开发数据说明](experiments/CD010-20261117/pretraining/REPORT.md)、[完整测试结果](SUCTIONNET_METHOD_COMPARISON.md)
 
 ## 10. 来源、版本与核对范围
 
-本文优先使用论文、作者仓库和官方评价代码。UISN 的指标定义由作者公开脚本确认；Diffusion-Suction 由论文与作者 API 链接确认；MultiGraspNet 的聚合定义来自论文，其“seal coefficient”术语差异保留在第 6 节，没有假定未公开实现的细节。
+本文优先使用论文、作者仓库和官方评价代码。UISN 的指标定义由作者公开脚本确认，2026-11-18 另以原论文视觉核对 Table I、III、V 并保存证据页码；Diffusion-Suction 由论文与作者 API 链接确认；MultiGraspNet 的聚合定义来自论文，其“seal coefficient”术语差异保留在第 6 节，没有假定未公开实现的细节。
 
 | 编号 | 一手来源 | 核对位置 |
 |---|---|---|
@@ -384,6 +392,7 @@ AP_top1, AP04_top1, AP08_top1
 | S10 | [Diffusion-Suction README][S10] | 固定 `c91f0c7`；evaluation metric 链接 |
 | S11 | [MultiGraspNet 论文 v2][S11] | IV-A、Table I、IV-D/E |
 | S12 | [MultiGraspNet 作者项目][S12] | 论文/代码入口状态 |
+| S13 | [UISN 原论文 DOI][S13] | 用户提供 PDF；Table I/III：第 6 页（4939），Table V：第 7 页（4940）；相机顺序按 Table I 表注 |
 
 [S1]: https://arxiv.org/pdf/2103.12311
 [S2]: https://github.com/graspnet/suctionnetAPI/blob/0dac9f7e5b2f7ea801cddf9655cb82a259681976/suctionnetAPI/suctionnet_eval.py
@@ -397,3 +406,4 @@ AP_top1, AP04_top1, AP08_top1
 [S10]: https://github.com/TAO-TAO-TAO-TAO-TAO/Diffusion_Suction/blob/c91f0c76b54aedeb22c29f0ecf100efe9198c827/README.md
 [S11]: https://arxiv.org/html/2602.06504v2
 [S12]: https://vandal-lab.github.io/multigraspnet-project/
+[S13]: https://doi.org/10.1109/LRA.2024.3385609
