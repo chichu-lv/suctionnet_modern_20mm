@@ -8,14 +8,17 @@ A模型及共同训练/推理链路已实现，13项CPU几何/模型测试通过
 |---|---|
 | 源训练 | scene 0–99全部100场景、全部256视角可抽样；从头训练，不再90/10开发后final refit |
 | 预算 | 140000个成功受监督实例、8750次成功更新；128-query训练前缀 |
-| best选择 | 第4375、8750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
-| 成绩身份 | `test_selected` / `independent_test_estimate=false`；源test只评价、不反传，但已参与模型选择 |
+| best选择 | 每875成功步评价一次，共10次；source test scene 100–189每场景固定8帧，全部可见实例、每实例完整最多256-query；保留best与预算终点last |
+| 成绩身份 | `selection_role=test_selected`、`selection_scope=fixed_test_subset`、`independent_test_estimate=false`；源test子集已参与模型选择 |
+| 训练后报告 | 独立CLI对固定best评价完整90场景×256帧，不更新或重选best；分别记录本次评价范围与源预训练选择范围 |
 | 目标域 | 1676 train、399 val选best、87 test冻结后评价；保留既有group和规划动作语义 |
 | 本轮评价 | INST20实例Top1/selected-Q/coverage，以及目标固定动作AUROC/AP/BCE/Brier |
 | 公开方法评价 | `deferred`；只参数化半径的方案待定，未实现、不作为开训前置门禁 |
 | 论文表 | 保留各论文原始数值及来源；A公开结果待测，不能填入本轮实例指标 |
 
-source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160–189，各7680帧、总23040帧。当前采用GT实例输入做实例物理选模；它与预测实例前端参与的全景公开AP并非同一实验。`test_selected`成绩只能按该身份报告，不能包装成盲测或“除吸盘半径外完全一致”的公开比较。
+source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160–189，各7680帧、总23040帧。默认周期选模只取每场景固定 `0,32,64,96,128,160,192,224` 八帧，各类别240帧、总720帧；每次使用同一集合，不按模型分数换帧或删实例。帧数由`pretrain.selection_frames_per_scene`配置：8为当前默认，16包含这8帧，256使用全量；旧配置未设置该字段仍保持256帧语义。完整test manifest可由训练入口自动筛选，正式8帧selection缓存也可直接使用，只要全部90场景的所需帧齐全就不需要`--allow-partial-manifests`。
+
+较小selection减少周期评价成本，也可能使指标接近的checkpoint排序波动；固定帧集合控制重复采样差异，不能保证该best在完整test上也最优。完整test只在训练后评价已固定best，不根据报告重新挑权重。当前GT实例物理指标与预测实例前端参与的全景公开AP不是同一实验；子集及完整报告均保留`test_selected`，不能包装成盲测或“除吸盘半径外完全一致”的公开比较。
 
 用户要求的逐方法对照保留在第2节及后文MultiGraspNet两组表中，每表只有A与一个参考，不比较参考之间。未来恢复公开评价时，须逐pair冻结测试集/相机/指标、物理口径、前端和GT工作区权限；未披露的论文训练细节标unreported，未核实项保持unverified。半径-only方案及其R10对齐检查都仍待决定，不能提前宣称已匹配。
 
@@ -86,7 +89,7 @@ source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160�
 | E0 数学/CPU模型回归 | 数学/schema与A几何、接触、五头、BN检查 | 既有129项参考；A13项CPU测试通过，模型使用测试backbone |
 | E1 真实数据和teacher | 固定约64–128个实例作成本/同姿态核验 | 代码已接线；真实标定、S/W、self和成本仍待测 |
 | E2 真实SpConv短链路 | 实际稀疏编码、少量反向、保存恢复、历史异轴查询 | GPU/spconv、loss/梯度、BN/参数组和下一批恢复；尚未运行 |
-| E3 A-source100 | 全100场景train，140000实例/8750更新，第4375、8750步完整source test选best | test_selected best、预算last、完整分母及逐实例结果 |
+| E3 A-source100 | 全100场景train，140000实例/8750更新；每875步用90场景各固定8帧选best，共10次；结束后独立全量test报告 | test_selected / fixed_test_subset best、预算last、子集与完整报告各自分母及逐实例结果 |
 | E4 A-target-ft | E3 best初始化，200+800更新、2 target+2 source回放 | 399 val按AUROC/BCE/早步选best，最终87 test |
 | E5 A公开方法比较 | 每方法单独pair，论文值保留 | 协议deferred，不阻塞E3/E4；A六指标待测 |
 | E6 实际部署与计时 | 固定权重/硬件/输入边界，真实CPU几何+GPU模型 | p50/p95、显存、raw几何/稀疏编码成本；尚未运行 |
@@ -97,7 +100,9 @@ E1需报告normal有效率、候选覆盖及主干关联缺失；有可靠参考
 
 ## 4. 本地实例与目标任务指标及分母
 
-本节源指标用于完整source test选best，按Seen/Similar/Novel同时报告，并明确 `test_selected`。无反向传播不等于独立测试。目标域仍为1676 train/399 val/87 test，399 val选微调best，87 test待权重/规则冻结后评价，源预训练的选模来源继续保留。
+本节源指标用于固定test子集选best，并以相同计算规则生成训练后完整test报告；两种范围均按Seen/Similar/Novel报告并明确`test_selected`。主排序仍为`InstTop1_INST20@0.4`最大，再按selected-Q宏平均最大，仍平局选更早成功步。无反向传播不等于独立测试。目标域仍为1676 train/399 val/87 test，399 val选微调best，87 test待权重/规则冻结后评价，源预训练的选模来源继续保留。
+
+周期选模记录`selection_scope=fixed_test_subset`。训练后`evaluate_instance.py`直接检查并评价完整test manifest，报告`evaluation_scope=complete_manifest`；同一报告的`source_pretrain_selection_scope=fixed_test_subset`保存checkpoint来源，不会把本次23040帧报告缩成720帧，也不重新计算best排名。各报告分别列出自己的帧数、实例数、空GT帧和无输出分母，不能把子集指标标成全量指标。
 
 | 任务 | 指标 | 固定解释 |
 |---|---|---|
@@ -109,7 +114,7 @@ E1需报告normal有效率、候选覆盖及主干关联缺失；有可靠参考
 | 历史动作 | AUROC、AP、BCE、Brier | 保存总数/有效数/正负数；BCE/Brier仅使用task概率 |
 | 成本 | model-only及instance端到端p50/p95 | batch1、固定输入边界、实际M/N/K、峰值显存 |
 
-实例主指标先在每frame内对可见GT实例平均，再对同scene的有效frame平均，最后scene等权平均；另外报告实例微平均。低于模型min_support_points（默认100）、无法向或无输出实例仍在主分母；没有GT实例的frame单独计数，不进入平均。
+实例主指标先在每frame内对可见GT实例平均，再对同scene在本次评价范围内的有效frame平均，最后scene等权平均；另外报告实例微平均。子集评价不混入未选帧，完整评价使用全部帧。低于模型min_support_points（默认100）、无法向或无输出实例仍在主分母；没有GT实例的frame由显式声明计入覆盖、单独统计，不进入实例平均。
 
 次级所选Q_inst使用相同的三级宏平均，no_pose为0；有输出条件下Q微平均单列，不能替代次级选模指标。以上细化与共同协议同源，不更改Q_inst物理含义。teacher未知不是质量0：若所选姿态或Coverage所需query标签未知/非法，相应评价不完整，先修复标签；不得补负例或删分母后形成看似完整的结果。
 
@@ -139,7 +144,7 @@ A至少分项记录：原深度/XYZ处理、3×3平滑+±3法向/路径门控、
 
 ## 7. 实验记录与当前复现
 
-每个真实run保存配置/环境/代码/数据/标签/标定身份、成功及消费预算、参数组、checkpoint、逐实例/query/动作分数、排除和no_pose原因、各项有效分母与聚合方式、计时原始样本及汇总。结果表未执行项写“未运行”，不填推测数值；既有 E5 的 AUROC、AP 或其他改善不能归给 A；A无须等待B完成才能执行本轮源训练和目标适配，公开pair须等待评价协议确定。
+每个真实run保存配置/环境/代码/数据/标签/标定身份、成功及消费预算、参数组、checkpoint、逐实例/query/动作分数、排除和no_pose原因、各项有效分母与聚合方式、计时原始样本及汇总。另存固定selection的帧ID、帧数、实例顺序、`selection_scope`与`selection_role`；全量报告分别保存`evaluation_scope`和`source_pretrain_selection_scope`，并记录实际使用的固定best。结果表未执行项写“未运行”，不填推测数值；既有E5的AUROC、AP或其他改善不能归给A；A无须等待B完成才能执行本轮源训练和目标适配，公开pair须等待评价协议确定。
 
 当前在仓库根目录可运行A CPU测试（显式测试backbone）与数学参考：
 

@@ -80,12 +80,14 @@ def main(argv=None):
     report = {
         'schema': 'instance_native_evaluation_v1',
         'domain': args.domain, 'split': args.split, 'evaluation_protocol': protocol,
+        'evaluation_scope': ('partial_manifest_smoke' if args.allow_partial_manifests else 'complete_manifest'),
         'ranking': ranking, 'checkpoint': deepcopy(metadata),
         'checkpoint_selection_policy': policy,
         'checkpoint_selection_role': metadata['checkpoint_selection_role'],
         'test_selected': metadata['checkpoint_selection_role'] == 'test_selected',
         'source_run_uses_test_selection': (source_policy['selection_role'] == 'test_selected'
                                            if source_policy is not None else None),
+        'source_pretrain_selection_scope': source_policy.get('selection_scope') if source_policy else None,
         'independent_test_estimate': False,
         'public_evaluation': {'status': 'deferred', 'radius_only_protocol': None,
                               'paper_comparison_ready': False},

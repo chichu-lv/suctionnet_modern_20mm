@@ -6,7 +6,9 @@
 
 图示说明、双语图注及 SVG/PDF 下载见[路线 A 方法架构图](../METHOD_ARCHITECTURE_A.md)。
 
-本轮从头直接使用source scene 0–99全部100场景训练，完整source test 100–189选best；结果明确为 **test_selected，非独立测试估计**，保留预算终点last。目标1676/399/87不变，399 val选微调best。公开半径-only评价协议deferred，不作为开训门槛。
+本轮从头使用source scene 0–99全部100场景、每场景256帧训练。源域best默认由test scene 100–189全部90场景各固定8帧选取，帧ID为 `0,32,64,96,128,160,192,224`，共720帧；8750步预训练每875个成功更新评价一次，共10次。所选帧保留全部可见实例，每实例仍评价完整最多256个query。选模身份为 **`selection_role=test_selected`、`selection_scope=fixed_test_subset`，非独立测试估计**，保留预算终点last。目标1676/399/87不变，399 val选微调best。公开半径-only评价协议deferred，不作为开训门槛。
+
+训练结束后固定这个best，在完整90×256=23040帧test上运行独立评价CLI生成报告，不再依据全量成绩重新选模。报告区分 `evaluation_scope=complete_manifest` 与 `source_pretrain_selection_scope=fixed_test_subset`。`pretrain.selection_frames_per_scene`可设8、16或256，16帧包含默认8帧；旧配置不设此字段仍使用256帧。较小子集降低评价成本，但checkpoint排名可能波动，不保证选出全test最优模型。
 
 比较入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [公开协议状态](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。论文数值已填，A公开结果待测，当前实例test指标不替代全景AP。
 
@@ -53,7 +55,7 @@
 
 模型默认 `singleton_bn_policy=running_stats`，只处理训练时某BN每通道≤1值的退化输入；正常源训练仍走普通BN。微调期全部BN统计和affine冻结。策略进入checkpoint身份，不新增伪造活动点。
 
-执行顺序为[共同数据构建](DATA_PREPARATION.md#7-可执行的源数据构建) → [骨干准备与100场景训练](TRAINING_PLAN.md#7-可执行命令与运行产物) → [原生推理评价](POSTPROCESSING.md)。训练CLI需提供真实 `--backbone-root`，不存在自动CPU骨干回退。A/B网络与旧8通道E5权重不能互换或无身份迁移。
+执行顺序为[准备完整train与固定8帧selection](DATA_PREPARATION.md#7-可执行的源数据构建) → [骨干准备与100场景训练](TRAINING_PLAN.md#7-可执行命令与运行产物) → [固定best的推理与完整test报告](POSTPROCESSING.md)。开训只需完整train和约定720帧selection的标签，完整test缓存可留到训练后的报告阶段构建。正式selection既可传完整test manifest由训练入口自动筛选，也可使用数据准备页生成的 `SELECTION_MANIFEST`；覆盖全部90场景的约定帧即不需要 `--allow-partial-manifests`。真正缺少约定场景/帧的接线运行才标为partial；独立全量评价CLI的局部smoke也须显式使用该标志。训练CLI需提供真实 `--backbone-root`，不存在自动CPU骨干回退。A/B网络与旧8通道E5权重不能互换或无身份迁移。
 
 ## 4. 当前可以直接运行什么
 
@@ -76,4 +78,4 @@ python docs/instance_routes/reference/contact_boundary_contract.py self-test
 
 大体积 RGB-D、完整对象几何、标签缓存和 checkpoint 保存在外部数据/运行目录。分支提交源码、配置、必要汇总与可复核的运行身份；未来实验中的成功率和时延只填写实际完成的结果。
 
-`reference/route_a.json` 保持design_spec身份，真正运行配置是 `configs/instance_a.yaml`；CLI显式校验完整train/test范围、模型与数据身份、公开评价deferred状态。
+`reference/route_a.json` 保持design_spec身份，真正运行配置是 `configs/instance_a.yaml`；训练CLI校验完整train与固定selection覆盖，独立完整评价CLI校验全test范围，并保留模型/数据身份和公开评价deferred状态。

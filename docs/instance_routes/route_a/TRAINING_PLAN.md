@@ -1,6 +1,6 @@
 # A 训练方案：物理预训练与历史动作适配
 
-A新训练器已实现在 `scripts/train_instance.py` / `suction20/instance_training.py`，运行配置为 `configs/instance_a.yaml`。[route_a.json](../reference/route_a.json) 继续作为design_spec，不直接传给旧E5脚本。当前从头直接100场景训练、完整source test选best，公开半径-only协议deferred。真实SpConv/GPU和完整训练尚未执行；先完成[数据](DATA_PREPARATION.md)和[真实短链路验收](EXPERIMENT_PLAN.md)。
+A新训练器已实现在 `scripts/train_instance.py` / `suction20/instance_training.py`，运行配置为 `configs/instance_a.yaml`。[route_a.json](../reference/route_a.json) 继续作为design_spec，不直接传给旧E5脚本。当前从头直接100场景训练，best只使用source test全部90场景各固定8帧的子集选择；公开半径-only协议deferred。真实SpConv/GPU和完整训练尚未执行；先完成[数据](DATA_PREPARATION.md)和[真实短链路验收](EXPERIMENT_PLAN.md)。
 
 ## 1. 环境、初始化和运行身份
 
@@ -24,7 +24,7 @@ Lpre = Lq + 0.5*SmoothL1_beta0.05(seal_hat, S20)
 
 ## 3. 直接100场景源预训练
 
-source train为scene 0–99全部100场景、frame 0–255，模型从头初始化；source test为scene 100–189完整90场景、每场景256帧，直接用于best选择。不再执行90/10开发后final refit。test不参与反向传播，但其选模用途必须进入结果身份。
+source train为scene 0–99全部100场景、frame 0–255，模型从头初始化；best选择集为source test scene 100–189全部90场景各固定8帧，共720帧。完整90场景×256帧test留作训练后固定best的报告。不再执行90/10开发后final refit。test子集不参与反向传播，但其选模用途必须进入结果身份。
 
 | 参数 | A默认 |
 |---|---|
@@ -36,23 +36,28 @@ source train为scene 0–99全部100场景、frame 0–255，模型从头初始�
 | 优化器 | AdamW，betas(.9,.999)、eps1e-8、weight_decay .01 |
 | 学习率 | peak3e-4，前438个成功更新线性warmup，之后cosine至1e-5 |
 | 精度 | 网络FP32；从原数据构造float64接触几何与边界判定，冻结teacher保留原算术 |
-| 选模评价 | `pretrain.evaluation_steps: [4375, 8750]`；预算50%和100%处共2次，每次完整source test，不抽帧 |
+| 选模评价 | `pretrain.evaluate_every: 875`；8750成功步内共10次，每次固定90场景×8帧、每实例完整最多256-query |
+| 选择范围 | `pretrain.selection_frames_per_scene: 8`；`selection_scope=fixed_test_subset` |
 | 选模 | scene-macro InstTop1_INST20@0.4最大，再按所选Q_inst宏平均最大，仍平局选更早步 |
 | 保存 | test-selected best.pt；`pretrain.checkpoint_every: 875`，每875成功步保存last.pt，最终步记录预算完成；完整状态 |
 
-完整test评价与恢复checkpoint保存使用独立节奏：保存last不触发额外评价，默认源阶段只在上述两个成功步比较best；微调仍每100成功步评价并保存。若另设源评价节点，`evaluation_steps`须为预算内严格递增的正整数列表，不能与`evaluate_every`同时配置；训练器始终将原预算终点纳入评价。节点和保存间隔进入运行配置，严格resume时保持一致。
+子集评价与恢复checkpoint保存使用独立配置，默认间隔都为875步；保存last本身不触发额外评价。每次源评价均使用相同的90场景×8帧，共10次，原预算终点也在这个子集上评价，不在末步自动切换到全量test。微调仍每100成功步评价并保存。若另设源评价节点，`evaluation_steps`须为预算内严格递增的正整数列表，不能与`evaluate_every`同时配置；训练器始终将原预算终点纳入评价。帧数、节点和保存间隔进入运行配置，严格resume时保持一致。
+
+`pretrain.selection_frames_per_scene`默认8，固定帧ID为 `0,32,64,96,128,160,192,224`，按8位bit-reversal前缀取样并排序；16帧配置包含这些帧，256帧配置才使用完整test。旧配置未声明该字段时仍保持256帧语义。全部90个场景的所需帧及其中全部可见实例保留，每实例仍使用完整最多256个query；GT空帧以显式声明计入覆盖，无法向、少支持或无输出实例仍进入相应分母。完整test manifest会自动筛选，也可直接使用只含固定所选帧的正式selection清单，均不需`--allow-partial-manifests`。
+
+固定小子集减少周期评价成本，但较少观测可能使相近checkpoint的排名波动；重复使用同一帧集合只能消除每次随机换样本的差异，不能保证选出的best在完整test上最优。训练结束后由独立CLI对已固定best生成完整test报告，不用该报告重新选择checkpoint。
 
 训练与回放的raw支持、主干点采用同一实例级RGB变换：brightness/contrast/saturation=.2、hue=.05、灰度概率.2；mean/std依预处理合同。首版不做几何缩放。验证保持固定实例/query顺序和归一化。
 
 次级所选Q_inst宏平均采用与主指标相同的frame内实例→scene内frame→scene等权聚合，no_pose贡献0，空GT帧排除并另计；另报有输出姿态的条件Q微平均及输出数。这是共同评价口径的细化，不改变物理目标。若被选姿态或候选覆盖指标所需query的teacher标签未知/非法，该次评价标不完整并修复，不能将未知标签补0或删除实例分母后参与选模。
 
-best及其source test成绩标记 `selection_role=test_selected`、`independent_test_estimate=false`，不能作为独立盲测或填写论文全景AP。8750成功步的last是固定预算终点；提前暂停的last仅表示进度。
+best及其source test子集成绩标记 `selection_role=test_selected`、`selection_scope=fixed_test_subset`、`independent_test_estimate=false`，不能作为独立盲测或填写论文全景AP。训练后完整test报告也保留这一选模来源，不因覆盖更多帧变成独立估计。8750成功步的last是固定预算终点；提前暂停的last仅表示进度。
 
 默认 `singleton_bn_policy=running_stats` 仅在训练时某BN每通道输入值数≤1时使用已有running mean/variance，不更新该次统计/计数；其余源训练输入保持普通BN路径，不将源预训练全部BN设eval。微调冻结规则见下一节。此策略进入架构身份，不用增加伪造活动点避免BN退化。
 
 140000是新工程预算，不由旧E5的场景更新步数证明最优。成功步、成功实例暴露和已消费样本分别记录；后续AMP发生skip时不能消耗了数据却增加成功预算。microbatch×累积须为16，但不同microbatch会改变BN前向统计，不宣称逐位等价。PyTorch/CUDA仍需记录实际确定性限制。
 
-周期评价每次遍历完整90场景，`evaluation_stepXXXXXX.json` 仅保存指标/选择键和 `record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；不内嵌records数组，也不把全量明细常驻内存。可选 `all` 保留各节点、`none` 完全不写明细。该策略减少长期存储，仍有一次临时压缩流写入。
+周期源评价只遍历全部90场景的固定8帧、共720帧对应实例，`evaluation_stepXXXXXX.json`保存该子集指标/选择键、selection范围和`record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；最终步明细仍是固定子集，不代表已完成完整test。可选 `all` 保留各节点、`none` 完全不写明细；不内嵌records数组，也不把全部明细常驻内存。该策略减少长期存储，仍有一次临时压缩流写入。
 
 实际源训练/评价阈值来自 `model.min_support_points`，默认100；无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算。builder的准备阈值另存于metadata，不在训练器内硬编码100。
 
@@ -97,7 +102,7 @@ checkpoint保存架构/12通道/531融合/谐波与singleton BN配置，normal/s
 
 ## 7. 可执行命令与运行产物
 
-按[数据准备](DATA_PREPARATION.md)生成完整train/test缓存。真实A运行需要兼容PyTorch/CUDA/spconv环境及固定外部骨干文件；`backbone_root`不是可选的测试替代入口。已有下载与固定Git blob源码核验命令如下：
+按[数据准备](DATA_PREPARATION.md)生成全部100场景的完整train缓存和正式固定帧selection缓存。以下示例沿用已有完整test manifest，训练入口仍按配置自动筛为每场景8帧；也可将各条源训练命令的`--selection-manifest`替换为数据准备页得到的`"$SELECTION_MANIFEST"`，无需先构建完整test。两种来源都不加`--allow-partial-manifests`，同一次运行的resume继续使用相同数据路径和定义。真实A运行需要兼容PyTorch/CUDA/spconv环境及固定外部骨干文件；`backbone_root`不是可选的测试替代入口。已有下载与固定Git blob源码核验命令如下：
 
 ```bash
 python scripts/setup_backbone.py --output /data/backbones/graspness_modern
@@ -115,7 +120,9 @@ python scripts/train_instance.py --config configs/instance_a.yaml --stage pretra
 python scripts/train_instance.py --config configs/instance_a.yaml --stage pretrain --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --selection-manifest /data/instance_v3/test/manifest_test.jsonl --run-dir /data/runs/a_source100 --device cuda --resume /data/runs/a_source100/last.pt
 ```
 
-`--stop-after` 只在成功更新边界暂停，不缩短原正式预算；提前暂停的last不是预算完成。小规模source分片检查须显式 `--allow-partial-manifests`，身份记录partial，不能当作完整test选模结果。正式运行要求完整100-train/90-test、每场景256帧覆盖；未知/错姿态teacher标签不能补0后继续选best。
+`--stop-after`只在成功更新边界暂停，不缩短原正式预算；提前暂停的last不是预算完成。正式运行要求100个train场景各256帧，以及90个test场景各配置所需的固定8帧；完整覆盖这套selection不属于partial运行。真正缺少所需scene/frame的接线任务才显式使用`--allow-partial-manifests`，身份记录partial；未知/错姿态teacher标签不能补0后继续选best。
+
+训练结束后的全量报告使用已经固定的源best和完整test清单，命令见[后处理](POSTPROCESSING.md)。`evaluate_instance.py`直接评价完整manifest，不继承训练的子集view，也不改写`best.pt`。报告中`evaluation_scope=complete_manifest`描述本次评价覆盖，`source_pretrain_selection_scope=fixed_test_subset`描述源checkpoint的选模来源；两个字段用途不同。全量报告包含曾用于选模的帧，继续保留`test_selected`和`independent_test_estimate=false`。
 
 目标微调从同路线源best初始化，source train用于回放，目标train用于BCE，目标399 val作selection：
 

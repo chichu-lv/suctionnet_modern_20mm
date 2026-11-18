@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from suction20.instance_data import InstanceDataset, InstanceAttemptDataset
 from suction20.instance_config import apply_model_runtime_overrides
+from suction20.instance_selection import select_source_evaluation, validate_selection_config
 from suction20.instance_training import (InstanceTrainer, check_source_splits,
     create_instance_model, load_instance_config, seed_all)
 
@@ -20,7 +21,7 @@ def main(argv=None):
     parser.add_argument('--stage', choices=['pretrain', 'finetune'], default='pretrain')
     parser.add_argument('--source-manifest', required=True, type=Path)
     parser.add_argument('--selection-manifest', required=True, type=Path,
-                        help='Source test manifest for pretrain; target val manifest for finetune')
+                        help='Source test manifest containing every configured selection frame; target val for finetune')
     parser.add_argument('--target-manifest', type=Path)
     parser.add_argument('--run-dir', required=True, type=Path)
     parser.add_argument('--device', default='cuda')
@@ -57,7 +58,8 @@ def main(argv=None):
     check_source_splits(source, 'train', allow_partial=args.allow_partial_manifests)
     if args.stage == 'pretrain':
         selection = InstanceDataset(args.selection_manifest, split='test')
-        check_source_splits(selection, 'test', allow_partial=args.allow_partial_manifests)
+        selection = select_source_evaluation(selection, validate_selection_config(config['pretrain']),
+                                             allow_partial=args.allow_partial_manifests)
         target = None
     else:
         target = InstanceAttemptDataset(args.target_manifest, split='train')

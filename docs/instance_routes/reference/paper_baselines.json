@@ -831,7 +831,22 @@
       1676,
       399,
       87
-    ]
+    ],
+    "selection_frames_per_scene": 8,
+    "selection_scope": "fixed_test_subset",
+    "selection_frame_ids": [
+      0,
+      32,
+      64,
+      96,
+      128,
+      160,
+      192,
+      224
+    ],
+    "selection_frame_sampler": "bit_reverse8_prefix_v1",
+    "selection_evaluate_every": 875,
+    "full_test_reporting": "after_training_without_checkpoint_reselection"
   },
   "verification_note": "Paper values preserved from the preceding documented source audit; this implementation revision does not claim a new paper re-verification."
 }

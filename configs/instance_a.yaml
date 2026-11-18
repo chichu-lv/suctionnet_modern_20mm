@@ -14,13 +14,14 @@ model:
 pretrain:
   train_scene_range: [0, 99]
   selection_split: test
+  selection_frames_per_scene: 8
   steps: 8750
   accumulate_instances: 16
   queries: 128
   peak_lr: 0.0003
   final_lr: 0.00001
   warmup_steps: 438
-  evaluation_steps: [4375, 8750]
+  evaluate_every: 875
   evaluation_records: best_and_final
   checkpoint_every: 875
 finetune:

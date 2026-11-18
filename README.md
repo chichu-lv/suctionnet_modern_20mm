@@ -17,7 +17,7 @@
 | A：单物体稀疏 3D + RGB | [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) | [A 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) |
 | B：共享二维编码 + 投影环带 | [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) | [B 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) |
 
-两分支现已实现对应网络、共同实例数据/teacher、预训练/微调、严格恢复、无标签推理和native评价，实际命令见[代码运行说明](docs/instance_routes/IMPLEMENTATION.md)。源域直接使用100个训练场景，完整90个test场景选择best并标记test_selected，同时保存last；目标域1676/399/87划分不变。已完成CPU与合成官方格式链路验证，完整真实数据训练、A真实SpConv GPU、性能与部署导出仍待执行。
+两分支现已实现对应网络、共同实例数据/teacher、预训练/微调、严格恢复、无标签推理和native评价，实际命令见[代码运行说明](docs/instance_routes/IMPLEMENTATION.md)。源域直接使用100个训练场景，默认每875步在90个test场景各固定8帧上选择best，标记test_selected与fixed_test_subset，同时保存last；训练后可独立报告完整test，不重新选模。目标域1676/399/87划分不变。已完成CPU与合成官方格式链路验证，完整真实数据训练、A真实SpConv GPU、性能与部署导出仍待执行。
 
 公开对照采用[逐方法成对协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)：每条路线分别对照S1B、Diffusion-Suction、UISN两种前端配置，以及待核验的MultiGraspNet两种配置。论文值已登记，本方法待测；公开评价仅参数化半径的方案待定，不阻塞开训；不做参考方法之间的排行榜。
 

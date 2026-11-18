@@ -42,7 +42,7 @@
 - [x] 共同 `instance_geometry/data/teacher`、官方格式builder、精确p/n标签、对象资产/缓存身份；CPU与合成官方格式验证。
 - [x] A的12通道SpConv包装、raw支持谐波/分组、531融合与精确姿态接口；CPU测试显式注入骨干，真实SpConv尚待GPU检查。
 - [x] B原生Torch GN18/Fq/共享纹理、577槽投影、环带缺测/门控与330融合；真实CNN CPU更新和推理已验证。
-- [x] 直接100场景source训练、完整test选择best并标记test_selected、保留last；两阶段目标微调及严格暂停恢复、native推理/评价已接通。[运行命令](instance_routes/IMPLEMENTATION.md)
+- [x] 直接100场景source训练、90个test场景各固定8帧选择best并标记test_selected/fixed_test_subset、保留last；两阶段目标微调及严格暂停恢复、native推理/评价已接通。完整test由训练后独立CLI报告，不重新选模。[运行命令](instance_routes/IMPLEMENTATION.md)
 - [x] [公开方法逐一对比](instance_routes/PUBLIC_METHOD_COMPARISON.md)的论文值与成对表保留；仅半径协议设置deferred，不作为训练门禁。
 - [ ] 用完整真实资产执行缓存重算、既定8750步source预训练及1000步目标微调，记录teacher成本和候选覆盖；目标原划分不变。
 - [ ] A真实CUDA/SpConv链路、同硬件GPU端到端成本及B的ONNX/TensorRT导出。15–30ms、2–5ms仍是未验证目标。

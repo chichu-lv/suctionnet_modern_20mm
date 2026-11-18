@@ -21,7 +21,8 @@ from .instance_geometry import (NORMAL_SPEC, SAMPLER_SPEC, PRECISION_SPEC,
                                 prepare_instance)
 from .instance_training import (CHECKPOINT_SCHEMA, QUALITY_CONTRACT,
                                 create_instance_model, clean_metadata, file_record,
-                                evaluation_mode, minimum_support_points)
+                                evaluation_mode, minimum_support_points,
+                                validate_source_selection_checkpoint)
 
 
 PREDICTION_SCHEMA = 'instance_suction_prediction_v2'
@@ -85,6 +86,7 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None, query_ch
     pretrain = config.get('pretrain', {})
     if pretrain.get('selection_split') != 'test' or pretrain.get('train_scene_range') != [0, 99]:
         raise ValueError('Checkpoint must declare all 100 source scenes and explicit test selection')
+    validate_source_selection_checkpoint(state)
     step, kind = state.get('global_step'), state.get('checkpoint_kind')
     if isinstance(step, bool) or not isinstance(step, int) or step < 1:
         raise ValueError('Inference requires at least one completed optimizer update')

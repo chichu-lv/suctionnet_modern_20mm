@@ -210,7 +210,7 @@ scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index)
 
 历史动作默认以原 `planned_pipeline_contact` 的一个task logit计算一次BCEWithLogits，源回放系数0.5。`actual_execution_verified=false`意味着输出应解释为给定规划命令及观测的成败概率，不是已知真实执行落点的成功概率。只有完全缺少合法几何关联的动作才跳过并报告原因；不能仅因 `Fq` 缺失就删除历史样本。
 
-本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；在4375、8750两个成功步上遍历完整test scene 100–189、每场景256帧选best，明确 `test_selected`、非独立测试估计，同时保留预算终点last。best只从这两个节点中选择，每875步另存last进度。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
+本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每875成功步在test scene 100–189各固定8帧上选best，8750步共10次，明确 `test_selected`、非独立测试估计，同时保留预算终点last。选择帧固定为0、32、64、96、128、160、192、224，scope为fixed_test_subset；每875步另存last进度。训练后用独立CLI评价固定best的完整test，不重新选模。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
 
 轻度位姿微扰是可选正则，按共同训练规范启用，默认关闭；不能复制S/W标签到新姿态，也不把一个动作拆成多个独立成败样本。前200步和后800步的参数组必须覆盖本模型的实际新增层，不照搬旧E5组名。
 
