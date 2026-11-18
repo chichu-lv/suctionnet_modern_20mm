@@ -72,7 +72,7 @@ python scripts/train_pretrain.py --config configs/smoke_e5.yaml \
 
 下方P1/P2/P3迁移说明适用于原CD-009运行；其中voxel heads关闭、L20 16k和原生2线程等限制不适用于上述独立从头训练。
 
-## 性能实现构建与既有运行迁移
+## CD-009 历史性能实现与迁移记录（已归档）
 
 **以下为已停止的CD-009历史记录：H20/E5使用64k + split + native，L20/E0、E1、E3使用16k + split，曾迁移续训并取得首25次正常更新窗口。** H20/E5与L20/E3的真实四帧配对当时通过；E0/E1不使用接触分组。L20原64k组合未通过旧梯度门槛，因此旧运行选择16k；该限制不适用于CD-010从头训练。[P3操作说明](PERFORMANCE_PHASE3.md)分别使用`configs/performance/cd009-p3-integrated.json`（H20）和`configs/performance/cd009-p3-l20-16k.json`（L20）；旧`cd009-p3.json`保留作几何版本记录。
 
@@ -124,32 +124,13 @@ P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`ba
 
 上例为 H20/E5；L20 按实际迁移批次登记 16k sidecar。本轮 L20/E0、E1、E3 使用运行根目录 `performance/` 下的独立固定文件，SHA256 为 `39c8422e1c817d1af14e8ff160299669d008d8ca9fc56b782d22368b7e5b1f24`。缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；尚未切换的既有 run 按下述流程迁移，已完成者继续原训练。
 
-### 从批准的 original/P1/P2 迁移并正常恢复
+### 历史 checkpoint 迁移（当前版本不再支持）
 
-转换器接受已核实的 original revision `98862f4d6a133c99afa082a0755dbb888b41b38d` 与源码摘要 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`，以及批准的 P1 revision `996421c664a5a0b84c308aa4ca47c31eaff4035b`、源码摘要 `23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20` 与原 P1 sidecar `08d2247c…`；P2 批准身份见 [P3 接续说明](PERFORMANCE_PHASE3.md)。允许 original→v1/v2/v3、P1→v2/v3、P2→v3，保留历史 receipt 的合法迁移关系。P1 来源原有迁移链继续沿用；源身份按实际 checkpoint 读取。具名 dense chunk 执行覆盖位于 sidecar，不改变冻结 profile、batch、loss、预算、数据、依赖或数学设置。
+CD-009 在 P1/P2/P3 阶段曾使用一次性转换器，对暂停运行做显式 checkpoint 迁移；该流程、来源版本白名单、receipt 迁移链及过渡期 supervisor 例外放行均已退出当前代码。**本节及相关 P1/P2/P3 报告仅作为历史实验记录，不是当前可执行的操作说明。**
 
-1. 用 supervisor `pause EXPERIMENT --reason ...` 在完整更新边界暂停同一 checkout/venv 的全部任务。旧 worker/trainer 必须已正向确认退出，状态为 `paused`、exit75，完成原 final backup，且没有 pending validation；若已有 pending，先用旧版本完成原定验证。
-2. 冻结并验证目标代码与本机扩展，在拥有该 run 的主机执行转换。`--control-dir` 指向刚退出的旧 attempt，源 hash 取已核验 manifest 的 current。数据与主干覆盖参数必须与原 supervisor 一致。
+当前代码不再提供 `scripts/migrate_performance_checkpoint.py`，也不会自动改写 checkpoint 权重、optimizer、sampler、RNG 或运行身份。正常 `--resume` 只允许代码、数据、配置与 performance sidecar 身份完全匹配的同版本续训。历史 checkpoint 如包含 `performance_migration` 收据，应使用迁移清理前的固定历史源码版本 `fb8a2dacc996b98d86cd0aa52dd7a859f92dd32c` 及对应的归档核验流程；不要删除收据后强制恢复。
 
-```bash
-python scripts/migrate_performance_checkpoint.py \
-  --config configs/runtime_profiles/cd009-v3/H20-E5.json \
-  --performance-config configs/performance/cd009-p3-integrated.json \
-  --run-dir /path/to/runs/E5_seed42 \
-  --control-dir /path/to/control/attempts/PAUSED_TOKEN \
-  --expected-source-checkpoint-sha256 SOURCE_CURRENT_SHA256 \
-  --source-root /path/to/full-20261110/input_raw \
-  --label-root /path/to/full-20261110/output \
-  --backbone-root /path/to/graspness_modern
-```
-
-上例选择 H20/E5；L20 使用自己的原 profile 和固定的 `cd009-p3-l20-16k.json` 路径。`--expected-source-sha256` 是相同参数的短名称。工具取得现有 run lock，核对退出身份、current blob/hash、源/目标 identity、语义与预算；仅允许 `code_revision`、`worktree_sha256` 和 `performance` 变化。它不构造 optimizer、不前向/反向、不增加更新或样本。模型/BN、Adam、AMP、RNG、sampler、LR 进度、best、验证和原日志前缀都保持。
-
-归档路径为 `RUN/migrations/performance-UUID/`：`source.pt` 是源 blob 的硬链接，另外保存 `source-manifest.json`、`performance-config.json` 和 `receipt.json`。receipt 记录源/目标 identity、源成功步/attempt、实际允许差异和三个归档文件的大小/hash。新 current 的 `runtime_state` 与 manifest `analysis` 都引用 receipt 相对路径及 SHA256；后续保存继续透传。根目录 `runtime.json`/`resolved_config.json` 保留 run 最初版本，当前身份看 current、receipt 与新 attempt。
-
-3. 更新私有 supervisor 的 sidecar 映射后，仍执行普通 `resume E5`（其他实验同理）。supervisor 仅在检查到有效迁移 receipt、目标 sidecar hash 相同且原源 checkpoint 的 final backup 仍有效时允许原 assignment 切换；新 attempt 沿用原设备、profile 和学习状态。普通 resume 不提供忽略身份检查的开关。
-
-现有备份会递归验证并复制当前 receipt 及其 P1/P2 历史链中每份 receipt 引用的三份归档文件，还包括 attempt 的性能配置快照；保留源 `source.pt` 的完整内容，不能只复制 receipt。切换检查中的 `performance_source_backup_verified` 核对原源备份；新 current 的备份在新 worker 首次观察到 durable checkpoint 后立即进入原串行备份队列。继续使用现有 checksum、pinning 和对象去重。共享备份内的符号链接指向备份根内的对象；实际恢复须解引用（例如 `cp -L`），再在恢复目录执行严格迁移校验。接续沿用 [P3 操作说明](PERFORMANCE_PHASE3.md) 的三项正常检查，已完成的配对和窗口直接引用已有记录。
+现行支持范围、拒绝策略与历史资料说明参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
 
 ### 真实诊断结果的正确使用
 
