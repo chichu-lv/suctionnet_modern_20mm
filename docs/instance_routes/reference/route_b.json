@@ -1,0 +1,165 @@
+{
+  "schema_version": "suction20.instance_routes.design.v1",
+  "artifact_kind": "design_spec",
+  "trainer_implemented": false,
+  "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
+  "quality_contract": "gt_SW20_pose_v1",
+  "coordinate_contract": {
+    "units": "m",
+    "axis": "outward_normal_camera",
+    "tool_plus_z": "negative_outward_normal",
+    "roll": "cross_least_aligned_camera_axis_tie_xyz"
+  },
+  "observation": {
+    "min_source_training_points": 100,
+    "position_scale_m": 0.1,
+    "normal": {
+      "method": "same_instance_metric_ball_pca",
+      "radius_m": 0.015,
+      "min_unique_neighbors": 20,
+      "middle_eigenvalue_min_m2": 1e-10,
+      "proposal_orientation": "dot(n,-p)>=0",
+      "historical_query_orientation": "preserve_supplied_sign"
+    },
+    "gravity_components": 3
+  },
+  "query": {
+    "max_candidates": 256,
+    "method": "deterministic_unique_fps",
+    "first_point": "minimum_source_point_id",
+    "tie_break": "minimum_source_point_id",
+    "selection_distance_dtype": "cpu_float64",
+    "direct_historical_pose": true
+  },
+  "contact": {
+    "height_abs_max_m": 0.04,
+    "core_radius_m": [
+      0,
+      0.01
+    ],
+    "inner_radius_m": [
+      0.01,
+      0.018
+    ],
+    "lip_radius_m": [
+      0.018,
+      0.022
+    ],
+    "lip_outer_inclusive": true
+  },
+  "rgb": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "brightness": 0.2,
+    "contrast": 0.2,
+    "saturation": 0.2,
+    "hue": 0.05,
+    "grayscale_probability": 0.2
+  },
+  "loss": {
+    "q": "laplace_nll_log_scale",
+    "log_scale_min": -6,
+    "log_scale_max": 1,
+    "log_scale_init": -2.3025850929940455,
+    "seal_weight": 0.5,
+    "wrench_weight": 0.25,
+    "smooth_l1_beta": 0.05,
+    "collision_weight": 0
+  },
+  "pretrain": {
+    "seed": 42,
+    "successful_instance_draws": 140000,
+    "effective_batch": 16,
+    "microbatch": 1,
+    "accumulation": 16,
+    "max_successful_updates": 8750,
+    "precision": "float32",
+    "optimizer": "AdamW",
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "epsilon": 1e-8,
+    "weight_decay": 0.01,
+    "peak_lr": 0.0003,
+    "min_lr": 0.00001,
+    "warmup_updates": 438,
+    "schedule": "linear_warmup_then_cosine",
+    "validation_every_updates": 875,
+    "selection_metric": "scene_macro_InstTop1_SW20_at_0.4"
+  },
+  "finetune": {
+    "successful_updates": 1000,
+    "head_only_updates": 200,
+    "head_lr_stage1": 0.0003,
+    "head_lr_stage2": 0.0001,
+    "decoder_contact_lr_stage2": 0.00001,
+    "target_observations_per_update": 2,
+    "source_observations_per_update": 2,
+    "source_loss_weight": 0.5,
+    "encoder_frozen": true,
+    "batchnorm_frozen": true,
+    "validation_every_updates": 100,
+    "selection_metric": "fixed_historical_action_AUROC"
+  },
+  "inference": {
+    "ranking_source": "q_sw",
+    "ranking_target": "task_probability",
+    "alpha": 0,
+    "optional_heuristic_alpha": 0.5,
+    "mc_dropout_samples": 1,
+    "nms_distance_m": 0.01,
+    "nms_axis_angle_deg": 15,
+    "top_k": 5,
+    "no_output_status": "no_pose",
+    "latency_measured": false
+  },
+  "route": "b",
+  "model": {
+    "class": "InstanceSuction2D",
+    "global_backbone": "ResNet18_UNet",
+    "weights": null,
+    "global_input_shape": [
+      13,
+      128,
+      128
+    ],
+    "global_crop": "full_instance_bbox_10_percent_margin_square_letterbox",
+    "global_feature_channels": 64,
+    "global_pooled_dim": 128,
+    "local_input_shape": [
+      10,
+      64,
+      64
+    ],
+    "local_grid_m": 0.001,
+    "local_half_extent_m": 0.032,
+    "local_channels": [
+      16,
+      32,
+      64
+    ],
+    "local_stride": [
+      2,
+      2,
+      2
+    ],
+    "local_groupnorm_groups": 8,
+    "local_pooled_dim": 128,
+    "geometry_statistics_dim": 156,
+    "query_descriptor_dim": 12,
+    "query_input_dim": 424,
+    "query_chunk": 64,
+    "local_raster_rule": "minimum_absolute_height_then_source_id",
+    "geometry_preprocessing_outside_inference_engine": true
+  }
+}
+

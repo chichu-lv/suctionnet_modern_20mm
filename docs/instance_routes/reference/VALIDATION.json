@@ -1,0 +1,135 @@
+{
+  "schema_version": "suction20.instance_routes.geometry_reference_validation.v1",
+  "as_of": "2026-11-18",
+  "synthetic_only": true,
+  "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
+  "source_file": "geometry_contract.py",
+  "source_sha256": "ba23e0d872ddcb22e7f065ee4b7552628a8424e8805f3043e36abe7e48eb987c",
+  "scope": "Geometry identities and declared data contracts only. No A/B network training, real-data physical evaluation, accuracy result or timing benchmark.",
+  "commands": [
+    {
+      "command": "python docs/instance_routes/reference/geometry_contract.py selftest",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "checks_passed": 29,
+        "checks": [
+          "project_unproject_roundtrip_fx_ne_fy",
+          "nonpositive_camera_depth_invalid",
+          "reference_pixel_centre_63_5",
+          "independent_fx_fy_metric_reference_scale",
+          "align_corners_false_grid_centre",
+          "affine_inverse_roundtrip",
+          "different_depth_is_not_fixed_2mm_per_pixel",
+          "tilted_tangent_circle_is_not_reference_plane_circle",
+          "surface_SO3_[1, 0, 0]",
+          "surface_SO3_[0, -1, 0]",
+          "surface_SO3_[0, 0, -1]",
+          "surface_SO3_[0.1, 0.2, 1]",
+          "historical_axis_is_not_flipped",
+          "proposal_camera_orientation_is_explicit",
+          "tool_plus_z_is_negative_outward_normal",
+          "annulus_metric_boundaries",
+          "all_72_observed_lip_sectors_occupied",
+          "holes_are_preserved_with_zero_features",
+          "zero_normal_geometry_support_retained",
+          "cell_tie_min_source_id_and_input_order_invariance",
+          "cell_selection_min_absolute_height_precedes_id",
+          "masked_nan_labels_are_allowed",
+          "valid_nan_rejected",
+          "nonunit_valid_axis_rejected",
+          "incorrect_SW_product_rejected",
+          "valid_disjoint_manifest",
+          "cross_split_group_rejected",
+          "cross_split_observation_hash_rejected",
+          "duplicate_sample_id_rejected"
+        ],
+        "python": "3.12.14",
+        "numpy": "2.3.5"
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/geometry_contract.py demo --output-dir <demo-dir>",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "description": "No robot, model, or real data evaluated",
+        "raster_shape": [
+          10,
+          64,
+          64
+        ],
+        "occupied_cells": 72,
+        "lip_sector_fraction": 1.0,
+        "label_check": {
+          "ok": true,
+          "rows": 73,
+          "valid_rows": 72,
+          "invalid_rows": 1,
+          "has_supervision": true,
+          "finite_but_masked_quality_rows": 0
+        },
+        "manifest_check": {
+          "ok": true,
+          "rows": 3,
+          "groups": 3,
+          "observations": 3,
+          "splits": {
+            "train": 1,
+            "val": 1,
+            "test": 1
+          },
+          "scope": "declared_hash_and_group_consistency; file bytes are not read"
+        },
+        "files": [
+          "synthetic_labels.npz",
+          "synthetic_manifest.jsonl",
+          "tangent_raster.npz",
+          "demo_summary.json"
+        ]
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/geometry_contract.py check-labels <demo-dir>/synthetic_labels.npz",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "rows": 73,
+        "valid_rows": 72,
+        "invalid_rows": 1,
+        "has_supervision": true,
+        "finite_but_masked_quality_rows": 0
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/geometry_contract.py check-manifest <demo-dir>/synthetic_manifest.jsonl",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "rows": 3,
+        "groups": 3,
+        "observations": 3,
+        "splits": {
+          "train": 1,
+          "val": 1,
+          "test": 1
+        },
+        "scope": "declared_hash_and_group_consistency; file bytes are not read"
+      }
+    }
+  ],
+  "tolerances": {
+    "unit_axis_abs": 0.0001,
+    "sw_product_atol": 1e-06,
+    "sw_product_rtol": 1e-05
+  },
+  "notes": [
+    "<demo-dir> denotes the temporary synthetic directory used by all three file-based commands.",
+    "The manifest validator checks declared hashes and IDs; it does not hash referenced observation bytes or establish temporal independence.",
+    "The tangent raster keeps empty cells invalid. Lip-sector occupancy is observed coverage, not a physical seal label.",
+    "Historical outward axes retain their supplied sign. Proposal camera-facing orientation is opt-in.",
+    "Zero observed normals retain finite RGB/geometry support with zero normal channels; query axes must still be valid nonzero directed unit vectors."
+  ]
+}

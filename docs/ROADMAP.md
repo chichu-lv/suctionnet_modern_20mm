@@ -36,6 +36,12 @@
 
 可选sidecar缓存与residual uncertainty工具尚未交付，仅在实际需要时安排。最新完成项与待办摘要见 [README](../README.md)，正式运行命令见 [MODEL_USAGE](MODEL_USAGE.md)。
 
+## 单物体路线 A/B 设计与实施
+
+- [x] [完成工程实施规范](instance_routes/README.md)：同姿态SW标签、单动作监督、A的12维稀疏输入、B的完整实例上下文与候选切平面图，以及统一训练、指标和位姿合同。
+- [x] [几何与数据契约参考工具](instance_routes/reference/geometry_contract.py)：29项合成检查及demo/标签/manifest命令通过，范围见[验证记录](instance_routes/reference/VALIDATION.json)。
+- [ ] 实现实例构建、SW缓存、新模型与训练入口，按固定验证协议评价。设计配置不是旧E5训练器的运行配置；未新增A/B真实训练或速度结果。
+
 ## 代码管理
 
 - `main` 保持可阅读、可测试的主线。
@@ -43,5 +49,6 @@
 - 代码不覆盖 SuctionNet 官方源文件；生成数据存储于外部 `$OUT`。
 - Python 变更需运行 `pytest -q`；数据标签变更需附至少一个可视化示例和指标对比。
 - 不将大型原始数据、隐私配置、训练权重默认提交进 Git。
+
 
 

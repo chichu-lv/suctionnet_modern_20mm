@@ -10,6 +10,7 @@
 
 ## Done（已完成）
 
+- [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：完成数据与同姿态SW标签、3D/2.5D网络、训练评价和位姿输出设计，附29项合成几何/契约检查通过的参考工具。A/B新模型和训练入口仍待实现。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
 - [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
 
@@ -48,6 +49,7 @@
 
 ## TODO（待完成）
 
+- [ ] 按[单物体路线实施顺序](docs/instance_routes/TRAIN_EVAL_REPRODUCE.md)接通共用实例/查询数据、SW标签和A/B模型训练入口；先实现A，再在同一协议下验证B。
 - [ ] 在已有87条未参与选模的有标签test历史动作上，对冻结的E5预训练best与微调best完成一次同动作评分比较；开发验证和401帧新候选推理已完成。
 - [ ] 接入原定正常工况业务执行对比，以新动作的实际吸取和搬运结果判断部署收益。
 
@@ -115,6 +117,7 @@ bash scripts/run_data_pipeline.sh
 - 不重新发布第三方原始标注脚本或数据；需要在本地拉取上游开源仓库。
 
 原始数据使用和科研结果均需遵守 SuctionNet/GraspNet 的相应许可证。
+
 
 
 
