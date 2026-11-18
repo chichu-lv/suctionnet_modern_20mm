@@ -14,48 +14,7 @@ from pathlib import Path
 SCHEMA_VERSION = 'suction20.performance.v1'
 SCHEMA_VERSION_V2 = 'suction20.performance.v2'
 SCHEMA_VERSION_V3 = 'suction20.performance.v3'
-SCHEMA_VERSION_V4 = 'suction20.performance.v4'
-SOURCE_REVISION = '98862f4d6a133c99afa082a0755dbb888b41b38d'
-SOURCE_WORKTREE_SHA256 = 'd634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8'
-P1_SOURCE_REVISION = '996421c664a5a0b84c308aa4ca47c31eaff4035b'
-P1_SOURCE_WORKTREE_SHA256 = '23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20'
-P1_SOURCE_CONFIG_SHA256 = '08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188'
-P2_SOURCE_REVISION = 'e73d62ed23aed6f23b9b01a8bfc09ec56d8fc859'
-P2_SOURCE_WORKTREE_SHA256 = '0c6501ac1b8e374fc37bbba4df3abc30dd4fbf4f726fa23b9c7092c537b3aed8'
-P2_SOURCE_CONFIG_SHA256 = '8a104de89df99ea327a759e5471bef357965ea20e7b57461081560ca87216928'
-
-
-def approved_migration_source(identity):
-    """Classify only the explicitly approved source builds, never resume."""
-    performance = identity.get('performance')
-    if (identity.get('code_revision') == SOURCE_REVISION and
-            identity.get('worktree_sha256') == SOURCE_WORKTREE_SHA256 and not performance):
-        return 'original'
-    if (identity.get('code_revision') == P1_SOURCE_REVISION and
-            identity.get('worktree_sha256') == P1_SOURCE_WORKTREE_SHA256 and
-            isinstance(performance, dict) and performance.get('schema_version') == SCHEMA_VERSION and
-            performance.get('config_sha256') == P1_SOURCE_CONFIG_SHA256):
-        return 'p1'
-    if (identity.get('code_revision') == P2_SOURCE_REVISION and
-            identity.get('worktree_sha256') == P2_SOURCE_WORKTREE_SHA256 and
-            isinstance(performance, dict) and performance.get('schema_version') == SCHEMA_VERSION_V2 and
-            performance.get('config_sha256') == P2_SOURCE_CONFIG_SHA256):
-        return 'p2'
-    raise ValueError('Performance migration source is not approved')
-
-
-def validate_migration_target(source_kind, target_schema):
-    """Allow a direct upgrade while retaining historical receipt transitions."""
-    allowed = {
-        'original': (SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3),
-        'p1': (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3),
-        'p2': (SCHEMA_VERSION_V3,),
-    }
-    if target_schema not in allowed.get(source_kind, ()):
-        raise ValueError(f'Unsupported performance migration target {target_schema!r} for {source_kind!r}')
-
-
-def validate_performance_config(value):
+SCHEMA_VERSION_V4 = 'suction20.performance.v4'def validate_performance_config(value):
     keys = {'schema_version', 'fps_backend', 'query_chunk_size', 'query_workers', 'loader', 'detailed_cpu_timing'}
     optional_keys = set()
     if not isinstance(value, dict) or value.get('schema_version') not in (SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, SCHEMA_VERSION_V4):
