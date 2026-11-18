@@ -8,7 +8,9 @@
 
 完整[架构图说明、双语图注和维度表](../METHOD_ARCHITECTURE_B.md)；下载 [SVG](../../figures/instance-route-b-architecture.svg)、[PDF](../../figures/instance-route-b-architecture.pdf)、[PNG](../../figures/instance-route-b-architecture.png)。
 
-本轮直接使用source scene 0–99全部100场景训练，完整source test 100–189选best，结果明确为 **test_selected，非独立测试估计**；保留固定预算last。目标1676/399/87不变。公开评价“只参数化吸盘半径”暂定为deferred，不作为开训门槛。
+本轮从头使用source scene 0–99全部100场景、每场景256帧训练。源域best默认由test scene 100–189全部90场景各固定8帧选取，帧ID为 `0,32,64,96,128,160,192,224`，共720帧；8750步预训练每875个成功更新评价一次，共10次。所选帧保留全部可见实例，每实例仍评价完整最多256个query。选模身份为 **`selection_role=test_selected`、`selection_scope=fixed_test_subset`，非独立测试估计**；保留固定预算last。目标1676/399/87不变，399 val选微调best。公开评价“只参数化吸盘半径”暂定为deferred，不作为开训门槛。
+
+训练结束后固定这个best，在完整90×256=23040帧test上运行独立评价CLI生成报告，不再依据全量成绩重新选模。报告区分 `evaluation_scope=complete_manifest` 与 `source_pretrain_selection_scope=fixed_test_subset`。`pretrain.selection_frames_per_scene`可设8、16或256，16帧包含默认8帧；旧配置不设此字段仍使用256帧。较小子集降低评价成本，但checkpoint排名可能波动，不保证选出全test最优模型。
 
 公开比较入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [公开协议状态](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。论文数值保留，B公开结果待测，现有实例test指标不替代全景AP。
 
@@ -55,7 +57,7 @@ B 的工程目标是共享二维编码和向量化查询。相机投影、深度
 | 原生推理评价 | `suction20/instance_inference.py`、`scripts/infer_instance.py`、`scripts/evaluate_instance.py` | 同姿态输出和实例/动作评价；不包含公开半径评价器 |
 | 部署导出 | `scripts/export_instance_b.py` 尚未实现 | ONNX/TensorRT、动态ROI、精度对齐和端到端计时待完成 |
 
-最短运行顺序为[构建train/test缓存](DATA_PREPARATION.md#7-可执行的源数据构建) → [直接100场景训练](TRAINING_PLAN.md#7-可执行命令与运行产物) → [同姿态推理和实例评价](POSTPROCESSING.md)。数据不足时使用显式分片/partial身份检查链路，不把它记录成正式全test结果。A/B网络不能因为都输出五个头而互换checkpoint。
+最短运行顺序为[准备完整train与固定8帧selection](DATA_PREPARATION.md#7-可执行的源数据构建) → [直接100场景训练](TRAINING_PLAN.md#7-可执行命令与运行产物) → [固定best的同姿态推理和完整test报告](POSTPROCESSING.md)。开训只需完整train和约定720帧selection的标签，完整test缓存可留到训练后的报告阶段构建。正式selection既可传完整test manifest由训练入口自动筛选，也可使用数据准备页生成的 `SELECTION_MANIFEST`；覆盖全部90场景的约定帧即不需要 `--allow-partial-manifests`。真正缺少约定场景/帧的接线运行才标为partial；独立全量评价CLI的局部smoke也须显式使用该标志。A/B网络不能因为都输出五个头而互换checkpoint。
 
 ## 4. 现在即可运行的检查
 

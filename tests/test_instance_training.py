@@ -139,7 +139,8 @@ def test_runtime_config_100_train_test_selected_deferred(tmp_path):
             c = load_instance_config(path)
             assert c['pretrain']['train_scene_range'] == [0, 99]
             assert c['pretrain']['selection_split'] == 'test'
-            assert scheduled_evaluation_steps(c['pretrain']) == (4375, 8750)
+            assert scheduled_evaluation_steps(c['pretrain']) == tuple(range(875, 8751, 875))
+            assert c['pretrain']['selection_frames_per_scene'] == 8
             assert c['pretrain']['checkpoint_every'] == 875
             assert c['public_evaluation']['status'] == 'deferred'
     invalid = config(); invalid['pretrain']['selection_split'] = 'val'

@@ -8,14 +8,17 @@ B模型及共同训练/推理链路已实现，实际网络CPU前向、反向和
 |---|---|
 | 源训练 | scene 0–99全部100场景、全部256视角可抽样；从头训练，不再90/10开发后final refit |
 | 预算 | 140000个成功受监督实例、8750次成功更新；128-query训练前缀 |
-| best选择 | 第4375、8750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
-| 成绩身份 | `test_selected` / `independent_test_estimate=false`；源test只评价、不反传，但已参与模型选择 |
+| best选择 | 每875成功步评价一次，共10次；source test scene 100–189每场景固定8帧，全部可见实例、每实例完整最多256-query；保留best与预算终点last |
+| 成绩身份 | `selection_role=test_selected`、`selection_scope=fixed_test_subset`、`independent_test_estimate=false`；源test子集已参与模型选择 |
+| 训练后报告 | 独立CLI对固定best评价完整90场景×256帧，不更新或重选best；分别记录本次评价范围与源预训练选择范围 |
 | 目标域 | 1676 train、399 val选best、87 test冻结后评价；保留既有group和规划动作语义 |
 | 本轮评价 | INST20实例Top1/selected-Q/coverage，以及目标固定动作AUROC/AP/BCE/Brier |
 | 公开方法评价 | `deferred`；只参数化半径的方案待定，未实现、不作为开训前置门禁 |
 | 论文表 | 保留各论文原始数值及来源；B公开结果待测，不能填入本轮实例指标 |
 
-source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160–189，各7680帧、总23040帧。当前采用GT实例输入做实例物理选模；它与预测实例前端参与的全景公开AP并非同一实验。`test_selected`成绩只能按该身份报告，不能包装成盲测或“除吸盘半径外完全一致”的公开比较。
+source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160–189，各7680帧、总23040帧。默认周期选模只取每场景固定 `0,32,64,96,128,160,192,224` 八帧，各类别240帧、总720帧；每次使用同一集合，不按模型分数换帧或删实例。帧数由`pretrain.selection_frames_per_scene`配置：8为当前默认，16包含这8帧，256使用全量；旧配置未设置该字段仍保持256帧语义。完整test manifest可由训练入口自动筛选，正式8帧selection缓存也可直接使用，只要全部90场景的所需帧齐全就不需要`--allow-partial-manifests`。
+
+较小selection减少周期评价成本，也可能使指标接近的checkpoint排序波动；固定帧集合控制重复采样差异，不能保证该best在完整test上也最优。完整test只在训练后评价已固定best，不根据报告重新挑权重。当前GT实例物理指标与预测实例前端参与的全景公开AP不是同一实验；子集及完整报告均保留`test_selected`，不能包装成盲测或“除吸盘半径外完全一致”的公开比较。
 
 用户要求的逐方法对照保留在第2节及后文MultiGraspNet两组表中，每表只有B与一个参考，不比较参考之间。未来恢复公开评价时，须逐pair冻结测试集/相机/指标、物理口径、前端和GT工作区权限；未披露的论文训练细节标unreported，未核实项保持unverified。半径-only方案及其R10对齐检查都仍待决定，不能提前宣称已匹配。
 
@@ -86,7 +89,7 @@ source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160�
 | E0 合同与网络回归 | NumPy参考、B真实网络CPU前向/反向 | 几何反例、Fq梯度、330维、mask/chunk/相位/有限性 | 既有129项数学参考；B专属12项测试通过 |
 | E1 真实数据/teacher | 先64–128个覆盖尺寸、dense规模和形状的真实实例；精确p/n | S/W/self对齐、身份、排除及成本报告 | 代码已接线，真实资产核验待运行 |
 | E2 实际训练短链路 | 分片真实缓存到若干成功更新、保存恢复和推理 | 有效梯度、冻结、恢复、同姿态输出 | 使用partial运行身份，不作正式成绩 |
-| E3 B-source100 | 全100场景train，128-query、140000实例/8750更新；完整test选best | test_selected best、预算last、完整分母及逐实例结果 | 待真实完整训练 |
+| E3 B-source100 | 全100场景train，128-query、140000实例/8750更新；每875步用90场景各固定8帧选best，共10次；结束后独立全量test报告 | test_selected / fixed_test_subset best、预算last、子集与完整报告各自分母及逐实例结果 | 待真实完整训练 |
 | E4 B-target-ft | E3 best初始化，200+800，2 target+2 source回放 | 399 val选best；最终87 test | 待真实资产与训练 |
 | E5 B公开方法对比 | 按各论文单独配对 | 明确测试/指标/半径/前端和选模身份，B六指标 | deferred，不阻塞E3/E4 |
 | E6 B部署 | 冻结权重、动态ROI、精度和输出合同 | 导出差异、端到端p50/p95/显存 | ONNX/TensorRT未完成 |
@@ -95,9 +98,11 @@ E1的64–128是teacher成本和一致性剖析样本，不是训练收敛样本
 
 ## 4. 本地源域指标和明确分母
 
-本节指标用于完整source test选best，并分Seen/Similar/Novel报告，所有结果标 `test_selected`。未参与梯度并不使其成为独立测试；继续调参或增加比较同样必须保留该选择身份。
+本节指标用于固定test子集选best，并以相同计算规则生成训练后完整test报告；两种范围均分Seen/Similar/Novel报告并标`test_selected`。主排序仍为`InstTop1_INST20@0.4`最大，再按selected-Q宏平均最大，仍平局选更早成功步。未参与梯度并不使其成为独立测试；继续调参或增加比较同样必须保留该选择身份。
 
-令每个可见GT实例i的Top1命中 `h_i=1[有输出且所选姿态Q_inst>=0.4]`。当前B默认100点以下支持的实例、无合法观测法向、无输出实例的h_i=0，保留在原始实例分母。按frame内实例均值→scene内有效frame均值→scene等权平均得到 `InstTop1_INST20@0.4`；空GT帧另计并排除。另报实例微平均。[协议来源](../TRAIN_EVAL_REPRODUCE.md)
+周期选模记录`selection_scope=fixed_test_subset`。训练后`evaluate_instance.py`直接检查并评价完整test manifest，报告`evaluation_scope=complete_manifest`；同一报告的`source_pretrain_selection_scope=fixed_test_subset`保存checkpoint来源，不会把本次23040帧报告缩成720帧，也不重新计算best排名。各报告分别列出自己的帧数、实例数、空GT帧和无输出分母，不能把子集指标标成全量指标。
+
+令每个可见GT实例i的Top1命中`h_i=1[有输出且所选姿态Q_inst>=0.4]`。当前B默认100点以下支持的实例、无合法观测法向、无输出实例的h_i=0，保留在原始实例分母。按frame内实例均值→scene内本次评价范围的有效frame均值→scene等权平均得到`InstTop1_INST20@0.4`；子集不混入未选帧，完整报告使用全部帧。空GT帧由显式声明计入覆盖，另计并排除于实例平均。另报实例微平均。[协议来源](../TRAIN_EVAL_REPRODUCE.md)
 
 次级selected-Q使用相同宏平均层级：有输出取所选姿态Q_inst，no_pose取0；它用于同主指标时选模。另报**有输出条件下**所选Q的微平均及有效输出数，避免把两个均值混称。所有结果同时报告原始实例数、少支持/无normal/无输出计数及原因。
 
@@ -154,11 +159,11 @@ E1的64–128是teacher成本和一致性剖析样本，不是训练收敛样本
 
 ## 9. 每次实验必须交付的记录
 
-运行目录保存完整配置与环境、代码/checkpoint/manifest/teacher/precision身份、逐query/实例/动作预测、支持与排除统计、按scene/group聚合汇总、计时分项和失败样例索引。记录成功更新、成功监督实例、全部consumed draws和skip。可见输入和完整GT teacher的使用边界写入报告。
+运行目录保存完整配置与环境、代码/checkpoint/manifest/teacher/precision身份、逐query/实例/动作预测、支持与排除统计、按scene/group聚合汇总、计时分项和失败样例索引。记录成功更新、成功监督实例、全部consumed draws和skip；另存固定selection帧ID、帧数、实例顺序、`selection_scope`和`selection_role`。训练后全量报告分别保存`evaluation_scope`与`source_pretrain_selection_scope`及实际固定best，不能把选择范围和评价范围合并为一个字段。可见输入和完整GT teacher的使用边界写入报告。
 
 GitHub只同步必要汇总、配置和来源索引；完整资产/标签/权重留在数据与运行目录。公开对照的协议待定，先保留[来源参考](../PUBLIC_METHOD_COMPARISON.md)和[论文基线登记](../reference/paper_baselines.json)，不调用项目 `eval_r20` 冒充官方AP；第三方优先引用论文值，不要求重训。旧E5若做本地INST分析，须对它实际输出姿态以同一实例teacher重评，且仍不能写入B的任何实测行。
 
-完成必要的E1/E2真实资产接线后执行E3/E4；E3源test选best的全部成绩保留test_selected身份，E4另按目标399 val/87 test记录。E5公开协议待定，不构成E3/E4前置条件；E6实际导出与计时完成后才能陈述部署成本。真实新动作的业务成功率需要后续执行结果，不能从离线历史AUROC、合成法向噪声或局部卷积MAC直接推算。
+完成必要的E1/E2真实资产接线后执行E3/E4；E3固定test子集选择的best及其训练后全量报告均保留test_selected来源，E4另按目标399 val/87 test记录。E5公开协议待定，不构成E3/E4前置条件；E6实际导出与计时完成后才能陈述部署成本。真实新动作的业务成功率需要后续执行结果，不能从离线历史AUROC、合成法向噪声或局部卷积MAC直接推算。
 
 ## 10. 待协议核验的 MultiGraspNet 参考附录
 

@@ -7,7 +7,7 @@
 | 项目 | 当前规则 |
 |---|---|
 | 源域训练 | scene0000–0099全部100场景，全部256帧可进入采样；从头初始化 |
-| 源域选模 | scene0100–0189全部90场景、256帧，按native INST20实例Top1选择 `best.pt` |
+| 源域选模 | scene0100–0189全部90场景各固定8帧，按native INST20实例Top1选择 `best.pt`；训练后另对固定best报告完整256帧 |
 | checkpoint身份 | `selection_role=test_selected`、`independent_test_estimate=false`；保留 `last.pt` |
 | 目标域微调 | 原1676 train /399 val /87 test不变；399 val选择微调best |
 | 本轮评价器 | `scripts/evaluate_instance.py`：native INST20或历史动作成败 |

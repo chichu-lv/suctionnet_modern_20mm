@@ -48,6 +48,7 @@ def _actual_b_integration(tmp_path):
     config = load_instance_config(Path(__file__).resolve().parents[1] / 'configs/instance_b.yaml')
     config['pretrain'].update(steps=1, accumulate_instances=1, queries=8, warmup_steps=1,
                               evaluation_steps=[1], checkpoint_every=1)
+    config['pretrain'].pop('evaluate_every')
     config['model']['query_chunk'] = 32
     config['rgb_augmentation'] = True
     seed_all(config['seed'])

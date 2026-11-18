@@ -2,7 +2,7 @@
 
 本页固定 v3 设计配方（物理质量仍为v2）、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
 
-**当前执行政策：官方100个训练场景直接预训练，完整90个source test场景选 `best.pt`，标记 `test_selected`；同时保留 `last.pt`。** 取消新路线的90/10开发→refit流程。test参与选择后的同集成绩不作为独立测试估计。目标域1676/399/87划分不变。[公开仅半径评价](PUBLIC_METHOD_COMPARISON.md)设为待定，既不实现也不作为训练前置。实际运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。
+**当前执行政策：官方100个训练场景直接预训练，90个source test场景各固定8帧选 `best.pt`，标记 `test_selected`、`fixed_test_subset`；同时保留 `last.pt`。** 默认每875步评价一次，训练后单独对固定best运行完整test报告，不重新选模。取消新路线的90/10开发→refit流程。test参与选择后的同集成绩不作为独立测试估计。目标域1676/399/87划分不变。[公开仅半径评价](PUBLIC_METHOD_COMPARISON.md)设为待定，既不实现也不作为训练前置。实际运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。
 
 ## 1 当前可执行范围
 
@@ -95,11 +95,11 @@ $$
 | optimizer | AdamW，betas=(0.9,0.999)，eps=1e-8，weight_decay=0.01 |
 | 学习率 | peak=3e-4，warmup438次成功更新，之后cosine至1e-5 |
 | 首版训练精度 | 网络FP32；新几何正确性基线从原始深度/内参以float64构造XYZ/法向/canonical query/理想环并判边界；冻结teacher保留原算术 |
-| source test选模节点 | `evaluation_steps: [4375, 8750]`，共2次，每次完整90×256帧可见实例 |
+| source test选模节点 | `evaluate_every: 875`，共10次；`selection_frames_per_scene: 8`，同一90×8帧子集 |
 | 随机性 | Python/NumPy/Torch/CUDA和数据loader种子均固定并保存RNG |
 | 源域选模 | test上的 `InstTop1_INST20@0.4` 最大；再按selected-Q宏平均最大；仍并列则更早步；保存 `test_selected` 身份 |
 | 数据增强 | 每实例一致RGB jitter；灰度化概率0.2；首版不缩放米制几何 |
-| checkpoint | 每875成功步保存last.pt；best.pt按上述2次完整test结果更新，记录完整模型/优化器/采样器/RNG及定义 |
+| checkpoint | 每875成功步保存last.pt；best.pt按上述10次固定子集结果更新，记录完整模型/优化器/采样器/RNG及定义 |
 | 评价明细 | `evaluation_records=best_and_final`；逐实例流式压缩为jsonl.gz，仅当次更新best或最终步保留 |
 
 RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固定 mean=(0.485,0.456,0.406)、std=(0.229,0.224,0.225)，invalid位置在归一化后再置零。A的raw支持与backbone点、B的全局与原分辨率纹理ROI共享同一个实例级光度变换。颜色增强不是对真实纹理特征有效性的先验保证。
@@ -110,7 +110,11 @@ RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固
 
 A支持点数的训练与评价门槛来自 `model.min_support_points`，默认100；B当前无该构造参数，helper仍使用默认100。`has_supervision` 只表示存在有效teacher标签，不替代可配置支持门槛。builder另保存 `--min-support-points` 和当时 `trainable/status` 作为准备诊断，修改模型阈值时不能继续硬编码100。目标动作5mm中心支持统一使用 `BOUNDARY_ROUNDOFF_M=1e-12 m` 的闭边界。
 
-每次选模仍覆盖完整90×256帧，best仅从两个评价节点中选择，可能错过其它节点的峰值。`evaluation_steps` 与旧配置的 `evaluate_every` 二选一；最终预算步必评，提前 `--stop-after` 不新增评价。缩短steps进行接线测试时同步调整显式节点。`evaluation_stepXXXXXX.json` 保存指标、选择键、节点/范围、`timing` 和 `record_details`；耗时覆盖选择集前向、指标和明细处理，不含之后的checkpoint保存。明细写入 `.records.jsonl.gz`，不将10万级记录列表同时驻留内存并缩进写入JSON。`best_and_final` 在遍历时写临时压缩流，评价后对非best且非final节点删除；`all` 保留所有节点，`none` 不写明细。此策略控制长期磁盘占用，不承诺省去完整评价的前向计算或所有临时写入。
+选择帧采用8位bit-reversal固定前缀排序，8帧为 `0,32,64,96,128,160,192,224`；16帧包含8帧集合，256恢复全量。每次覆盖同一90场景的约定帧，所选帧全部可见实例与每实例完整候选池保持。子集排序有抽样波动，不保证选出全test最优checkpoint。旧配置缺少 `selection_frames_per_scene` 时仍为256。正式选择允许只构建指定帧，但要求90场景所选帧覆盖齐全；GT-empty声明保留，无输出实例留在分母，未选帧不加载。
+
+`evaluation_steps` 与 `evaluate_every` 二选一；最终预算步使用同一子集必评，提前 `--stop-after` 不新增评价。缩短steps进行接线测试时同步调整显式节点。`evaluation_stepXXXXXX.json` 保存指标、选择键、节点/范围、`timing` 和 `record_details`；耗时覆盖选择集前向、指标和明细处理，不含之后的checkpoint保存。明细流式写入 `.records.jsonl.gz`，`best_and_final` 保留当次best或最终步；`all` 保留所有节点，`none` 不写明细。
+
+完整test报告由训练后的独立 `evaluate_instance.py` 读取90×256帧清单生成，不重新比较或替换best。报告区分 `evaluation_scope=complete_manifest` 和源 `selection_scope=fixed_test_subset`；checkpoint及微调来源保存选择配置、精确有序实例ID，普通resume拒绝子集变化。每轮8帧/scene为全量帧预算的1/32，10轮共7200帧；这不是实测墙钟加速比。
 
 旧E5的 `2880×48=138240` 是全场景有效观测，不是138240个单物体。新预算取140000是明确的新工程上限，不承诺为最优样本量。若有M个可训练实例观测，140000/M仅是曝光次数近似，不是shuffle-without-replacement意义的epoch；B也不承诺15–20epoch或数小时收敛。
 

@@ -1,6 +1,18 @@
 # 模型验证与当前训练状态
 
-## 2026-11-18 全量运行前的评价、分片与初始化边界修复
+## 2026-11-18 固定test子集选模与独立全量报告
+
+当前A/B默认 `selection_frames_per_scene: 8`、`evaluate_every: 875`。全部90个test场景各使用固定帧 `0,32,64,96,128,160,192,224`，共720帧；8750个成功更新共评价10次。所选帧全部可见实例、每实例完整最多256个候选以及指标归约保持，少支持/no-pose实例继续计入分母。每次选模帧数为完整test的1/32，10次共7200帧；这一比例是帧遍历预算，不是实测墙钟加速比。小子集排序有抽样波动，不保证等同于全test最优checkpoint。
+
+训练可使用完整test清单自动筛选，或只构建指定720帧的正式选择缓存；两者都要求90场景全部指定帧有实例或明确GT-empty声明，缺帧不回填。正式固定子集不需要 `--allow-partial-manifests`。新 `instance_selection.py` 仅检查清单与小型覆盖元数据，未选NPZ不加载，子集身份保存固定采样规则、帧集合及实际有序实例ID。旧配置缺少帧数字段时仍按256解释，full view保持旧dataset identity，允许按原配置恢复。
+
+best继续标记 `test_selected`，另保存 `selection_scope=fixed_test_subset`。普通resume对固定子集定义严格比较，旧runtime兼容分支也不能放宽子集成员或顺序；checkpoint加载和FT初始化检查保存配置、policy与selection定义自洽，微调来源保留源子集。训练后的独立全量评价入口始终检查90×256帧，报告 `evaluation_scope` 与 `source_pretrain_selection_scope`，不改写或重新选best。子集选模及包含它的全量报告均保留非独立测试身份。
+
+当前实施命令与8/16/256帧配置见[运行说明](instance_routes/IMPLEMENTATION.md)；下方两次完整test选模是上一轮修复历史，已由本节默认方案替代。完整真实数据构建、训练与GPU耗时仍需训练环境验证。
+
+本轮本地A/B联合回归 **723 passed / 1 skipped（29.51s）**，命令为 `python -m pytest -q --ignore=tests/test_prefetch.py`。真实R20发布条件项保留原skip，多进程预取文件由各分支完整GitHub CI验证。新增32项固定子集数据/覆盖测试及16项真实trainer/CLI接线测试：两轮只加载相同的718个实例（720帧中两帧GT-empty）、90场景及三类分母正确；连续与暂停恢复的模型/Adam/best相同；同长度换ID或重排在当前/旧runtime均拒绝；FT来源保留子集；不自洽checkpoint在模型构造前拒绝；正式subset训练CLI无需partial标志；完整评价实际包含非选择帧1。全套包含60项禁止SHA-256的执行代码门禁。这些是合成输入及CPU运行证据，不是完整真实数据精度或GPU提速测量。
+
+## 2026-11-18 全量运行前的评价、分片与初始化边界修复（上一轮）
 
 本轮将A/B默认source选模计划改为第 **4375、8750** 个成功更新节点，每次仍遍历完整90测试场景×256帧；100训练场景、140000成功实例/8750更新、每875步保存last及目标域val选模口径保持原样。显式 `evaluation_steps` 与旧 `evaluate_every` 二选一，最终预算步必评，暂停不新增节点。报告保存实际评价节点、清单范围和 `timing.wall_seconds/observations`；耗时不包含随后的checkpoint保存。best仅从两个评价节点选择，可能错过中间峰值。按此前五次全量评价计算，减少60%的遍历次数；尚未测得完整真实数据的墙钟节省比例。
 

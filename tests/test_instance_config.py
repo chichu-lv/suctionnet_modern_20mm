@@ -151,7 +151,8 @@ def test_training_cli_records_the_resolved_chunk_and_backbone(tmp_path, monkeypa
     path = tmp_path/'config.json'; path.write_text(json.dumps(config))
     source = MemorySource()
     calls = []
-    monkeypatch.setattr(cli, 'InstanceDataset', lambda *a, **k: source)
+    monkeypatch.setattr(cli, 'InstanceDataset',
+                        lambda *a, **k: source if k.get('split') == 'train' else MemorySource('test'))
     monkeypatch.setattr(cli, 'check_source_splits', lambda *a, **k: {})
     monkeypatch.setattr(cli, 'create_instance_model', lambda *a, **k: TinyInstanceModel())
     class Trainer:
@@ -162,7 +163,7 @@ def test_training_cli_records_the_resolved_chunk_and_backbone(tmp_path, monkeypa
     monkeypatch.setattr(cli, 'InstanceTrainer', Trainer)
     args = ['--config', str(path), '--source-manifest', 'train.jsonl',
             '--selection-manifest', 'test.jsonl', '--run-dir', str(tmp_path/'run'),
-            '--device', 'cpu', '--query-chunk-size', '7']
+            '--device', 'cpu', '--query-chunk-size', '7', '--allow-partial-manifests']
     if route == 'a':
         args += ['--backbone-root', str(tmp_path/'backbone')]
     cli.main(args)

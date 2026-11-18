@@ -101,6 +101,7 @@ def checkpoint_interval(stage_config):
 
 
 def load_instance_config(path):
+    from .instance_selection import validate_selection_config
     with Path(path).open() as stream:
         config = yaml.safe_load(stream)
     if not isinstance(config, dict) or config.get('schema') != 'instance_runtime_v1':
@@ -115,6 +116,7 @@ def load_instance_config(path):
     pre = config['pretrain']
     if pre.get('selection_split') != 'test' or pre.get('train_scene_range') != [0, 99]:
         raise ValueError('Current source policy is 100 train scenes and explicit test selection')
+    validate_selection_config(pre)
     for stage in ('pretrain', 'finetune'):
         row = config[stage]
         scheduled_evaluation_steps(row)
@@ -461,6 +463,49 @@ def check_source_splits(dataset, expected, *, allow_partial=False):
             'partial_manifests_allowed': bool(allow_partial)}
 
 
+def validate_source_selection_checkpoint(state):
+    """Keep a declared fixed test subset consistent across all loading paths.
+
+    Legacy configurations without a subset option retain full-test semantics.
+    The explicit ID sequence is inspected metadata, not a content fingerprint.
+    """
+    if state.get('stage') != 'pretrain':
+        return
+    from .instance_selection import selection_frame_ids, validate_selection_config
+    config = state.get('config') or {}
+    count = validate_selection_config(config.get('pretrain', {}))
+    identity = state.get('identity') or {}
+    selection = identity.get('selection') or {}
+    data = selection.get('data_identity') or {}
+    descriptor = data.get('evaluation_selection')
+    policy = state.get('policy') or {}
+    if count == 256:
+        if (isinstance(descriptor, dict) and descriptor.get('is_subset')) or policy.get('selection_scope') == 'fixed_test_subset':
+            raise ValueError('Checkpoint fixed test selection conflicts with its full-test configuration')
+        return
+    expected_frames = list(selection_frame_ids(count))
+    ids = data.get('selection_instance_ids')
+    partial = bool(identity.get('partial_manifests_allowed', False))
+    scope = 'partial_manifest_smoke' if partial else 'fixed_test_subset'
+    if (not isinstance(descriptor, dict) or descriptor.get('is_subset') is not True
+            or descriptor.get('frames_per_scene') != count
+            or descriptor.get('frame_ids') != expected_frames
+            or descriptor.get('scope') != scope
+            or descriptor.get('partial_manifests_allowed') != partial
+            or policy.get('selection_scope') != scope
+            or policy.get('selection_frames_per_scene') != count
+            or policy.get('selection_frame_ids') != expected_frames
+            or policy.get('selection_frame_sampler') != descriptor.get('frame_sampler')
+            or not isinstance(ids, list) or len(ids) != selection.get('length')
+            or descriptor.get('selected_instance_count') != selection.get('length')):
+        raise ValueError('Checkpoint fixed test selection definition is inconsistent')
+    if not partial and (descriptor.get('complete_requested_selection') is not True
+                        or descriptor.get('scene_ids') != list(range(100, 190))
+                        or descriptor.get('expected_frame_count') != 90 * count
+                        or descriptor.get('selected_frame_count') != 90 * count):
+        raise ValueError('Checkpoint fixed test selection has incomplete formal coverage')
+
+
 def _dataset_identity(dataset):
     path = getattr(dataset, 'manifest_path', getattr(dataset, 'manifest', None))
     return {'manifest_path': str(Path(path).resolve()) if path is not None else None,
@@ -535,6 +580,9 @@ class InstanceTrainer:
         self.model, self.config = model, clean_metadata(config)
         self.source, self.selection, self.target = source_dataset, selection_dataset, target_dataset
         if stage == 'pretrain':
+            from .instance_selection import select_source_evaluation, validate_selection_config
+            self.selection = select_source_evaluation(selection_dataset,
+                validate_selection_config(self.config['pretrain']), allow_partial=allow_partial)
             source_identity = getattr(self.source, 'identity', {}) or {}
             selection_identity = getattr(self.selection, 'identity', {}) or {}
             check_data_contract(source_identity, selection_identity)
@@ -580,7 +628,7 @@ class InstanceTrainer:
 
     @property
     def policy(self):
-        return {'selection_split': 'test' if self.stage == 'pretrain' else 'val',
+        result = {'selection_split': 'test' if self.stage == 'pretrain' else 'val',
                 'selection_role': 'test_selected' if self.stage == 'pretrain' else 'validation_selected',
                 'independent_test_estimate': False,
                 'train_scene_range': [0, 99],
@@ -588,6 +636,14 @@ class InstanceTrainer:
                 'selection_scope': 'partial_manifest_smoke' if self.allow_partial else 'complete_manifest',
                 'public_evaluation_status': 'deferred',
                 'paper_comparison_ready': False}
+        if self.stage == 'pretrain':
+            selection = self.selection.selection_descriptor
+            if selection['is_subset']:
+                result.update(selection_scope=selection['scope'],
+                    selection_frames_per_scene=selection['frames_per_scene'],
+                    selection_frame_ids=list(selection['frame_ids']),
+                    selection_frame_sampler=selection['frame_sampler'])
+        return result
 
     def _learning_rate(self):
         cfg = self.config['pretrain']
@@ -721,7 +777,16 @@ class InstanceTrainer:
             raise ValueError('Resume checkpoint schema mismatch')
         if clean_metadata(state.get('config')) != clean_metadata(self.config):
             raise ValueError('Resume configuration differs from the saved run')
+        validate_source_selection_checkpoint(state)
         old_identity = state.get('identity', {})
+        # A fixed subset must retain its exact ordered instance definition,
+        # including when reading an otherwise legacy runtime identity.
+        old_selection = old_identity.get('selection') or {}
+        new_selection = self.identity.get('selection') or {}
+        if (any((entry.get('data_identity') or {}).get('evaluation_selection', {}).get('is_subset')
+                for entry in (old_selection, new_selection)) and
+                clean_metadata(old_selection) != new_selection):
+            raise ValueError('Resume fixed test selection definition differs')
         for key in ('route', 'stage', 'quality_contract', 'partial_manifests_allowed',
                     'torch_version', 'numpy_version', 'device_type'):
             if old_identity.get(key) != self.identity.get(key):
@@ -760,6 +825,7 @@ class InstanceTrainer:
             raise ValueError('Finetune initialization requires the same source instance architecture/quality')
         source_config, source_identity = state.get('config'), state.get('identity')
         validate_saved_config_definition(source_config, source_identity)
+        validate_source_selection_checkpoint(state)
         route = self.config['route']
         if (state.get('stage') != 'pretrain' or source_config.get('schema') != 'instance_runtime_v1'
                 or self.config.get('quality_contract') != QUALITY_CONTRACT

@@ -170,12 +170,26 @@
       100,
       189
     ],
-    "selection_views_per_scene": 256,
+    "selection_views_per_scene": 8,
     "selection_role": "test_selected",
     "independent_test_estimate": false,
     "from_scratch": true,
     "keep_last": true,
-    "final_refit": false
+    "final_refit": false,
+    "selection_scope": "fixed_test_subset",
+    "selection_frame_ids": [
+      0,
+      32,
+      64,
+      96,
+      128,
+      160,
+      192,
+      224
+    ],
+    "selection_frame_sampler": "bit_reverse8_prefix_v1",
+    "selection_evaluate_every": 875,
+    "full_test_reporting": "after_training_without_checkpoint_reselection"
   },
   "finetune": {
     "successful_updates": 1000,

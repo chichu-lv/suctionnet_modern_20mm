@@ -84,19 +84,20 @@ $$T_{base,TCP}=T_{base,cam}\,T_{cam,contact}\,T_{contact,TCP}.$$
 
 本轮没有实现公开7列NPZ导出、官方评价器半径参数化、R10等价门禁或空帧adapter。`public_evaluation.status=deferred`，公开比较准备不阻塞源/目标训练。论文数值仍列于[实验方案](EXPERIMENT_PLAN.md)，B行保持待测；不再将 `sn-paper-radius-v1` 当作本轮已经冻结的执行合同。
 
-当前 `best.pt` 是source test-selected；同一test上的实例Top1/selected-Q不能转换为全景AP或独立测试估计。后续若恢复论文对比，应先决定半径/物理评价合同、完整测试集、指标计算、每方法输入权限、分割前端与工作区；必要时重新规划独立评估。不能只靠相同scene范围宣称“除了吸盘半径其余完全一致”。
+当前源域 `best.pt` 默认由全部90个test场景各固定8帧选取，身份为 `selection_role=test_selected`、`selection_scope=fixed_test_subset`。这720帧的ID固定为每场景 `0,32,64,96,128,160,192,224`，8750步训练每875个成功更新评价一次，共10次；每个可见实例仍使用完整最多256个query。训练结束后的完整23040帧报告评价固定best，不据此再次选模；同一test上的实例Top1/selected-Q不能转换为全景AP或独立测试估计。后续若恢复论文对比，应先决定半径/物理评价合同、完整测试集、指标计算、每方法输入权限、分割前端与工作区；必要时重新规划独立评估。不能只靠相同scene范围宣称“除了吸盘半径其余完全一致”。
 
 可保留的接口设计约束是：全景候选出口应在业务NMS/Top5之前分流；保持同次评分原p/n；外向法向与工具+Z=-n区别必须明确；无预测实例/无有效候选的合法空帧与运行错误、缺文件应分别处理；漏检不能缩小完整帧分母。未来与UISN匹配的GT联合前景工作区权限不自动授权其他方法pair，未核实项继续标为未核实。这些是未来公开接口的审查清单，当前原生推理CLI不执行这套公共协议。
 
 ## 9. 原生推理与评价命令
 
-对一份已缓存的实例观测推理不需要teacher标签：
+先按[数据准备](DATA_PREPARATION.md#7-可执行的源数据构建)生成train与固定selection缓存。下面从builder保存的stdout JSON读取实际selection清单，仅推理其中一个实例；推理器不读取teacher标签：
 
 ```bash
-python scripts/infer_instance.py --checkpoint /data/runs/b_source100/best.pt --observation /data/instance_v3/test/observations/realsense_s0100_f0000_i000.npz --output /data/runs/b_source100/instance_prediction.json --device cuda
+SELECTION_MANIFEST=$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["manifest"])' /data/instance_v3/selection_build.json)
+python scripts/infer_instance.py --checkpoint /data/runs/b_source100/best.pt --manifest "$SELECTION_MANIFEST" --split test --max-instances 1 --output /data/runs/b_source100/instance_prediction.json --device cuda
 ```
 
-也可传 `--manifest /data/instance_v3/test/manifest_test.jsonl --split test`，替换 `--observation`，推理器不会读取label文件。默认 `--ranking auto` 按checkpoint阶段选择源q或微调任务概率，`--top-k 5`；无合法query输出明确no_pose。`--max-instances` 只用于manifest显式分片，输出记录partial；不能据此宣称全test完成。
+也可用 `--observation` 指定manifest中 `observation_npz` 字段相对该清单目录解析得到的实际NPZ路径，替换 `--manifest`、`--split`和`--max-instances`。默认多worker构建的NPZ位于分片目录，不能假定为根目录的 `test/observations/`。默认 `--ranking auto` 按checkpoint阶段选择源q或微调任务概率，`--top-k 5`；无合法query输出明确no_pose。示例中的 `--max-instances 1` 是显式局部推理，输出记录partial，不能据此宣称全test完成。
 
 原始RGB-D入口保持真实像素与标定，下面的尺度和重力须改成该观测的实际值：
 
@@ -104,14 +105,18 @@ python scripts/infer_instance.py --checkpoint /data/runs/b_source100/best.pt --o
 python scripts/infer_instance.py --checkpoint /data/runs/b_source100/best.pt --rgb /data/frame/rgb.png --depth /data/frame/depth.png --mask /data/frame/instance.png --instance-id 1 --intrinsics /data/frame/K.json --depth-scale-m 0.001 --gravity 0 1 0 --output /data/frame/prediction.json --device cuda
 ```
 
-源实例物理评价与目标固定动作评价分别运行：
+训练结束后按数据准备页补齐完整test缓存，固定已选出的源best，再运行完整23040帧物理评价；目标固定动作评价使用微调best：
 
 ```bash
-python scripts/evaluate_instance.py --checkpoint /data/runs/b_source100/best.pt --manifest /data/instance_v3/test/manifest_test.jsonl --domain source --split test --output /data/runs/b_source100/source_test_selected.json --device cuda
+python scripts/evaluate_instance.py --checkpoint /data/runs/b_source100/best.pt --manifest /data/instance_v3/test/manifest_test.jsonl --domain source --split test --output /data/runs/b_source100/source_full_test.json --device cuda
 python scripts/evaluate_instance.py --checkpoint /data/runs/b_target/best.pt --manifest /data/attempts/test.jsonl --domain target --split test --output /data/runs/b_target/target_test.json --device cuda
 ```
 
-源评价要求完整最多256候选的精确姿态标签；train缓存默认前128标签不能直接充当完整候选评价缓存。source partial检查须显式 `--allow-partial-manifests` 并记录其非正式身份。目标评价要求finetune checkpoint，不能用随机task头冒充概率模型。报告保存checkpoint选模来源、数据身份、完整分母/排除原因和 `public_evaluation.status=deferred`，这些命令不计算论文表中的公开AP。
+上述独立源test评价命令默认检查完整test覆盖，不按checkpoint的选模配置缩小数据，也不写回 `best.pt`。默认固定子集选模后的全量报告同时保存 `evaluation_scope=complete_manifest` 与 `source_pretrain_selection_scope=fixed_test_subset`；模型仍是test-selected，`independent_test_estimate=false`。源评价要求完整最多256候选的精确姿态标签；train缓存默认前128标签不能直接充当完整候选评价缓存。
+
+训练入口可接收完整test manifest并自动筛选，或接收覆盖全部90场景约定帧的 `SELECTION_MANIFEST`，两者正式选模都无需 `--allow-partial-manifests`。本节独立全量评价CLI若只跑局部smoke，则必须显式添加该标志，并以 `evaluation_scope=partial_manifest_smoke` 记录，不能把小selection的局部评价称为完整test报告。`pretrain.selection_frames_per_scene`可配置8、16、256；旧配置不设置时仍为256。较小子集节省评价成本，但选模排名可能波动，不保证全test最优。
+
+目标评价要求finetune checkpoint，不能用随机task头冒充概率模型。报告保留源预训练选模出处、数据身份、完整分母/排除原因和 `public_evaluation.status=deferred`，这些命令不计算论文表中的公开AP。
 
 `infer_instance.py`和`evaluate_instance.py`均支持正整数`--query-chunk-size`，与`train_instance.py`同名；对B映射为`model.query_chunk`，不指定时沿用checkpoint，构造器默认64。可在上述命令后附加`--query-chunk-size 32`控制执行内存，不改变候选预算、phase语义或权重结构；B不接受`--backbone-root`。
 

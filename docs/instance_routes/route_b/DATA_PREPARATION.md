@@ -6,15 +6,16 @@
 
 源域准备 SuctionNet 的配准 RGB-D、实例掩码、K、场景/相机/对象变换、完整对象 `dense_point_clouds`、既有 R20 Seal 候选和冻结物理配置。完整对象只用于离线 teacher 和评价；网络读取可见 RGB-D。目标域准备既有双目/深度、RGB、目标 mask、标定、原规划接触姿态和人工结果。
 
-按本轮决定，源域直接使用全部100个训练场景，从头训练；不再设置90/10开发划分或第二轮final refit。源域test用于选best，结果身份为 `test_selected`，不能作为独立盲测成绩。先按scene或既有group固定split，再展开frame/实例/动作；不得先裁图后随机分样本。
+按本轮决定，源域直接使用全部100个训练场景、每场景256帧，从头训练；不再设置90/10开发划分或第二轮final refit。best仅由source test每场景固定8帧的小部分选择，scope是test subset，结果身份仍为 `test_selected`，不能作为独立盲测成绩。先按scene或既有group固定split，再展开frame/实例/动作；不得先裁图后随机分样本。
 
 | 源域集合 | 固定范围 |
 |---|---|
 | train | scene 0–99全部100场景；frame 0–255 |
-| test / best选择集 | scene 100–189全部90场景；每场景frame 0–255，总23040帧 |
-| test子集 | seen 100–129、similar 130–159、novel 160–189 |
+| selection / test subset | scene 100–189全部90场景；每场景固定frame 0、32、64、96、128、160、192、224，总720帧 |
+| 完整test / 训练后报告 | scene 100–189全部90场景；每场景frame 0–255，总23040帧 |
+| test类别 | seen 100–129、similar 130–159、novel 160–189 |
 
-源manifest的 `split` 为 `train/test`；测试子类写入 `test_subset=seen|similar|novel`。源test标签仅用于评价/选模，不参与梯度更新；选择行为本身仍使用了test信息。同帧实例同split；该划分不是CAD身份互斥。目标域继续保留下面的train/val/test：
+源manifest的 `split` 为 `train/test`；测试子类写入 `test_subset=seen|similar|novel`，selection也保持 `split=test`。训练期只有固定小selection更新best；完整test在训练后通过独立CLI评价固定best，不重新选模。源test标签不参与梯度更新，但选择行为本身仍使用了test信息，全量报告也不是独立测试估计。同帧实例同split；该划分不是CAD身份互斥。目标域继续保留下面的train/val/test：
 
 | 目标集合 | 动作总数 | 成功 / 失败 |
 |---|---:|---:|
@@ -85,7 +86,7 @@ attempt 表保存 `attempt_id/sample_id/group_id`、`point_cam_m/normal_out_cam`
 
 缓存定义保存观测/实例语义ID、normal/sampler/precision、query原像素ID、质量/schema、teacher_spec与完整小型physics。直接比较query/label的实际p/n和顺序；dense/Seal资产路径只记录出处，不证明内容版本相同。读取器接受旧v3且忽略旧校验和字段；旧physics缺失时保留null，仅比较双方已知配置，不强制重算已通过实际数组校验的标签，也不在加载时重写旧NPZ。光度增强不改物理标签；改变法向、候选、p/n、物理规则或精度合同须更新身份。旧 S/W 仅在原精确姿态和对应身份不变时可复用。
 
-builder按scene/frame清单生成缓存，已有同身份缓存可复用；训练重复instance draw不重复调用teacher。源train默认只重算前128个query，test必须覆盖完整最多256池。先用显式分片在64–128个覆盖尺寸和dense点数的真实实例测加载、Seal秒/query、包络时间、秒/instance、缓存大小/命中率，再运行完整100-train/90-test构建。分片只是成本和接线检查，不冒充完整选模集。
+builder按scene/frame清单生成缓存，已有同身份缓存可复用；训练重复instance draw不重复调用teacher。源train默认只重算前128个query，selection和完整test均覆盖每实例完整最多256池。先在64–128个覆盖尺寸和dense点数的真实实例测加载、Seal秒/query、包络时间、秒/instance、缓存大小/命中率，再准备全部100个train场景的所有帧，以及全部90个test场景各固定8帧的正式selection。完整test可后续构建，用于训练后的报告；任意成本分片不能冒充覆盖齐全的正式selection。
 
 生产metadata_json版NPZ通过 `load_labels` / `InstanceDataset` 检查实际数组及已知配置。`geometry_contract.py check-manifest` 只核对sample/group/capture声明；`revision_contract.py check-labels`只支持其顶层schema参考demo，不能用来读取生产NPZ，也不重新执行真实teacher。用法见[共同复现命令](../TRAIN_EVAL_REPRODUCE.md)。进入训练前仍须完成真实 p/n 回读、S/W 与冻结 evaluator 对齐、两个 self 分项对齐、`C_old_total=C_self OR C_external` 的独立兼容检查、split 泄漏核验及全部排除统计。
 
@@ -93,17 +94,41 @@ builder按scene/frame清单生成缓存，已有同身份缓存可复用；训�
 
 先将变量改为真实资产目录；`DATASET` 下须有官方 `scenes/` RGB、depth、label、meta、`camera_poses.npy`、`cam0_wrt_table.npy` 和完整 `dense_point_clouds`。MAT元数据必须含factor_depth、相机内参、对象身份与姿态；`R20_LABELS` 须含 `config_frozen.json`、`seal_r20/poisson/`。缺完整dense资产时明确失败，不用mesh或可见点云替代teacher的完整目标。
 
-### 7.1 完整自动分片构建
+### 7.1 开训前：全量train与固定8帧selection
+
+先构建较小的selection缓存并读取stdout中的实际清单路径，再准备完整训练清单：
 
 ```bash
+set -euo pipefail
 DATASET=/data/SuctionNet
 R20_LABELS=/data/suction20_r20
 CACHE=/data/instance_v3
+SELECTION_FRAMES=0,32,64,96,128,160,192,224
+mkdir -p "$CACHE"
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/selection" --split test --camera realsense --frames "$SELECTION_FRAMES" --workers 4 > "$CACHE/selection_build.json"
+SELECTION_MANIFEST=$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["manifest"])' "$CACHE/selection_build.json")
 python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train" --split train --camera realsense --workers 4
+```
+
+训练命令使用 `--source-manifest "$CACHE/train/manifest_train.jsonl" --selection-manifest "$SELECTION_MANIFEST"`。显式 `--frames` 会生成独立目录，不能把selection路径假定为 `$CACHE/selection/manifest_test.jsonl`；保存的stdout JSON用于下一次shell会话重新读取真实路径。
+
+默认 `pretrain.selection_frames_per_scene=8`：对0–255帧按8位bit-reversal顺序取固定前缀，再按帧ID排序得到 `0,32,64,96,128,160,192,224`。每个test场景都用这8帧，共90×8=720帧；16帧配置包含这8帧，256帧配置才是全量。候选查询预算不变：所选帧中的**全部可见实例**均保留，每实例仍用完整最多256个query；空GT帧以覆盖声明计入，不能漏掉，也不能删去无输出实例。
+
+默认8750步预训练每 `pretrain.evaluate_every=875` 步在同一固定子集评价一次，共10次；只有这套子集指标更新 `best.pt`。source仍使用0–99全部100场景、每场景256帧。selection可传完整test manifest由训练入口自动筛选，也可只构建上述720帧的选择清单；只要覆盖全部90场景的固定所选帧，两者都不需要 `--allow-partial-manifests`。只含8帧的summary可标 `complete_requested_split=false`，这表示没有覆盖整个test split，并不使已完整覆盖约定帧的正式selection退化为smoke。 新版配置显式设置8；旧配置若缺少 `selection_frames_per_scene`，为兼容旧运行仍按256处理，使用本轮预算时须保留该字段。
+
+默认深度范围沿用0.2–1.2m，可显式传 `--depth-min-m` / `--depth-max-m`；修改后会进入观测身份，必须对train与selection保持一致。可选 `--camera kinect` 使用对应相机资产，不能把两个相机的结果混成一项。若场景同类对象重复，提供 `--instance-mask-root` 中按instance row标记的真实掩码；类别ID不能充当重复实例的唯一身份。
+
+### 7.2 训练后：完整test构建与报告
+
+完整test资产可以在需要最终报告时再构建，开训前不必完成90场景×256帧的teacher重算：
+
+```bash
 python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/test" --split test --camera realsense --workers 4
 ```
 
-默认train=scene 0–99、test=100–189，均包含frame 0–255。默认深度范围沿用0.2–1.2m，可显式传 `--depth-min-m` / `--depth-max-m`；修改后会进入观测身份，必须对train与selection保持一致。可选 `--camera kinect` 使用对应相机资产，不能把两个相机的结果混成一项。若场景同类对象重复，提供 `--instance-mask-root` 中按instance row标记的真实掩码；类别ID不能充当重复实例的唯一身份。
+训练结束后固定已由小selection选出的 `best.pt`，将 `$CACHE/test/manifest_test.jsonl` 交给 `scripts/evaluate_instance.py --domain source --split test` 生成全量23040帧报告；具体checkpoint和output参数见[运行说明](../IMPLEMENTATION.md)。该独立CLI不更新best、不再比较候选checkpoint。因为选择子集来自test，完整test报告仍保留 `test_selected`，不能称为独立测试估计。
+
+### 7.3 输出目录与手工完整分片
 
 未显式传入 `--scenes` 和 `--frames` 时，最终产物仍为 `$CACHE/train/manifest_train.jsonl`、对应 `.summary.json` 和test对应文件。`--workers 1` 在该输出目录下写 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`；`--workers 4` 按scene分派最多4个独立进程，在最终输出目录的 `shards/part_XXXX/` 下各自再建立scene/frame专属目录，完成后自动合并到最终输出目录。多进程要求显式 `--split train` 或 `--split test`；合并清单保存到worker资产的相对路径，无需移动NPZ，也不要假定中间清单直接位于 `part_XXXX/manifest_train.jsonl`。
 
@@ -117,9 +142,9 @@ python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root 
 
 显式列出全部ID也遵守独立目录规则；实际ID排序、去重后压缩为可读范围，长而稀疏的范围会拆为多级目录，避免单级路径过长。目录名称记录选择范围，不是文件内容摘要。显式子集结合 `--workers N` 时，表中的目录仍是最终发布目录，worker目录位于其内部；返回清单路径不受worker数量影响。
 
-### 7.2 同一输出根的手工分片与完整合并
+#### 同一输出根的手工分片与完整合并
 
-下面是上述完整自动构建的替代方式。四次构建使用**同一个** `--output "$CACHE"`，每次写入独立目录；可以顺序运行，也可以在不同终端并行运行。每个split的两个分片都成功完成后，再执行该split的合并命令：
+下面是完整train与完整test自动构建的替代方式，完整test部分可留到训练后执行；固定8帧selection仍按第7.1节单独准备。四次构建使用**同一个** `--output "$CACHE"`，每次写入独立目录；可以顺序运行，也可以在不同终端并行运行。每个split的两个分片都成功完成后，再执行该split的合并命令：
 
 ```bash
 python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split train --camera realsense --scenes 0-49
@@ -131,17 +156,17 @@ python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/
 python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/test/scenes_0100-0144/frames_0000-0255/manifest_test.jsonl" "$CACHE/shards/realsense/test/scenes_0145-0189/frames_0000-0255/manifest_test.jsonl" --output "$CACHE/test" --split test
 ```
 
-合并后训练读取 `$CACHE/train/manifest_train.jsonl`，best选择读取 `$CACHE/test/manifest_test.jsonl`，分别完整覆盖100个训练场景和90个测试场景的全部256帧。builder和merger的stdout均为JSON，其 `manifest` 字段是**实际最终清单的绝对路径**；自动化脚本应读取该字段，尤其不要自行拼接稀疏范围或worker中间路径。磁盘summary中的 `manifest` 字段仍为相邻清单的文件名。
+合并后训练读取 `$CACHE/train/manifest_train.jsonl`，训练后全量报告读取 `$CACHE/test/manifest_test.jsonl`，分别完整覆盖100个训练场景和90个测试场景的全部256帧。若把完整test清单传给训练的selection入口，仍会按配置筛出固定8帧；不会因清单较大自动改为全量选模。builder和merger的stdout均为JSON，其 `manifest` 字段是**实际最终清单的绝对路径**；自动化脚本应读取该字段，尤其不要自行拼接稀疏范围或worker中间路径。磁盘summary中的 `manifest` 字段仍为相邻清单的文件名。
 
-### 7.3 发布保护、小规模检查与旧缓存
+### 7.4 发布保护、小规模检查与旧缓存
 
 不同显式范围的串行或并行构建不改写输出根已有的完整清单。每个实际发布目录使用Linux排他文件锁，覆盖该目录的构建/自动合并全过程；手工merger同样持有目标目录锁。另一进程正在写相同目录时立即失败，不排队，也不会开始写该分片的NPZ。进程退出或异常时释放锁，锁文件保留以复用同一inode；不要在任务运行期间删除锁文件。
 
 manifest和summary分别使用唯一临时文件原子替换，清单最后发布。已有清单必须有可读的coverage summary；同名清单的相机或split不符、或者新清单没有包含已有的全部scene/frame覆盖，都会拒绝替换。不能用单个partial分片覆盖已经发布的全量清单；应合并全部分片或换一个输出目录。更换相机或不兼容的观测/teacher配置同样应使用新的缓存目录。
 
-合并器重定位NPZ相对路径并保留全部 `empty_gt_frames`；拒绝输入分片的scene/frame重叠、重复实例、跨split/相机、缺失文件、漏帧和已知physics冲突。默认要求整个split的全部scene×256帧；summary记录实际覆盖、空GT帧、实例状态和 `complete_requested_split`。仅小规模接线可用 `--allow-partial` 合并，训练时仍须另传 `--allow-partial-manifests`，不能把partial输出或改名后的分片声明为完整数据。
+合并器重定位NPZ相对路径并保留全部 `empty_gt_frames`；拒绝输入分片的scene/frame重叠、重复实例、跨split/相机、缺失文件、漏帧和已知physics冲突。默认要求整个split的全部scene×256帧；summary记录实际覆盖、空GT帧、实例状态和 `complete_requested_split`。通用merger的 `--allow-partial` 可合并显式成本/接线分片，也可合并只包含固定8帧的selection分片；是否可供正式选模，要再按全部90场景及配置要求的帧集合检查。正式selection覆盖齐全时训练不加 `--allow-partial-manifests`；真正缺少所需scene/frame的接线任务才需该标志，不能把它登记为正式选择集或完整test报告。
 
-小规模构建可加入 `--scenes 0-1 --frames 0,8`，其真实路径见上表；test分片须使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或完整选模。
+小规模构建可加入 `--scenes 0-1 --frames 0,8`，其真实路径见上表；test分片须使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或正式选模。
 
 旧布局的缓存和清单**不会自动搬迁**，仍可按其原路径读取或传给合并器；新显式分片请求只查找自己的新目录，不会自动从旧输出根查找或复制NPZ。合并也只改写路径引用，不搬迁源资产，因此必须保留被合并清单引用的分片目录。所有检查继续基于schema、实际数组、姿态/标签关系、已知配置和覆盖声明，不生成或验证文件内容摘要。
 
