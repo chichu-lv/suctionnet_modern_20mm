@@ -718,6 +718,30 @@ def test_resume_release_rejects_obsolete_transition_and_receipts(coordinator):
         coordinator.release('E5', {'command': 'resume'})
 
 
+def test_inspection_rejects_historical_migration_without_archive_verifier(tmp_path, config, monkeypatch):
+    run, control = tmp_path / 'historical', tmp_path / 'historical/control'
+    control.mkdir(parents=True)
+    s.atomic_json(control / 'worker.json', {'token': 'old', 'exit_code': 75})
+    monkeypatch.setattr(s, 'assignment_paths', lambda *args: (run, control))
+    monkeypatch.setattr(s, 'lock_paths', lambda *args: [])
+    monkeypatch.setattr(s, 'committed_checkpoint', lambda *args: {
+        'analysis': {'performance_migration': {'path': 'migrations/old/receipt.json'}}})
+    with pytest.raises(s.Refused, match='Historical migrated checkpoint'):
+        s.inspect_worker(config, {'token': 'old', 'experiment': 'E5', 'host': 'H20'})
+
+
+def test_backup_rejects_historical_migration_instead_of_omitting_archive(tmp_path, config, monkeypatch):
+    run, control = tmp_path / 'historical', tmp_path / 'historical/control'
+    monkeypatch.setattr(s, 'assignment_paths', lambda *args: (run, control))
+    usage = s.shutil.disk_usage
+    monkeypatch.setattr(s.shutil, 'disk_usage', lambda path: usage(path)._replace(free=300 * s.GIB))
+    manifest = {'current': {'path': 'checkpoint.pt',
+                'analysis': {'performance_migration': {'path': 'migrations/old/receipt.json'}}}}
+    with pytest.raises(s.Refused, match='Historical migrated checkpoint'):
+        s._backup_snapshot(config, {'experiment': 'E5', 'host': 'H20', 'token': 'old'},
+                           {'request_id': 'backup'}, manifest, {})
+
+
 def test_completion_requires_exact_samples_and_full_nodes(config, coordinator):
     selected_v3(config)
     assignment = coordinator.assign('E5', 'H20', 0)
