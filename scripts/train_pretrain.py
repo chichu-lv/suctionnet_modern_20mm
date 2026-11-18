@@ -128,7 +128,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     identity = build_runtime_identity(config, dataset.data_cfg, code_revision_value=code_revision(),
                                       worktree_sha256=worktree_digest())
     math_settings = identity["math_settings"]
-    migration_receipt = None
     progress.update(performance_identity=identity.get("performance"), performance_settings=performance)
     step, best, previous = 0, None, None
     if resume or init_checkpoint:
@@ -148,8 +147,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                 raise ValueError("Resume scheduler step differs")
             validate_resume_progress(state, budget)
             if previous.get("performance_migration"):
-                from suction20.pretrain_runtime import verify_performance_migration
-                migration_receipt = verify_performance_migration(run_dir, previous["performance_migration"], identity)
+                raise ValueError("Historical performance-migrated checkpoints require the archived CD-009 code")
             step, best = state["global_step"], state.get("best_metric")
     cap = int(train_cfg["max_optimizer_steps"])
     if stop_at_step is not None:
@@ -166,10 +164,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                  "precision": precision.as_dict(),
                  "optimizer_execution": {"name": "AdamW", "fused_requested": opt_cfg.get("fused", False),
                                           "fused_effective": bool(optimizer.defaults.get("fused"))}}
-    if migration_receipt:
-        execution["performance_diagnostic_window"] = {
-            "start_step": migration_receipt["global_step"],
-            "end_step_exclusive": migration_receipt["global_step"] + 50}
     if device.type == "cuda":
         # NVML can report host PIDs outside our container PID namespace. The
         # supervisor may identify a sole NVML process only after this positive
@@ -201,12 +195,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
               checkpoint=store.current, recovery=store.recovery)
     progress.update(global_step=step, effective_samples_completed=step * effective_batch,
                     last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
-    migration = (previous or {}).get("performance_migration")
-    diagnostic_until_step = migration_receipt["global_step"] + 50 if migration_receipt else None
-    if diagnostic_until_step is not None:
-        log.event("performance_diagnostic_window", start_step=migration_receipt["global_step"],
-                  end_step_exclusive=diagnostic_until_step,
-                  policy="first 50 successful updates after explicit migration; timing only")
     saved_step, saved_time = step, time.monotonic()
 
     def save(*, retain=False, promote_best=False, reason="cadence"):
@@ -218,8 +206,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                              pending_validation=pending, validations=validations, consecutive_skips=skips,
                              budget=budget, effective_samples_completed=step * effective_batch,
                              last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
-        if migration:
-            runtime_state["performance_migration"] = migration
         def writer(path):
             save_checkpoint(path, model, optimizer, scaler, schedule, global_step=step,
                             config=config, source_label_config=dataset.data_cfg, best_metric=best,
@@ -235,8 +221,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                         counters={"effective_samples_completed": step * effective_batch, "consumed_samples": log.frames,
                                   "skipped_samples": log.skipped * effective_batch, "optimizer_attempts": log.attempts},
                         last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
-        if migration:
-            analysis["performance_migration"] = migration
         entry = store.publish(writer, step=step, attempt_id=log.attempt_id, pending=pending,
                               best_step=best["global_step"] if best else None,
                               retain=retain or retain_prefix, promote_best=promote_best, analysis=analysis)
@@ -365,13 +349,10 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             model.train()
-            detailed_timing_active = bool(performance and (performance["detailed_cpu_timing"] or
-                (diagnostic_until_step is not None and step < diagnostic_until_step)))
+            detailed_timing_active = bool(performance and performance["detailed_cpu_timing"])
             grouping = getattr(model, "contact_grouping", None)
             if grouping is not None:
                 grouping.detailed_cpu_timing = detailed_timing_active
-            progress.update(performance_diagnostics={"active": detailed_timing_active,
-                            "until_step_exclusive": diagnostic_until_step})
             lr = learning_rate(step, peak=opt_cfg.get("lr_peak", .001),
                                start=scheduler.get("warmup_start_lr", 1e-5),
                                final=scheduler.get("final_lr", 1e-5),
@@ -557,8 +538,6 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                        timing_seconds=timing, production_timing=production_timing,
                        geometry_pipeline=pipeline_timing, profile_trace=profile_trace,
                        loader_wait_s=loader_wait_s, performance_identity=identity.get("performance"),
-                       performance_diagnostics={"active": detailed_timing_active,
-                           "until_step_exclusive": diagnostic_until_step},
                        timing_scope="Host intervals with incidental synchronization; excludes logging/checkpoint/validation; producer data/collate and background geometry overlap training; loader_wait_s and geometry_wait_host are exposed waits; not isolated GPU kernel times",
                        memory_scope="CUDA peaks reset at each accumulation attempt; RSS is process lifetime maximum",
                        grad_norm_scope="unscaled pre-clipping total gradient norm",
