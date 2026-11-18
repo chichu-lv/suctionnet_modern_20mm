@@ -199,31 +199,38 @@ $$
 
 contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。参考工具只生成相机系contact姿态，不执行机器人动作。
 
-建议统一结果JSON：
+当前 `infer_instance` 返回每实例字典：`schema="instance_suction_prediction_v2"`、`status/reason`、`poses[]`、ranking、合同/输入身份、NMS/过滤计数及计时。每个 `poses[i]` 包含原始评分p/n、`T_cam_contact`、`pose_sha256`、q/Seal/Wrench/ell、task logit/概率、ranking score和 `support` 诊断；没有顶层扁平query，也没有统一的顶层 `coverage_lip` 字段。
+
+下面是从单实例结果中截取的字段示意，省略身份与计时等字段，数值不代表实测：
 
 ```json
 {
-  "schema_version": "instance_suction_prediction_v2",
+  "schema": "instance_suction_prediction_v2",
   "instance_uid": "example_instance",
-  "query_id": 42,
   "status": "ok",
-  "point_cam_m": [0.12, -0.03, 0.70],
-  "normal_out_cam": [0.0, 0.0, -1.0],
-  "tool_z_cam": [0.0, 0.0, 1.0],
-  "roll_policy": "least_aligned_camera_axis",
-  "quality_contract": "gt_INST20_pose_v2",
-  "q_inst": 0.62,
-  "seal": 0.81,
-  "wrench": 0.77,
-  "task_probability": 0.73,
-  "ranking_score": 0.73,
+  "reason": "ok",
+  "stage": "pretrain",
+  "ranking": "quality",
   "ranking_alpha": 0.0,
-  "source_point_id": 12345,
-  "coverage_lip": 0.86
+  "poses": [{
+    "query_id": 42,
+    "source_point_id": 12345,
+    "point_cam_m": [0.12, -0.03, 0.70],
+    "normal_out_cam": [0.0, 0.0, -1.0],
+    "tool_z_cam": [0.0, 0.0, 1.0],
+    "q_inst": 0.62,
+    "seal": 0.81,
+    "wrench": 0.77,
+    "ell": -2.3,
+    "task_probability": null,
+    "task_logit": null,
+    "ranking_score": 0.62,
+    "pose_support_valid": true
+  }]
 }
 ```
 
-以上数字仅说明字段格式，不是实测结果。完整结果另含4×4姿态、checkpoint/data/calibration hash、是否分数校准、支持有效性与计时字段。`coverage_lip` 是观测覆盖描述，不是碰撞通过或密封成功概率。
+CLI还添加 `schema="instance_suction_inference_v1"` 的报告外层，包含checkpoint及源初始化来源、选择政策、输入说明和逐实例结果。source checkpoint的task头未训练，输出概率/logit为null；微调checkpoint才输出任务概率。`support`是观测几何诊断，不是碰撞认证或密封成功概率。完整字段和真实序列化由 `suction20/instance_inference.py` 与 `scripts/infer_instance.py` 定义。
 
 ## 8 最少且足够的评价集合
 
