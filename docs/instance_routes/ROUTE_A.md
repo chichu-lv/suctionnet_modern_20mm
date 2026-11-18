@@ -1,5 +1,6 @@
 # 路线 A：单物体稀疏点云与 RGB（v3 边界修订）
 
+方法图入口：[三面板架构图、双语图注与关键维度](METHOD_ARCHITECTURE_A.md) · [SVG](../figures/instance-route-a-architecture.svg) · [PDF](../figures/instance-route-a-architecture.pdf)。
 
 几何摘要参考从float64构造的raw XYZ/query计算；1e-12m仅用于半径/高度闭边界和重复坐标一致性的数值舍入处理，之后转网络FP32特征。它不保证已量化FP32输入的边界等价，也不吸收真实像素误差。[共同精度合同](BOUNDARY_REVIEW.md)
 

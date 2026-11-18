@@ -1,5 +1,7 @@
 # 路线 B v3：共享二维编码与可靠投影环带查询
 
+方法图入口：[三面板架构图、双语图注与关键维度](METHOD_ARCHITECTURE_B.md) · [SVG](../figures/instance-route-b-architecture.svg) · [PDF](../figures/instance-route-b-architecture.pdf)。
+
 本文替换 B v1 的 U-Net 加逐候选切平面栅格方案。基线仓库为 suctionnet_modern_20mm@87f29d29bea8fa5153d6df3f8253d9ced9e4b441；旧设计留存于 [e495fd8](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e495fd89678b5f696e1819437fef5ced5103aa57/docs/instance_routes/ROUTE_B.md)，不作为另一条同时维护的默认路线。**本文是经审查修订的工程规格，新的 B 模型、训练器和部署引擎尚未实现或测速。** 公共定义见[数据与标签](DATA_AND_LABELS.md)与[训练复现](TRAIN_EVAL_REPRODUCE.md)。
 
 ## 1. 本次结构修正及路线边界

@@ -10,6 +10,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [A 方法架构图](METHOD_ARCHITECTURE_A.md) / [B 方法架构图](METHOD_ARCHITECTURE_B.md) | 三面板总览、接触几何、两阶段训练；SVG/PDF/PNG、双语图注与关键维度 |
 | [v3几何边界复核](BOUNDARY_REVIEW.md) | 谐波摘要、投影视差/缺测门控、稳健法向与稀疏候选回填 |
 | [结构复核记录](REVIEW_AND_CORRECTIONS.md) | 对用户各项质疑的结论、坐标基反例与成本计算 |
 | [共同数据与标签](DATA_AND_LABELS.md) | 固定split、快速法向、共同候选、精确动作、自碰分项与标签缓存 |
