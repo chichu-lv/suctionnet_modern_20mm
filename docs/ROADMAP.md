@@ -38,9 +38,9 @@
 
 ## 单物体路线 A/B 设计与实施
 
-- [x] [完成工程实施规范](instance_routes/README.md)：同姿态SW标签、单动作监督、A的12维稀疏输入、B的完整实例上下文与候选切平面图，以及统一训练、指标和位姿合同。
-- [x] [几何与数据契约参考工具](instance_routes/reference/geometry_contract.py)：29项合成检查及demo/标签/manifest命令通过，范围见[验证记录](instance_routes/reference/VALIDATION.json)。
-- [ ] 实现实例构建、SW缓存、新模型与训练入口，按固定验证协议评价。设计配置不是旧E5训练器的运行配置；未新增A/B真实训练或速度结果。
+- [x] [完成工程实施规范](instance_routes/README.md)：v2同姿态含目标自碰标签、单动作监督、A的无任意切向基接触描述、B的共享图像Fq与投影环，以及统一训练/指标/位姿合同。
+- [x] [v2几何与数据契约参考](instance_routes/reference/revision_contract.py)：26项新增检查与既有29项合成检查通过，demo/标签命令通过，范围见[验证记录](instance_routes/reference/VALIDATION.json)。
+- [ ] 实现实例构建、target-only self/SW/INST缓存、新模型与训练入口，按固定验证协议评价。设计配置不是旧E5训练器的运行配置；未新增A/B真实训练或速度结果。
 
 ## 代码管理
 

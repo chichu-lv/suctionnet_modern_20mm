@@ -1,5 +1,5 @@
 {
-  "schema_version": "suction20.instance_routes.geometry_reference_validation.v1",
+  "schema_version": "suction20.instance_routes.geometry_reference_validation.v2",
   "as_of": "2026-11-18",
   "synthetic_only": true,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
@@ -130,6 +130,106 @@
     "The manifest validator checks declared hashes and IDs; it does not hash referenced observation bytes or establish temporal independence.",
     "The tangent raster keeps empty cells invalid. Lip-sector occupancy is observed coverage, not a physical seal label.",
     "Historical outward axes retain their supplied sign. Proposal camera-facing orientation is opt-in.",
-    "Zero observed normals retain finite RGB/geometry support with zero normal channels; query axes must still be valid nonzero directed unit vectors."
+    "Zero observed normals retain finite RGB/geometry support with zero normal channels; query axes must still be valid nonzero directed unit vectors.",
+    "The original tangent-raster utility is not part of the v2 B default; the new reference demonstrates projected ring coordinates only.",
+    "v2 checks cover declared target-self collision components and Q_inst products, not the real-data collision/Seal teacher.",
+    "26 v2 checks plus 29 unchanged baseline geometry/schema checks passed; no model, export engine, real-world latency or new training result was measured."
+  ],
+  "source_files": [
+    {
+      "path": "geometry_contract.py",
+      "sha256": "ba23e0d872ddcb22e7f065ee4b7552628a8424e8805f3043e36abe7e48eb987c"
+    },
+    {
+      "path": "revision_contract.py",
+      "sha256": "70227fbe7f227277dbdbf3d854a7f8b243d9d34f1f3376020b13d81a8d1db0ac"
+    }
+  ],
+  "total_synthetic_checks": 55,
+  "revision_commands": [
+    {
+      "command": "python docs/instance_routes/reference/revision_contract.py selftest",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "checks_passed": 26,
+        "checks": [
+          "old_argmin_frame_counterexample_exceeds_90deg",
+          "fixed_chart_has_no_xy_tie_jump",
+          "chart_SO3_and_directed_axis_[0, 0, -1]",
+          "chart_SO3_and_directed_axis_[0, 0, 1]",
+          "chart_SO3_and_directed_axis_[0.3, 0.7, 0.6]",
+          "chart_SO3_and_directed_axis_[1, 0, 0]",
+          "ring_samples_remain_at_exact_tangent_radii",
+          "ring_plane_is_conditioned_on_supplied_axis",
+          "projection_finite_for_positive_depth",
+          "one_sector_phase_is_cyclic_shift",
+          "gauge_free_scalars_continuous_across_old_tie",
+          "maximum_angular_gap_is_basis_rotation_invariant",
+          "shared_circular_filter_pool_is_shift_invariant",
+          "organized_plane_normal_and_border_mask",
+          "organized_normal_respects_instance_boundary",
+          "organized_depth_step_invalidates_crossing_differences",
+          "stratified_grid_has_256_unique_queries",
+          "bit_reversed_morton_prefix_spans_quadrants",
+          "training128_is_fixed_evaluation_prefix",
+          "empty_candidate_mask_returns_empty",
+          "v2_self_collision_and_masked_unknown_labels_valid",
+          "self_collision_cannot_keep_high_quality",
+          "self_components_must_OR",
+          "old_SW_contract_not_reinterpreted",
+          "unknown_q_inst_cannot_be_valid",
+          "probability_mixture_not_mean_logit_sigmoid"
+        ],
+        "old_basis_jump_degrees": 92.38803836173044,
+        "python": "3.12.14",
+        "numpy": "2.3.5"
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/revision_contract.py demo --output-dir <v2-demo-dir>",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "ring_shape": [
+          9,
+          72,
+          2
+        ],
+        "radius_zero_optimized_unique_samples_per_query": 577,
+        "labels": {
+          "ok": true,
+          "rows": 3,
+          "valid_rows": 2,
+          "invalid_rows": 1,
+          "has_supervision": true,
+          "finite_but_masked_quality_rows": 0,
+          "quality_contract": "gt_INST20_pose_v2",
+          "scope": "declared_v2_labels_only_not_geometry_teacher_validation"
+        },
+        "files": [
+          "synthetic_instance_labels.npz",
+          "projected_rings.npz",
+          "revision_summary.json"
+        ],
+        "scope": "No CNN, grid_sample engine, real teacher, data pipeline or latency measured"
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/revision_contract.py check-labels <v2-demo-dir>/synthetic_instance_labels.npz",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "rows": 3,
+        "valid_rows": 2,
+        "invalid_rows": 1,
+        "has_supervision": true,
+        "finite_but_masked_quality_rows": 0,
+        "quality_contract": "gt_INST20_pose_v2",
+        "scope": "declared_v2_labels_only_not_geometry_teacher_validation"
+      }
+    }
   ]
 }

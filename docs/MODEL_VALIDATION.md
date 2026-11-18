@@ -1,8 +1,8 @@
 # 模型验证与当前训练状态
 
-## 2026-11-18 单物体路线设计与合成几何参考
+## 2026-11-18 单物体路线v2结构复核与合成参考
 
-[两路线工程规范](instance_routes/README.md)已定义新数据、同姿态SW、网络、训练和评价接口。附带的独立NumPy参考工具在Python3.12.14、NumPy2.3.5下完成29项检查；demo、标签NPZ检查和manifest检查均返回成功。覆盖投反影、fx/fy独立尺度、参考深度与倾斜面反例、右手姿态/工具轴、毫米局部图、空洞和零法向支持、同格确定性、SW有效掩码及跨split冲突。
+[两路线工程规范](instance_routes/README.md)已修订为v2：质量保留目标自碰，B删除U-Net和逐候选栅格CNN，加入Fq与共享原生纹理投影环；默认法向/训练查询预算、A覆盖及方向不变量同步修改。[复核记录](instance_routes/REVIEW_AND_CORRECTIONS.md)区分确定缺陷与尚待实测的风险。Python3.12.14、NumPy2.3.5下既有参考29项、新参考26项合成检查通过，共55项；新增检查涵盖92.388°旧基跳变反例、固定坐标图、投影环、organized法向、候选前缀及self质量。
 
 [完整检查与源码SHA256](instance_routes/reference/VALIDATION.json)明确为synthetic_only。这不是A/B模型实现、真实数据teacher数值、训练收敛、物理成功率或GPU延迟的验证。现有E5历史记录保持原实验范围。
 

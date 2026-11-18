@@ -1,6 +1,6 @@
 # 训练评价与复现执行说明
 
-本页固定首版配方、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
+本页固定 v2 首版配方、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
 
 ## 1 当前可执行范围
 
@@ -9,7 +9,7 @@
 | 几何/schema参考工具 | 已实现、合成验证通过 | Python与NumPy；不需要GPU、数据集或模型 |
 | 既有E5训练/评价入口 | 基线仓库已实现 | 按原README准备真实数据与匹配checkpoint |
 | A/B实例数据builder、训练器 | 实现规格 | 需按第10节接线；旧E5脚本不能直接接收新合同 |
-| 新S/W标签缓存 | 算法与已有teacher接口已给出 | 需本地完整SuctionNet资产与query清单后生成 |
+| 新S/W/self/INST标签缓存 | 冻结物理定义及实例teacher拆分合同已给出 | 需实现拆分并用完整SuctionNet资产核验 |
 | A/B模型效果、速度、TensorRT导出 | 待真实实现后测量 | 本次没有新训练、模型推理或GPU性能试验 |
 
 `reference/route_a.json` 和 `route_b.json` 是设计快照，`artifact_kind=design_spec`。它们不是当前 `scripts/train_pretrain.py` 或 `finetune.py` 的兼容配置，不能仅改后缀交给旧入口。
@@ -24,25 +24,18 @@ python3.12 -m venv .venv-instance-reference
 python -m pip install numpy==2.3.5
 
 python docs/instance_routes/reference/geometry_contract.py selftest
-
-python docs/instance_routes/reference/geometry_contract.py demo \
-  --output-dir /tmp/suction-instance-demo
-
-python docs/instance_routes/reference/geometry_contract.py check-labels \
-  /tmp/suction-instance-demo/synthetic_labels.npz
-
-python docs/instance_routes/reference/geometry_contract.py check-manifest \
-  /tmp/suction-instance-demo/synthetic_manifest.jsonl
+python docs/instance_routes/reference/revision_contract.py selftest
+python docs/instance_routes/reference/revision_contract.py demo \
+  --output-dir /tmp/suction-instance-v2-demo
+python docs/instance_routes/reference/revision_contract.py check-labels \
+  /tmp/suction-instance-v2-demo/synthetic_instance_labels.npz
 ```
 
-demo目录只用于可重复生成的合成数据；使用自己的空目录可避免覆盖旧demo。预期：
+使用新的空输出目录，工具不会覆盖已存在的demo文件。旧参考的29项检查仍验证投反影、姿态、旧SW文件和切平面栅格数学；**旧栅格已不属于B默认网络路径**。新参考另有26项检查，覆盖坐标基反例、固定坐标图、投影环、旋转/循环位移、organized法向、候选前缀和保留自碰的v2标签。
 
-- selftest返回 `synthetic_only=true`，29项检查通过。
-- demo局部图为 `[10,64,64]`，合成唇口72个扇区有观测。
-- 标签检查为73行，其中72行有效、1行明确masked NaN。
-- manifest有3行、3组和3个split，无跨划分共享观测或group。
+新demo生成 `[9,72,2]` 投影坐标；半径0可只读取一次，生产实现每query有577个不同采样槽位。它不执行神经网络或读取真实表面。标签示例3行，2行有效、1行masked NaN，其中一个有效点SW=0.72但存在self而Q_inst=0。
 
-工具检查的是声明的hash关系，不读取原始观测字节；它不能证明真实数据标定正确、人工标签正确或无近邻帧泄漏。72扇区“有观测”也不是S20密封通过。完整验证范围见 [VALIDATION.json](reference/VALIDATION.json)。
+已有清单可继续运行 `python docs/instance_routes/reference/geometry_contract.py check-manifest <manifest.jsonl>`。manifest检查仅核对声明的hash/group关系，不读取原始字节，也不证明无相邻帧泄漏。新标签必须使用 `revision_contract.py check-labels`；旧SW检查不能验证self语义。完整结果与源码hash见[VALIDATION.json](reference/VALIDATION.json)。
 
 ## 3 生产环境和版本固定
 
@@ -63,10 +56,10 @@ B新增的ResNet18封装需固定实现来源；若使用torchvision，采用与
 
 ## 4 预训练损失与输出含义
 
-q、Seal、Wrench分别经sigmoid映射到[0,1]。新增不确定性头输出 `ell=log b`，初始化 `log(0.1)`，前向限定到[-6,1]；b是Laplace残差尺度：
+q_inst、Seal、Wrench分别经sigmoid映射到[0,1]。v2默认 `Q_inst20=S20*W20*(1-C_self)`，保留target-self并排除外部碰撞；纯SW另存诊断，不能使用旧质量身份。新增不确定性头输出 `ell=log b`，初始化 `log(0.1)`，前向限定到[-6,1]；b是Laplace残差尺度：
 
 $$
-L_q=e^{-\ell}|\hat q-Q_{\mathrm{SW20}}|+\ell,\qquad
+L_q=e^{-\ell}|\hat q-Q_{\mathrm{inst20}}|+\ell,\qquad
 \mathrm{Var}=2e^{2\ell}.
 $$
 
@@ -79,7 +72,7 @@ $$
 
 不能把ell称为log方差，也不能把 `exp(-c)*SmoothL1+c` 不加定义地称为Gaussian NLL。若未来改用Gaussian，必须另设loss/config身份并改成 `0.5*(exp(-c)*(q-Q)^2+c)`。单次前向ell描述源域残差尺度，不等于MC dropout得到的模型不确定性，也不自动提供校准的抓取成功率。[Kendall与Gal](https://arxiv.org/abs/1703.04977)
 
-每一项先只取本项valid query，再对单实例求均值，最后对batch中有监督实例求均值。不能用NaN乘零实现mask；无有效query的项返回显式zero/no-supervision并计数。源query质量为零是有效负例，不能被valid过滤。S/W独立有效mask与联合q mask分别保存。
+每一项先只取本项valid query，再对单实例求均值，最后对batch中有监督实例求均值。不能用NaN乘零实现mask；无有效query的项返回显式zero/no-supervision并计数。源query质量为零是有效负例，不能被valid过滤。v2首版使用共同label_valid，要求S/W和两个self分量均已求值；分项缺失仅保留诊断，不伪造完整负例。
 
 不确定性首版用于源回归损失与诊断，不额外加入 `q-lambda*sigma` 排名，也不增加多次随机推理。
 
@@ -87,7 +80,7 @@ $$
 
 | 参数 | 两路线首版默认 |
 |---|---|
-| 样本单位 | 一个实例在一个相机视角的观测；每次抽取含固定最多256个query |
+| 样本单位 | 一个实例在一个相机视角的观测；训练/回放取共同候选序列前128个；64为另命名可选配置，验证/测试/推理最多256 |
 | sampler | 先均匀选90个训练scene，再均匀frame，再均匀该frame中训练有效实例；seed=42 |
 | 预算 | 140000个参与成功更新的实例暴露 |
 | 每次有效batch | 16实例 |
@@ -98,11 +91,11 @@ $$
 | 首版训练精度 | FP32；几何/坐标/法向和teacher均FP32或更高精度 |
 | 验证节点 | 875、1750、…、8750，共10次 |
 | 随机性 | Python/NumPy/Torch/CUDA和数据loader种子均固定并保存RNG |
-| 源域选模 | `InstTop1_SW20@0.4` 最大；再按mean selected SW最大；仍并列则更早步 |
+| 源域选模 | `InstTop1_INST20@0.4` 最大；再按mean selected Q_inst最大；仍并列则更早步 |
 | 数据增强 | 每实例一致RGB jitter；灰度化概率0.2；首版不缩放米制几何 |
 | checkpoint | best.pt和last.pt，记录完整模型/优化器/采样器/RNG及身份 |
 
-RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固定 mean=(0.485,0.456,0.406)、std=(0.229,0.224,0.225)，invalid位置在归一化后再置零。A的raw支持与backbone点、B的全局与所有局部图共享同一个实例级光度变换。颜色增强不是对真实纹理特征有效性的先验保证。
+RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固定 mean=(0.485,0.456,0.406)、std=(0.229,0.224,0.225)，invalid位置在归一化后再置零。A的raw支持与backbone点、B的全局与原分辨率纹理ROI共享同一个实例级光度变换。颜色增强不是对真实纹理特征有效性的先验保证。
 
 默认FP32先确定可重复的训练协议。后续如选择AMP，需保存实际dtype和新执行配置；只在optimizer成功时增加有效预算，AMP skip产生的已读样本另计 `consumed_instance_draws`，不能隐瞒额外曝光或冒充成功步。microbatch×累积必须为16，但改变microbatch可能影响BatchNorm统计，不自动视作逐位等价。
 
@@ -121,15 +114,52 @@ $$
 
 若逐条反向累积，两个target各权重0.5，两个source各权重0.25；之后不再整体除4。一个观测有多次历史动作，先取其有效动作平均，避免多动作观测因记录数量而额外加权。target按既有train的观测均匀采样，不做默认成功/失败1:1重采样；group用于划分约束与分组报告。
 
-每条target动作：`logit=score_at_pose(p_plan,n_plan).task_logit`，`BCEWithLogits(logit,outcome)`。使用logit版本的BCE，不能先sigmoid后又传入BCEWithLogits。Seal、Wrench真值不由产线成败反推。source回放使用这条路线自己的SW缓存和同一source loss。
+每条target动作：`logit=score_at_pose(p_plan,n_plan).task_logit`，`BCEWithLogits(logit,outcome)`。使用logit版本的BCE，不能先sigmoid后又传入BCEWithLogits。Seal、Wrench真值不由产线成败反推。source回放读取A/B共同的v2同姿态物理缓存、默认128 query和同一source loss。
 
 | 成功更新 | 可训练参数 | 学习率 |
 |---|---|---|
 | 1–200 | q/Seal/Wrench/ell/task各输出头 | heads 3e-4 |
-| 201–1000 | 上述头，decoder、接触编码器、query融合与对象池化投影 | heads 1e-4，其余1e-5 |
+| 201–1000 | 上述头；A的decoder/接触模块，B的Fq投影/共享纹理stem/环向编码；两者query融合与对象池化投影 | heads 1e-4，其余1e-5 |
 | 全程 | encoder冻结；BatchNorm running stats与affine冻结 | — |
 
-阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。LayerNorm不是BatchNorm，按所在模块是否解冻处理。参数组名称与成员hash写入checkpoint；旧E5的组名不能不经检查直接套A/B。
+阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。B v2全局encoder、共享纹理stem和环向模块采用GroupNorm(groups=8,eps=1e-5)，从新架构初始化；没有可静默复用的旧BN权重。GroupNorm/LayerNorm不是BatchNorm，affine参数按所在模块是否解冻处理。参数组名称与成员hash写入checkpoint；旧E5的组名不能不经检查直接套A/B。
+
+### 6.1 BN冻结是已有要求，执行时必须核验
+
+原v1已写明微调期冻结BN，本次不将其描述为原规范遗漏。对A及任何保留BN的实现，`requires_grad=False`不会冻结running stats；每次`model.train()`后重新施加：
+
+```python
+import torch.nn as nn
+model.train()
+for module in model.modules():
+    if isinstance(module, nn.modules.batchnorm._BatchNorm):
+        if not module.track_running_stats:
+            raise ValueError("Frozen running-stat policy requires tracked BatchNorm")
+        module.eval()
+        for parameter in module.parameters():
+            parameter.requires_grad_(False)
+```
+
+验收比较微调前后running_mean、running_var、num_batches_tracked及affine均不变。梯度累积16次不等于BN见到了batch16；它每次前向仍见microbatch大小。[PyTorch BatchNorm](https://docs.pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html)、[Group Normalization原论文](https://www.ecva.net/papers/eccv_2018/papers_ECCV/papers/Yuxin_Wu_Group_Normalization_ECCV_2018_paper.pdf)。
+
+### 6.2 可选小幅姿态一致性，默认关闭
+
+单次BCE学习 `P(y=1|observation,planned_command)`，并不宣称规划点是已测执行点。可定义试验配置 `pose_consistency.enabled=false`；启用时先保留原动作的一次BCE，额外对每动作最多2个合法微扰计算弱一致性项：
+
+$$
+L_t=\mathrm{BCEWithLogits}(\ell_0,y)+\lambda\frac1J\sum_j
+[\sigma(\ell_j)-\operatorname{stopgrad}(\sigma(\ell_0))]^2.
+$$
+
+试验初值 `lambda=0.1`，位置在半径2mm的局部切平面圆盘内均匀采样，轴在原有向轴周围2°球冠内按立体角均匀采样；J最多2，seed随checkpoint保存。它们是未验证正则超参数，不是已测执行误差，也不是新默认训练配方。
+
+对每个扰动保留原轴符号，并按同实例、原观测连通表面、中心支持和深度断层规则核验；不通过则丢弃该扰动，J=0时一致性项为0。不将原结果复制成J条独立BCE，不扩大动作计数。不把源域S/W/self标签复制给改变后的姿态；源域仍查询固定缓存。
+
+启用与强度只能用固定399条开发动作及支持率判断，87条test保持封存。该正则在薄接缝处也可能抹平真实差别，未经验证不默认启用。推理继续输出精确规划/候选姿态的单次分数。
+
+若未来改为执行误差概率模型，应明确定义 `p_bar=sum(w_j*sigmoid(logit_j))` 并计算一次 `BCE(p_bar,y)`，推理同样积分或另行蒸馏；`sigmoid(mean(logit))`不是同一概率。误差核优先来自测量，不能从`actual_execution_verified=false`推得2mm/2°分布。
+
+### 6.3 固定开发与测试
 
 每100次成功更新在固定399条val动作评价一次；以AUROC最大选best，再按BCE低、再按更早步打破平局。始终报告总399、有效条数和跳过原因；不能每次选择不同的有效子集而比较分数。87条test在权重和排序规则冻结后使用一次，不用于挑alpha、normal半径或学习率。若某个分组只有单类，AUROC应标未定义而不是补零。
 
@@ -137,10 +167,10 @@ $$
 
 ## 7 排序与统一姿态输出
 
-源域未训练task头时按q_SW排序；微调后默认按sigmoid(task_logit)排序，alpha=0。保留用户提出的可选模式：
+源域未训练task头时按q_inst排序；微调后默认按sigmoid(task_logit)排序，alpha=0。保留用户提出的可选模式：
 
 $$
-s_{\mathrm{rank}}=P_{\mathrm{task}}\max(q_{\mathrm{SW}},10^{-6})^\alpha,\qquad
+s_{\mathrm{rank}}=P_{\mathrm{task}}\max(q_{\mathrm{inst}},10^{-6})^\alpha,\qquad
 \alpha=0.5.
 $$
 
@@ -150,7 +180,7 @@ $$
 
 最终输出中心就是实际被评分的query中心；不再用5×5深度中位数二次修改它。若需要深度稳健修正，必须在生成query时完成；或修正后重建局部几何并重新评分。
 
-相机系外向轴为n，工具+Z定义为接近方向时 `z_tool=-n`。选与z最不平行的固定相机基向量b，同值按x/y/z顺序，令 `x=normalize(b×z)`、`y=z×x`，构造右手 `R=[x,y,z]`；这与参考程序的固定roll完全一致。有固定工具roll偏好时用明确的切向参考代替并记录。点与轴本身没有估计roll，默认补全只为确定一个合法SE(3)。
+相机系外向轴为n，工具+Z定义为接近方向时 `z_tool=-n`。选与z最不平行的固定相机基向量b，同值按x/y/z顺序，令 `x=normalize(b×z)`、`y=z×x`，构造右手 `R=[x,y,z]`；这与参考程序的固定roll完全一致。有固定工具roll偏好时用明确的切向参考代替并记录。点与轴本身没有估计roll，默认补全只为确定一个合法SE(3)，具有参考轴切换不连续性；它不再进入学习特征。轨迹执行要由固定工具roll偏好或上一姿态连续运输处理，不把静态补全等同连续运动。
 
 $$
 T_{\mathrm{base,TCP}}=
@@ -165,7 +195,7 @@ contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。�
 
 ```json
 {
-  "schema_version": "instance_suction_prediction_v1",
+  "schema_version": "instance_suction_prediction_v2",
   "instance_uid": "example_instance",
   "query_id": 42,
   "status": "ok",
@@ -173,8 +203,8 @@ contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。�
   "normal_out_cam": [0.0, 0.0, -1.0],
   "tool_z_cam": [0.0, 0.0, 1.0],
   "roll_policy": "least_aligned_camera_axis",
-  "quality_contract": "gt_SW20_pose_v1",
-  "q_sw": 0.62,
+  "quality_contract": "gt_INST20_pose_v2",
+  "q_inst": 0.62,
   "seal": 0.81,
   "wrench": 0.77,
   "task_probability": 0.73,
@@ -191,19 +221,19 @@ contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。�
 
 | 层面 | 主指标 | 必须保留的解释字段 |
 |---|---|---|
-| 单实例无碰撞物理质量 | `InstTop1_SW20@0.4` | 原始实例总数、无输出率、所选SW均值、场景分组 |
-| 候选生成/选择 | `Coverage_SW20@256` 与有好候选时Top1选中率 | query数量、支持过滤前后、NMS前后；不以无输出率替代质量覆盖 |
-| 公共方法比较 | 既有官方R10与原项目R20六指标 | 重新使用各协议完整评价与后处理；不把SW填入原Q20 AP表 |
+| 单实例含目标自碰质量 | `InstTop1_INST20@0.4` | 原始实例总数、无输出率、所选Q_inst均值；另报SW及self比例 |
+| 候选生成/选择 | `Coverage_INST20@256` 与有好候选时Top1选中率 | query数量、支持过滤前后、NMS前后；不以无输出率替代质量覆盖 |
+| 公共方法比较 | 既有官方R10与原项目R20六指标 | 重新使用各协议完整评价与后处理；不把新INST或SW填入原Q20 AP表 |
 | 历史动作成败 | AUROC、AP、BCE、Brier | 总动作数、有效数、正负数、逐动作分数；BCE/Brier只针对task概率 |
 | 部署成本 | model-only及instance端到端p50/p95 | 硬件、dtype、原始点数、候选数、拷贝、预处理和NMS范围 |
 
-SW主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。少于100点、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
+INST主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。少于100点、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
 
-候选覆盖定义为一个实例的固定256候选池中是否至少有一项 `SW>=0.4`；“有好候选时选中率”分母仅为存在好候选的实例。覆盖与选择率以同一池统计，不把NMS后池与原始池混算。
+候选覆盖定义为一个实例的固定256候选池中是否至少有一项 `Q_inst>=0.4`；“有好候选时选中率”分母仅为存在好候选的实例。覆盖与选择率以同一池统计，不把NMS后池与原始池混算。
 
-比较原E5与新路线时，应对其实际输出姿态按同一个SW teacher重新评价，或同时列出各自原协议；不能用旧13.12%的含碰撞开发指标当新SW主指标基线。首轮不要求重训第三方模型。
+比较原E5与新路线时，应对其实际输出姿态按同一个v2 instance teacher重新评价，或同时列出各自原协议；不能用旧13.12%的含碰撞开发指标当新INST主指标基线。首轮不要求重训第三方模型。
 
-延迟每物体batch1，先50次预热，再至少200个固定验证实例，输出p50/p95与峰值显存；记录K实际有效数量。GPU模型时间用CUDA events并同步，端到端用墙钟同步边界。B必须计入法向、栅格化、候选分块和数据拷贝；整帧多个实例另报真实汇总。上游相机和实例分割是否包含在计时内明确列出，不混称完整机器人FPS。15–30 ms与2–5 ms均不能在实现前标为测得结果。
+延迟每物体batch1，先50次预热，再至少200个固定验证实例，输出p50/p95与峰值显存；记录K实际有效数量。GPU模型时间用CUDA events并同步，端到端用墙钟同步边界。B必须计入organized法向、图像候选、共享纹理编码、投影采样、环向查询与数据拷贝；整帧多个实例另报真实汇总。上游相机和实例分割是否包含在计时内明确列出，不混称完整机器人FPS。15–30 ms与2–5 ms均不能在实现前标为测得结果。
 
 ## 9 既有基线的真实命令
 
@@ -239,21 +269,21 @@ python scripts/finetune.py \
 | 阶段 | 建议新增文件/接口 | 输入 → 输出 | 完成判据 |
 |---|---|---|---|
 | I1 实例构建 | `scripts/build_instance_data.py`；`suction20/instance_data.py` | 已有RGB-D/实例/动作清单 → instance manifest、normal/query缓存 | scene/group不泄漏；原点/轴/标定回读一致 |
-| I2 SW缓存 | `scripts/label_instance_queries.py`；`suction20/instance_labels.py` | 固定query、冻结teacher → S/W/SW缓存与hash | 同姿态对齐现有evaluate_poses；旧gt_B未被覆写 |
+| I2 实例物理缓存 | `scripts/label_instance_queries.py`；`suction20/instance_labels.py` | 固定query、冻结teacher → S/W/self/SW/INST缓存与hash | S/W对齐现有evaluate_poses；self与原target-only碰撞对齐；不改变旧gt_B |
 | I3 双模型 | `models/instance_a.py`、`models/instance_b.py` | observation → `encode_instance`；query p,n → heads | A/B输入和mask shape、任意轴可查询、局部支持正确 |
 | I4 训练接线 | `scripts/train_instance.py`、`suction20/instance_training.py` | route配置与缓存 → checkpoints/训练和val日志 | 预训练和两段微调参数组、loss归约、成功样本预算正确 |
-| I5 评价推理 | `scripts/evaluate_instance.py`、`scripts/infer_instance.py` | checkpoint+固定清单 → 逐query/动作预测和汇总 | SW与旧协议区分；输出SE(3)、身份和无输出原因 |
+| I5 评价推理 | `scripts/evaluate_instance.py`、`scripts/infer_instance.py` | checkpoint+固定清单 → 逐query/动作预测和汇总 | INST/SW与旧协议区分；输出SE(3)、身份和无输出原因 |
 | I6 B部署 | `scripts/export_instance_b.py` | 冻结B子图 → ONNX/engine与一致性报告 | 每个导出子图及组合结果与PyTorch比对，真实耗时有记录 |
 
 建议新训练器CLI固定 `--route a|b`、`--stage pretrain|finetune`、`--config`、`--manifest`、`--label-manifest`、`--run-dir`、`--device`；初始化与恢复互斥。首次实现时parser必须拒绝design_spec直接运行，或提供明确的设计配置→运行配置转换并校验所有本地路径。不要向旧入口加“随意放行”的开关。
 
-checkpoint最少保存架构/版本、12或13/10通道合同、normal spec、query sampler、SW物理配置、输入归一化、ranking模式、模型/优化器/scaler、成功步与样本消费、参数组、loader/sampler/RNG、源/目标manifest hash及代码身份。跨路线、输入维度或质量目标变化不能resume。
+checkpoint最少保存架构/版本、A的12通道及B的13通道全局/5通道纹理合同、normal spec、query sampler、INST/self物理配置、输入归一化、ranking模式、模型/优化器/scaler、成功步与样本消费、参数组、loader/sampler/RNG、源/目标manifest hash及代码身份。跨路线、输入维度或质量目标变化不能resume。
 
-最低真实链路验收是：一个真实实例的teacher与输入一致；少量更新确实反向并降低对应目标；保存恢复后下一个batch/query与学习率一致；历史动作评分对改变轴有响应；实际推理输出p/n与被评分的姿态完全一致。完成这些后按既定预算训练，无需新增全套性能矩阵作为前置。
+最低真实链路验收是：一个真实实例的teacher与输入一致；少量更新确实反向并降低对应目标；保存恢复后下一个batch/query与学习率一致；历史动作评分对改变轴有响应；实际推理输出p/n与被评分的姿态完全一致。完成这些后按既定预算训练，只补解决本次具体风险的检查，不新增全套实验矩阵。实例teacher先做64–128个真实样本的成本剖析；全量预训练前完成缓存同姿态与self拆分核验。
 
 ## 11 本次验证与后续记录
 
-本次验证覆盖设计文档、几何/数据契约参考工具及文档导航。程序的29项合成检查与demo不构成 A/B 真实数据teacher、一轮训练、模型准确率或推理耗时证据。真实运行报告应依照上面的完成判据逐项记录，并链接其配置、输入清单与结果文件。
+本次验证覆盖设计文档、几何/数据契约参考工具及文档导航。旧参考29项及v2参考26项合成检查与demo不构成 A/B 真实数据teacher、一轮训练、模型准确率或推理耗时证据。真实运行报告应依照上面的完成判据逐项记录，并链接其配置、输入清单与结果文件。
 
 数据文件和checkpoint继续存于外部数据/运行目录；GitHub只提交代码、配置、必要的汇总与可复核来源。使用当前同身份恢复政策，不重新引入已退出的CD-009转换器或过渡期兼容代码。
 
