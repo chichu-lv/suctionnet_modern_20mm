@@ -43,7 +43,7 @@
 
 相机坐标采用 x向右、y向下、z向前；深度为相机 z 轴距离。使用更新后的 K 反投影，长度单位为米。历史姿态用原标定变换到相机系，以 float64 读取并保留有向轴；最近点只可验证支持，不能吸附记录中心。当前重力是负传送带平面法向近似，来源标记随样本保留。
 
-源builder在输出根目录写manifest/summary，观测与完整query数组在 `observations/`，实际求值的标签前缀在 `labels/`；目标动作沿用既有JSONL。路径相对manifest根解析，NPZ为数组和JSON元数据、`allow_pickle=False`加载，每次实际加载每份NPZ一次，核对结构、p/n与标签公式；产物路径与CLI见第7节。读取器同时接受旧v3，忽略旧校验和字段，不计算文件/数组校验和，不作内容篡改检测保证。
+源builder在最终发布目录写manifest/summary，单进程观测与完整query数组在该目录的 `observations/`，实际求值的标签前缀在 `labels/`；显式scene/frame选择会自动创建独立发布目录，多进程由合并清单引用worker资产。目标动作沿用既有JSONL。路径相对manifest根解析，NPZ为数组和JSON元数据、`allow_pickle=False`加载，每次实际加载每份NPZ一次，核对结构、p/n与标签公式；产物路径与CLI见第7节。读取器同时接受旧v3，忽略旧校验和字段，不计算文件/数组校验和，不作内容篡改检测保证。
 
 ## 3. 按实际需要构建缓存
 
@@ -113,6 +113,8 @@ item = source[0]  # 真实数组、p/n顺序、标签公式与已知配置；无
 
 先将变量改为真实资产目录；`DATASET` 下须有官方 `scenes/` RGB、depth、label、meta、`camera_poses.npy`、`cam0_wrt_table.npy` 和完整 `dense_point_clouds`。MAT元数据必须含factor_depth、相机内参、对象身份与姿态；`R20_LABELS` 须含 `config_frozen.json`、`seal_r20/poisson/`。缺完整dense资产时明确失败，不用mesh或可见点云替代teacher的完整目标。
 
+### 7.1 完整自动分片构建
+
 ```bash
 DATASET=/data/SuctionNet
 R20_LABELS=/data/suction20_r20
@@ -123,19 +125,45 @@ python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root 
 
 默认train=scene 0–99、test=100–189，均包含frame 0–255。默认深度范围沿用0.2–1.2m，可显式传 `--depth-min-m` / `--depth-max-m`；修改后会进入观测身份，必须对train与selection保持一致。可选 `--camera kinect` 使用对应相机资产，不能把两个相机的结果混成一项。若场景同类对象重复，提供 `--instance-mask-root` 中按instance row标记的真实掩码；类别ID不能充当重复实例的唯一身份。
 
-产物为 `train/manifest_train.jsonl`、`train/manifest_train.summary.json` 和test对应文件；单进程在根目录下写 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`；多进程分别写 `shards/part_XXXX/`，合并清单以相对路径引用它们。summary记录实际scene/frame覆盖、空GT帧、实例状态和 `complete_requested_split`；不能通过改文件名把分片升级为完整数据。
+未显式传入 `--scenes` 和 `--frames` 时，最终产物仍为 `$CACHE/train/manifest_train.jsonl`、对应 `.summary.json` 和test对应文件。`--workers 1` 在该输出目录下写 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`；`--workers 4` 按scene分派最多4个独立进程，在最终输出目录的 `shards/part_XXXX/` 下各自再建立scene/frame专属目录，完成后自动合并到最终输出目录。多进程要求显式 `--split train` 或 `--split test`；合并清单保存到worker资产的相对路径，无需移动NPZ，也不要假定中间清单直接位于 `part_XXXX/manifest_train.jsonl`。
 
-小规模构建可加入 `--scenes 0-1 --frames 0,8`，test分片则使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或完整选模。
+**只要显式传入任一 `--scenes` 或 `--frames`，就自动在 `--output` 下建立独立目录**，观测、标签、manifest和summary都放入该目录。以 `--output "$CACHE" --camera realsense --split train` 为例：
 
-`--workers 4` 按scene分派4个独立进程；各进程独占 `shards/part_XXXX/`，完成后自动合并。默认 `--workers 1` 串行；多进程需显式train或test。外部分片也可分别构建到不同目录，再合并完整训练集：
+| 显式选择 | 最终清单相对于 `$CACHE` 的路径 |
+|---|---|
+| `--scenes 0-49`，frames省略 | `shards/realsense/train/scenes_0000-0049/frames_0000-0255/manifest_train.jsonl` |
+| `--scenes 0-1 --frames 0,8` | `shards/realsense/train/scenes_0000-0001/frames_0000_0008/manifest_train.jsonl` |
+| `--scenes 0-99 --frames 0-255` | `shards/realsense/train/scenes_0000-0099/frames_0000-0255/manifest_train.jsonl` |
+
+显式列出全部ID也遵守独立目录规则；实际ID排序、去重后压缩为可读范围，长而稀疏的范围会拆为多级目录，避免单级路径过长。目录名称记录选择范围，不是文件内容摘要。显式子集结合 `--workers N` 时，表中的目录仍是最终发布目录，worker目录位于其内部；返回清单路径不受worker数量影响。
+
+### 7.2 同一输出根的手工分片与完整合并
+
+下面是上述完整自动构建的替代方式。四次构建使用**同一个** `--output "$CACHE"`，每次写入独立目录；可以顺序运行，也可以在不同终端并行运行。每个split的两个分片都成功完成后，再执行该split的合并命令：
 
 ```bash
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train_parts/part_00" --split train --scenes 0-49
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train_parts/part_01" --split train --scenes 50-99
-python scripts/merge_instance_manifests.py --manifests "$CACHE/train_parts/part_00/manifest_train.jsonl" "$CACHE/train_parts/part_01/manifest_train.jsonl" --output "$CACHE/train" --split train
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split train --camera realsense --scenes 0-49
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split train --camera realsense --scenes 50-99
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split test --camera realsense --scenes 100-144
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split test --camera realsense --scenes 145-189
+
+python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/train/scenes_0000-0049/frames_0000-0255/manifest_train.jsonl" "$CACHE/shards/realsense/train/scenes_0050-0099/frames_0000-0255/manifest_train.jsonl" --output "$CACHE/train" --split train
+python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/test/scenes_0100-0144/frames_0000-0255/manifest_test.jsonl" "$CACHE/shards/realsense/test/scenes_0145-0189/frames_0000-0255/manifest_test.jsonl" --output "$CACHE/test" --split test
 ```
 
-合并器重定位NPZ相对路径并保留全部 `empty_gt_frames`；拒绝重叠、重复实例、跨split/相机、缺失文件、漏帧和已知physics冲突。默认要求整个split的全部scene×256帧。仅小规模接线可用 `--allow-partial`，训练时仍需另传 `--allow-partial-manifests`，不能据此声明完整覆盖。不要并发写同一个分片目录。
+合并后训练读取 `$CACHE/train/manifest_train.jsonl`，best选择读取 `$CACHE/test/manifest_test.jsonl`，分别完整覆盖100个训练场景和90个测试场景的全部256帧。builder和merger的stdout均为JSON，其 `manifest` 字段是**实际最终清单的绝对路径**；自动化脚本应读取该字段，尤其不要自行拼接稀疏范围或worker中间路径。磁盘summary中的 `manifest` 字段仍为相邻清单的文件名。
+
+### 7.3 发布保护、小规模检查与旧缓存
+
+不同显式范围的串行或并行构建不改写输出根已有的完整清单。每个实际发布目录使用Linux排他文件锁，覆盖该目录的构建/自动合并全过程；手工merger同样持有目标目录锁。另一进程正在写相同目录时立即失败，不排队，也不会开始写该分片的NPZ。进程退出或异常时释放锁，锁文件保留以复用同一inode；不要在任务运行期间删除锁文件。
+
+manifest和summary分别使用唯一临时文件原子替换，清单最后发布。已有清单必须有可读的coverage summary；同名清单的相机或split不符、或者新清单没有包含已有的全部scene/frame覆盖，都会拒绝替换。不能用单个partial分片覆盖已经发布的全量清单；应合并全部分片或换一个输出目录。更换相机或不兼容的观测/teacher配置同样应使用新的缓存目录。
+
+合并器重定位NPZ相对路径并保留全部 `empty_gt_frames`；拒绝输入分片的scene/frame重叠、重复实例、跨split/相机、缺失文件、漏帧和已知physics冲突。默认要求整个split的全部scene×256帧；summary记录实际覆盖、空GT帧、实例状态和 `complete_requested_split`。仅小规模接线可用 `--allow-partial` 合并，训练时仍须另传 `--allow-partial-manifests`，不能把partial输出或改名后的分片声明为完整数据。
+
+小规模构建可加入 `--scenes 0-1 --frames 0,8`，其真实路径见上表；test分片须使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或完整选模。
+
+旧布局的缓存和清单**不会自动搬迁**，仍可按其原路径读取或传给合并器；新显式分片请求只查找自己的新目录，不会自动从旧输出根查找或复制NPZ。合并也只改写路径引用，不搬迁源资产，因此必须保留被合并清单引用的分片目录。所有检查继续基于schema、实际数组、姿态/标签关系、已知配置和覆盖声明，不生成或验证文件内容摘要。
 
 builder的 `--min-support-points` 默认100，写入观测、清单与summary；训练/评价实际读取模型的 `model.min_support_points`，默认同为100。数据的 `has_supervision` 只看有效标签，构建时 `trainable` 只作诊断；变更阈值应同时记录两者，不能用缓存布尔值阻止模型使用新的阈值。
 

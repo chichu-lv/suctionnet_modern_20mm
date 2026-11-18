@@ -7,6 +7,7 @@ No data or geometry is synthesized when an asset is missing.
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 import copy
 import json
 import os
@@ -346,7 +347,127 @@ def read_suctionnet_frame(dataset_root, scene_id, frame_id, camera='realsense', 
                              'depth_scale_m': 1. / scale})
 
 
+def _source_selection(split, scenes, frames):
+    allowed = source_scene_ids(split)
+    selected_scenes = tuple(allowed if scenes is None else sorted(set(map(int, scenes))))
+    selected_frames = tuple(range(256) if frames is None else sorted(set(map(int, frames))))
+    if (not selected_scenes or not selected_frames or not set(selected_scenes) <= set(allowed)
+            or not set(selected_frames) <= set(range(256))):
+        raise ValueError('requested scenes/frames must be nonempty and inside the declared split')
+    return allowed, selected_scenes, selected_frames
+
+
+def _selection_components(name, values):
+    """Encode actual IDs as readable ranges, splitting long path components."""
+    runs = []
+    first = previous = values[0]
+    for value in values[1:]:
+        if value != previous + 1:
+            runs.append(f'{first:04d}' if first == previous else f'{first:04d}-{previous:04d}')
+            first = value
+        previous = value
+    runs.append(f'{first:04d}' if first == previous else f'{first:04d}-{previous:04d}')
+    components, current = [], name
+    for run in runs:
+        if len(current) + len(run) + 1 > 180:
+            components.append(current)
+            current = name + '_more'
+        current += '_' + run
+    components.append(current)
+    return components
+
+
+def source_build_output(output, *, split='all', camera='realsense', scenes=None, frames=None):
+    """Give each explicit scene/frame request its own deterministic namespace.
+
+    A complete default build keeps its documented root manifest. Explicit
+    selections never publish that root manifest, even if they list all IDs.
+    Path names encode IDs directly and do not identify file contents.
+    """
+    if camera not in ('realsense', 'kinect'):
+        raise ValueError('source camera must be realsense or kinect')
+    _, selected_scenes, selected_frames = _source_selection(split, scenes, frames)
+    output = Path(output)
+    if scenes is None and frames is None:
+        return output
+    return output.joinpath('shards', camera, split,
+        *_selection_components('scenes', selected_scenes),
+        *_selection_components('frames', selected_frames))
+
+
+@contextmanager
+def source_output_lock(output):
+    """One writer per publication directory; OS releases the lock on exit/crash."""
+    import fcntl
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    # Keep the inode after unlocking: unlinking permits two different lock
+    # inodes to be held for the same directory during a writer race.
+    with (output / '.instance-build.lock').open('a+') as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f'instance cache output is already being written: {output}') from exc
+        try:
+            stream.seek(0); stream.truncate()
+            stream.write(json.dumps({'pid': os.getpid()})); stream.flush()
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_text(path, text):
+    path = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _publish_source_manifest(manifest, rows, summary):
+    """Publish only after complete construction, without losing old coverage."""
+    summary_path = manifest.with_suffix('.summary.json')
+    if manifest.exists():
+        if not summary_path.is_file():
+            raise ValueError('existing manifest has no coverage summary; use a new output directory')
+        previous = json.loads(summary_path.read_text())
+        if any(previous.get(key) != summary.get(key) for key in ('camera', 'split')):
+            raise ValueError('existing manifest belongs to another camera/split; use a new output directory')
+        def frame_set(value):
+            pairs = value.get('frame_pairs')
+            return ({(int(s), int(f)) for s in value['scene_ids'] for f in value['frame_ids']}
+                    if pairs is None else {tuple(pair) for pair in pairs})
+        if not frame_set(previous) <= frame_set(summary):
+            raise ValueError('refusing to replace an existing manifest with reduced/different frame coverage; '
+                             'merge all shards or use a new output directory')
+    # The manifest is published last; an interrupted writer never announces a
+    # new manifest before its coverage summary and completed NPZ assets exist.
+    _atomic_text(summary_path, json.dumps(summary, indent=2, allow_nan=False) + '\n')
+    _atomic_text(manifest, ''.join(json.dumps(row, sort_keys=True, allow_nan=False) + '\n' for row in rows))
+
+
 def build_source_instances(dataset_root, label_root, output, *, split='all', camera='realsense',
+                           scenes=None, frames=None, with_labels=True, train_queries=128,
+                           instance_mask_root=None, depth_min_m=.2, depth_max_m=1.2, min_support_points=100):
+    """Build into a uniquely scoped, exclusively owned publication directory."""
+    _, selected_scenes, selected_frames = _source_selection(split, scenes, frames)
+    destination = source_build_output(output, split=split, camera=camera,
+        scenes=selected_scenes if scenes is not None else None,
+        frames=selected_frames if frames is not None else None)
+    with source_output_lock(destination):
+        return _build_source_instances(dataset_root, label_root, destination, split=split, camera=camera,
+            scenes=selected_scenes, frames=selected_frames, with_labels=with_labels, train_queries=train_queries,
+            instance_mask_root=instance_mask_root, depth_min_m=depth_min_m,
+            depth_max_m=depth_max_m, min_support_points=min_support_points)
+
+
+def _build_source_instances(dataset_root, label_root, output, *, split='all', camera='realsense',
                            scenes=None, frames=None, with_labels=True, train_queries=128,
                            instance_mask_root=None, depth_min_m=.2, depth_max_m=1.2, min_support_points=100):
     """Build a deterministic shard; no missing frames/objects silently disappear.
@@ -354,15 +475,16 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
     Full defaults cover 100 training and 90 test scenes, 256 views each. A
     caller-supplied shard is labeled partial in the summary, never as full test.
     """
-    allowed = source_scene_ids(split)
-    selected_scenes = tuple(allowed if scenes is None else sorted(set(map(int, scenes))))
-    selected_frames = tuple(range(256) if frames is None else sorted(set(map(int, frames))))
-    if not set(selected_scenes) <= set(allowed) or not set(selected_frames) <= set(range(256)):
-        raise ValueError('requested scenes/frames outside declared split')
+    allowed, selected_scenes, selected_frames = _source_selection(split, scenes, frames)
     if not 1 <= int(train_queries) <= 256:
         raise ValueError('train_queries must be in [1,256]')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    existing_summary = (output / f'manifest_{split}.summary.json')
+    if existing_summary.is_file():
+        previous = json.loads(existing_summary.read_text())
+        if previous.get('camera') != camera or previous.get('split') != split:
+            raise ValueError('existing manifest belongs to another camera/split; use a new output directory')
     teacher = InstanceTeacher(dataset_root, label_root, camera) if with_labels else None
     rows, empty_frames, status_counts = [], [], {}
     for scene_id in selected_scenes:
@@ -432,9 +554,6 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
                     query_count=len(obs['query_points']), trainable=obs['trainable'], status=status)
                 rows.append(row)
     manifest = output / f'manifest_{split}.jsonl'
-    temporary = manifest.with_suffix('.jsonl.tmp')
-    temporary.write_text(''.join(json.dumps(row, sort_keys=True, allow_nan=False) + '\n' for row in rows))
-    os.replace(temporary, manifest)
     summary = dict(manifest_version=MANIFEST_VERSION, manifest=manifest.name,
         camera=camera, split=split,
         scene_ids=list(selected_scenes), frame_ids=list(selected_frames),
@@ -444,11 +563,17 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
         test_queries=256, labels_computed=bool(with_labels), quality_contract=QUALITY_CONTRACT,
         min_support_points=int(min_support_points),
         normal_spec=NORMAL_SPEC, sampler_spec=SAMPLER_SPEC, selection_policy='test_selected_if_used_for_best')
-    manifest.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
+    _publish_source_manifest(manifest, rows, summary)
     return manifest, summary
 
 
 def merge_source_manifests(manifest_paths, output, *, split, allow_partial=False):
+    """Merge complete-frame shards while holding the destination writer lock."""
+    with source_output_lock(output):
+        return _merge_source_manifests(manifest_paths, output, split=split, allow_partial=allow_partial)
+
+
+def _merge_source_manifests(manifest_paths, output, *, split, allow_partial=False):
     """Merge independently built scene/frame shards without reopening NPZ files.
 
     Shards own complete frames. Their explicit empty-frame lists are retained,
@@ -533,9 +658,6 @@ def merge_source_manifests(manifest_paths, output, *, split, allow_partial=False
     manifest = output / f'manifest_{split}.jsonl'
     if manifest.resolve() in {p.resolve() for p in paths}:
         raise ValueError('merged output cannot replace an input shard manifest')
-    temporary = manifest.with_suffix('.jsonl.tmp')
-    temporary.write_text(''.join(json.dumps(row, sort_keys=True, allow_nan=False) + '\n' for row in rows))
-    os.replace(temporary, manifest)
     status_counts = {}
     for row in rows:
         status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
@@ -548,7 +670,7 @@ def merge_source_manifests(manifest_paths, output, *, split, allow_partial=False
         complete_requested_split=complete, empty_gt_frames=[list(pair) for pair in sorted(empty_frames)],
         status_counts=status_counts, source_manifests=[str(p.resolve()) for p in paths],
         selection_policy='test_selected_if_used_for_best')
-    manifest.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
+    _publish_source_manifest(manifest, rows, summary)
     return manifest, summary
 
 

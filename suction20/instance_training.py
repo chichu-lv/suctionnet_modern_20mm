@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 import random
+import time
 
 import numpy as np
 import torch
@@ -65,6 +66,40 @@ def minimum_support_points(model):
     return int(value)
 
 
+def _positive_update(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f'{name} must be a positive integer')
+    return value
+
+
+def scheduled_evaluation_steps(stage_config):
+    """Resolve one unambiguous schedule; the original budget endpoint is mandatory."""
+    total = _positive_update(stage_config['steps'], 'steps')
+    explicit = stage_config.get('evaluation_steps')
+    every = stage_config.get('evaluate_every')
+    if explicit is not None:
+        if every is not None:
+            raise ValueError('Choose evaluation_steps or evaluate_every, not both')
+        if not isinstance(explicit, list):
+            raise ValueError('evaluation_steps must be a sorted list of successful update numbers')
+        nodes = [_positive_update(step, 'evaluation_steps entry') for step in explicit]
+        if nodes != sorted(set(nodes)) or any(step > total for step in nodes):
+            raise ValueError('evaluation_steps must be unique, increasing and within the training budget')
+    else:
+        interval = _positive_update(every, 'evaluate_every')
+        nodes = list(range(interval, total + 1, interval))
+    if not nodes or nodes[-1] != total:
+        nodes.append(total)
+    return tuple(nodes)
+
+
+def checkpoint_interval(stage_config):
+    value = stage_config.get('checkpoint_every')
+    if value is None:
+        value = stage_config.get('evaluate_every') or stage_config['steps']
+    return _positive_update(value, 'checkpoint_every')
+
+
 def load_instance_config(path):
     with Path(path).open() as stream:
         config = yaml.safe_load(stream)
@@ -82,8 +117,8 @@ def load_instance_config(path):
         raise ValueError('Current source policy is 100 train scenes and explicit test selection')
     for stage in ('pretrain', 'finetune'):
         row = config[stage]
-        if int(row['steps']) < 1 or int(row['evaluate_every']) < 1:
-            raise ValueError('steps and evaluate_every must be positive')
+        scheduled_evaluation_steps(row)
+        checkpoint_interval(row)
         if row.get('evaluation_records', 'best_and_final') not in ('best_and_final', 'all', 'none'):
             raise ValueError('evaluation_records must be best_and_final, all or none')
     if not 1 <= int(pre['queries']) <= 256 or int(pre['accumulate_instances']) < 1:
@@ -506,6 +541,8 @@ class InstanceTrainer:
         else:
             check_attempt_contract(self.target, self.selection)
         self.stage, self.run_dir = stage, Path(run_dir)
+        scheduled_evaluation_steps(self.config[stage])
+        checkpoint_interval(self.config[stage])
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.allow_partial = bool(allow_partial)
         self.step = 0
@@ -547,6 +584,8 @@ class InstanceTrainer:
                 'selection_role': 'test_selected' if self.stage == 'pretrain' else 'validation_selected',
                 'independent_test_estimate': False,
                 'train_scene_range': [0, 99],
+                'evaluation_steps': list(scheduled_evaluation_steps(self.config[self.stage])),
+                'selection_scope': 'partial_manifest_smoke' if self.allow_partial else 'complete_manifest',
                 'public_evaluation_status': 'deferred',
                 'paper_comparison_ready': False}
 
@@ -712,13 +751,24 @@ class InstanceTrainer:
         self._apply_phase()
 
     def initialize_finetune(self, path):
+        from .instance_config import (semantic_model_config, model_execution_options,
+                                      validate_saved_config_definition)
         if self.stage != 'finetune' or self.step:
             raise ValueError('Source initialization is only allowed before finetuning step one')
         state = torch.load(path, map_location='cpu', weights_only=False)
-        if (state.get('schema') != CHECKPOINT_SCHEMA or state.get('stage') != 'pretrain'
-                or state['identity']['route'] != self.config['route']
-                or state['identity']['quality_contract'] != QUALITY_CONTRACT
-                or state['config'].get('model', {}) != self.config.get('model', {})):
+        if not isinstance(state, dict) or state.get('schema') != CHECKPOINT_SCHEMA:
+            raise ValueError('Finetune initialization requires the same source instance architecture/quality')
+        source_config, source_identity = state.get('config'), state.get('identity')
+        validate_saved_config_definition(source_config, source_identity)
+        route = self.config['route']
+        if (state.get('stage') != 'pretrain' or source_config.get('schema') != 'instance_runtime_v1'
+                or self.config.get('quality_contract') != QUALITY_CONTRACT
+                or source_identity.get('stage') != 'pretrain'
+                or source_identity.get('route') != route or source_config.get('route') != route
+                or source_identity.get('quality_contract') != QUALITY_CONTRACT
+                or source_config.get('quality_contract') != QUALITY_CONTRACT
+                or semantic_model_config(route, source_config.get('model', {}))
+                   != semantic_model_config(route, self.config.get('model', {}))):
             raise ValueError('Finetune initialization requires the same source instance architecture/quality')
         old_data = state['identity']['source'].get('data_identity') or {}
         new_data = self.identity['source'].get('data_identity') or {}
@@ -730,11 +780,17 @@ class InstanceTrainer:
             'checkpoint_selection_role': state['checkpoint_selection_role'],
             'global_step': int(state['global_step']), 'selection_policy': deepcopy(state['policy']),
             'source_definition': clean_metadata(state['identity']),
+            'model_compatibility': {
+                'semantic_model': semantic_model_config(route, self.config.get('model', {})),
+                'source_execution': model_execution_options(route, source_config.get('model', {})),
+                'target_execution': model_execution_options(route, self.config.get('model', {})),
+            },
         }
         self._apply_phase()
 
     def evaluate(self):
         cfg = self.config[self.stage]
+        started = time.perf_counter()
         retention = cfg.get('evaluation_records', 'best_and_final')
         if retention not in ('best_and_final', 'all', 'none'):
             raise ValueError('evaluation_records must be best_and_final, all or none')
@@ -773,7 +829,10 @@ class InstanceTrainer:
             report = {'step': self.step, 'policy': self.policy, 'metrics': metrics,
                       'initialization': deepcopy(self.initialization), 'selection_key': key,
                       'identity': self.identity, 'record_details': record_info,
-                      'best_updated': improved, 'final_step': final_step}
+                      'best_updated': improved, 'final_step': final_step,
+                      'timing': {'scope': 'selection_forward_metrics_and_records_excludes_checkpoint_save',
+                                 'wall_seconds': time.perf_counter() - started,
+                                 'observations': len(self.selection)}}
             atomic_json(self.run_dir/f'evaluation_step{self.step:06d}.json', report)
             if improved:
                 self.best = {'step': self.step, 'key': key, 'metrics': metrics, 'policy': self.policy}
@@ -784,6 +843,8 @@ class InstanceTrainer:
 
     def run(self, *, stop_after=None):
         cfg = self.config[self.stage]
+        evaluation_steps = frozenset(scheduled_evaluation_steps(cfg))
+        save_every = checkpoint_interval(cfg)
         end = int(cfg['steps'])
         if stop_after is not None:
             if int(stop_after) < self.step:
@@ -796,10 +857,10 @@ class InstanceTrainer:
             with (self.run_dir/'training.jsonl').open('a') as stream:
                 stream.write(json.dumps(record, allow_nan=False) + '\n')
             print(json.dumps(record, allow_nan=False), flush=True)
-            if self.step % int(cfg['evaluate_every']) == 0 or self.step == int(cfg['steps']):
+            if self.step in evaluation_steps:
                 self.evaluate()
                 self.save()
-            elif self.step % int(cfg.get('checkpoint_every', cfg['evaluate_every'])) == 0:
+            elif self.step % save_every == 0:
                 self.save()
         self.save()
         summary = {'completed_steps': self.step, 'planned_steps': int(cfg['steps']),

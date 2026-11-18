@@ -8,6 +8,12 @@
 
 先核对checkpoint的架构、normal/sampler、质量及ranking身份，再检查query p/n、几何支持与模型输出有限性。错误身份或非有限评分必须记录原因；不对全invalid数组强行argmax。Fq缺失本身不是几何无效，合法raw几何仍可评分。
 
+`query_valid`先于逐query法向归一化处理：只有为True的槽位才检查p/n数值、归一化法向并传给`score_at_pose`。标为False的padding可含零法向等占位值，不进入评分，按原`query_id`记入`rejected_queries`，原因为`ineligible_query`。过滤后的局部行号始终映射回原输入，所选`query_id`、`source_point_id`及对应支持诊断保持对齐；不会将压缩后的行号作为新query身份。有效槽位的非法数值、错形状或非有限模型评分仍会显式报错，不能伪装成合法空实例。
+
+输入结构检查通过后，实例支撑点数不足`model.min_support_points`（默认100）优先返回`status=no_pose, reason=insufficient_support`，即使候选数为0或全部`query_valid=False`也使用同一实例原因。支撑足够但没有有效query时才返回`reason=no_eligible_queries`；逐query拒绝原因仍分别保留，未使用占位法向构造伪姿态。
+
+推理与源/目标评价共用逐模块模式恢复：进入前保存每个模块的`.training`，评分期间设eval，正常返回或异常退出后直接恢复各自原值。根模块为train而BN等子模块为eval的组合不变，微调冻结BN不依赖下一训练步重新修复。
+
 | 模型阶段 | 主排序分数 | 保存的附加分数 |
 |---|---|---|
 | 源域预训练，尚未完成任务适配 | q_inst | Seal、Wrench、ell、支持诊断 |
@@ -68,7 +74,7 @@ T_base_tcp = T_base_cam @ T_cam_contact @ T_contact_tcp
 
 ## 6. 验收与当前可运行范围
 
-现有 `geometry_contract.py selftest`覆盖基础SE(3)数学；共同生产后处理已实现，相关原生推理/评价测试核验：分阶段排序身份正确；同分顺序稳定；NMS严格边界及有向轴正确；Top5/无输出行为明确；返回p/n与实际评分数组逐元素一致；相机/TCP变换可回读；错误候选和历史动作分别记账。延迟统计计入候选过滤、NMS和序列化边界，见[实验方案](EXPERIMENT_PLAN.md)。
+现有 `geometry_contract.py selftest`覆盖基础SE(3)数学；共同生产后处理已实现，相关原生推理/评价测试核验：分阶段排序身份正确；同分顺序稳定；NMS严格边界及有向轴正确；Top5/无输出行为明确；返回p/n与实际评分数组逐元素一致；相机/TCP变换可回读；错误候选和历史动作分别记账。还覆盖零法向无效槽位过滤后的原ID/诊断对齐、支撑不足原因优先级，以及正常/异常退出时逐模块模式保持。延迟统计计入候选过滤、NMS和序列化边界，见[实验方案](EXPERIMENT_PLAN.md)。
 
 ## 7. 公开比较导出与半径评价：待定
 
@@ -103,4 +109,6 @@ python scripts/evaluate_instance.py --checkpoint /data/runs/a_target/best.pt --m
 
 源评价要求完整最多256候选的精确姿态标签；train缓存默认前128标签不能直接充当完整候选评价缓存。source partial检查须显式 `--allow-partial-manifests` 并记录其非正式身份。目标评价要求finetune checkpoint，不能用随机task头冒充概率模型。报告保存checkpoint选模来源、数据身份、完整分母/排除原因和 `public_evaluation.status=deferred`，这些命令不计算论文表中的公开AP。
 
-A加载仍需固定外部SpConv代码与兼容运行环境；`--backbone-root` 可显式指定外部源码位置，blob身份不变。CPU注入backbone仅限单元测试，不由这些CLI自动启用。
+A加载仍需固定外部SpConv代码与兼容运行环境；`--backbone-root`可显式指定新的外部源码挂载位置，固定Git blob身份不变。`infer_instance.py`和`evaluate_instance.py`均可附加正整数`--query-chunk-size 16`等执行覆盖，映射到A的`model.query_chunk_size`；不指定时使用checkpoint原值，构造器默认32。该选项与`train_instance.py`同名，只改变查询分块，不改变候选池或权重结构。
+
+加载先核验checkpoint已有`config_definition`与其保存配置自洽，以及路线/阶段、质量、预处理和选模身份，再在副本上应用允许的路径/chunk覆盖，最后以`strict=True`加载权重。原checkpoint配置不改写，输出`model_compatibility`分别保存`semantic_model`、`checkpoint_execution`和`runtime_execution`。微调初始化的结构、几何、BN语义严格匹配与普通resume完整配置检查见[训练方案](TRAINING_PLAN.md)；推理覆盖不放宽resume。A训练若`backbone_root`仍为null且未提供CLI路径，会在读manifest前报错；推理时应提供本机可用的固定骨干路径。CPU注入backbone仅限单元测试，不由这些CLI自动启用。

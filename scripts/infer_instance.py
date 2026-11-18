@@ -52,6 +52,8 @@ def main(argv=None):
     parser.add_argument('--output', required=True, type=Path, help='Atomic JSON report with all instance Top-K predictions')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--backbone-root', type=Path, help='Relocated pinned SpConv source for route A only')
+    parser.add_argument('--query-chunk-size', type=int,
+                        help='Override query batching only: A query_chunk_size / B query_chunk')
     parser.add_argument('--ranking', choices=['auto', 'quality', 'task', 'mixed'], default='auto',
                         help='auto: source q_inst; finetuned task probability')
     parser.add_argument('--alpha', type=float, help='Only for mixed: P_task * max(q_inst,1e-6)^alpha; default .5')
@@ -81,9 +83,14 @@ def main(argv=None):
         parser.error('--max-instances must be positive')
     if not 1 <= args.top_k <= 256:
         parser.error('--top-k must be in [1,256]')
+    if args.query_chunk_size is not None and args.query_chunk_size < 1:
+        parser.error('--query-chunk-size must be positive')
 
+    runtime_options = {'backbone_root': args.backbone_root}
+    if args.query_chunk_size is not None:
+        runtime_options['query_chunk_size'] = args.query_chunk_size
     model, checkpoint = load_instance_checkpoint(args.checkpoint, device=args.device,
-                                                 backbone_root=args.backbone_root)
+                                                 **runtime_options)
     ranking, alpha = resolve_ranking(checkpoint['stage'], args.ranking, args.alpha)
     if args.manifest:
         dataset = InstanceDataset(args.manifest, split=args.split, require_labels=False)

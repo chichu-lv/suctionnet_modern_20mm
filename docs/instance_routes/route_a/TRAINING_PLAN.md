@@ -36,9 +36,11 @@ source train为scene 0–99全部100场景、frame 0–255，模型从头初始�
 | 优化器 | AdamW，betas(.9,.999)、eps1e-8、weight_decay .01 |
 | 学习率 | peak3e-4，前438个成功更新线性warmup，之后cosine至1e-5 |
 | 精度 | 网络FP32；从原数据构造float64接触几何与边界判定，冻结teacher保留原算术 |
-| 选模评价 | 每1750个成功更新，1750至8750共5次；每次完整source test，不抽帧 |
+| 选模评价 | `pretrain.evaluation_steps: [4375, 8750]`；预算50%和100%处共2次，每次完整source test，不抽帧 |
 | 选模 | scene-macro InstTop1_INST20@0.4最大，再按所选Q_inst宏平均最大，仍平局选更早步 |
-| 保存 | test-selected best.pt；每875成功步保存last.pt，最终步记录预算完成；完整状态 |
+| 保存 | test-selected best.pt；`pretrain.checkpoint_every: 875`，每875成功步保存last.pt，最终步记录预算完成；完整状态 |
+
+完整test评价与恢复checkpoint保存使用独立节奏：保存last不触发额外评价，默认源阶段只在上述两个成功步比较best；微调仍每100成功步评价并保存。若另设源评价节点，`evaluation_steps`须为预算内严格递增的正整数列表，不能与`evaluate_every`同时配置；训练器始终将原预算终点纳入评价。节点和保存间隔进入运行配置，严格resume时保持一致。
 
 训练与回放的raw支持、主干点采用同一实例级RGB变换：brightness/contrast/saturation=.2、hue=.05、灰度概率.2；mean/std依预处理合同。首版不做几何缩放。验证保持固定实例/query顺序和归一化。
 
@@ -56,7 +58,7 @@ best及其source test成绩标记 `selection_role=test_selected`、`independent_
 
 ## 4. 1000步目标域微调
 
-从同身份源域best初始化新的task适配。每次成功更新抽2个target实例观测和2个source实例观测；target按train观测均匀，不默认按成败1:1重采样。每观测若有多条有效历史动作，先在观测内平均其BCE：
+从同路线、同模型语义配置的源域best初始化新的task适配，允许的执行参数变化见第6节。每次成功更新抽2个target实例观测和2个source实例观测；target按train观测均匀，不默认按成败1:1重采样。每观测若有多条有效历史动作，先在观测内平均其BCE：
 
 ```text
 Lt(obs) = mean(BCEWithLogits(score_at_pose(p_plan,n_plan).task_logit, outcome))
@@ -87,6 +89,10 @@ Lft = (Lt1 + Lt2)/2 + 0.5*(Ls1 + Ls2)/2
 
 checkpoint保存架构/12通道/531融合/谐波与singleton BN配置，normal/sampler/precision，query/label数组对齐合同，物理self/INST与已知physics，RGB归一化与ranking，模型/优化器、成功步和成功/消费暴露数、完整参数组成员、sampler/RNG、源/目标manifest路径与采样ID序列，以及完整config_definition/显式runtime_contract。旧校验和字段忽略；不计算文件或数组校验和。physics缺失记null，不伪称来源已知；模型、配置、已知物理与预处理不符仍拒绝恢复。
 
+**微调初始化与同一次运行的resume分开检查。** `--init-checkpoint`先验证源checkpoint本身的配置与已有`identity.config_definition`自洽，再比较源/目标的模型语义。A的`model`配置仅允许`backbone_root`和`query_chunk_size`不同：前者是机器挂载路径，后者是查询分块大小。`backbone_points`、`min_support_points`、`backbone_coordinate_fastpath`、`singleton_bn_policy`及其他语义参数继续严格匹配；路线、质量、数据/teacher合同和权重也继续检查，`state_dict`使用`strict=True`。不能先覆盖路径或chunk再掩盖源checkpoint内部的矛盾。
+
+初始化记录中的`model_compatibility`保存`semantic_model`、`source_execution`和`target_execution`，使原路径/分块与新运行的实际执行选项都可回读。路线B对应的唯一分块字段是`query_chunk`，其phase配置仍属于模型语义；两条路线之间不能交叉初始化。普通`--resume`仍要求完整运行配置一致，包含路径、chunk、评价节点及保存间隔，并恢复优化器/采样/RNG；不能将微调初始化的执行字段例外用于同一次运行的resume。
+
 短链路必须证明：物理/任务loss实际反向且相应目标可下降；保存恢复后的下一批实例/query、学习率和采样RNG一致；第201步参数组正确、head moments保留；无监督项不伪装成功曝光；BN冻结真实生效。完成后才运行正式8750/1000步预算，不用旧迁移白名单绕过身份错误。
 
 ## 7. 可执行命令与运行产物
@@ -98,7 +104,9 @@ python scripts/setup_backbone.py --output /data/backbones/graspness_modern
 python scripts/train_instance.py --config configs/instance_a.yaml --stage pretrain --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --selection-manifest /data/instance_v3/test/manifest_test.jsonl --run-dir /data/runs/a_source100 --device cuda
 ```
 
-以上路径须替换为真实目录。也可在runtime YAML中设置 `model.backbone_root`，CLI覆盖值会进入运行配置身份。wrapper默认8通道保留旧E5，A显式传12，从头初始化；首轮不传 `--init-checkpoint` 或目标数据。CPU单元测试的注入backbone不能由CLI自动替换真实SpConv，也不能用这些单元测试生成可发布的A训练结果。
+以上路径须替换为真实目录。也可在runtime YAML中设置 `model.backbone_root`，CLI覆盖值会进入运行配置身份。如果配置仍为`null`且未给`--backbone-root`，训练CLI会在读取任何manifest前报错；不会猜测外部代码位置。wrapper默认8通道保留旧E5，A显式传12，从头初始化；首轮不传 `--init-checkpoint` 或目标数据。CPU单元测试的注入backbone不能由CLI自动替换真实SpConv，也不能用这些单元测试生成可发布的A训练结果。
+
+`train_instance.py`、`infer_instance.py`、`evaluate_instance.py`均支持正整数`--query-chunk-size`。对A它覆盖`model.query_chunk_size`，默认32，例如附加`--query-chunk-size 16`可减小一次处理的query块。微调初始化和独立推理/评价可使用不同于源checkpoint的分块；这不是修改候选池或监督query数。训练时覆盖值写入新运行配置，后续`--resume`必须复用该值。跨容器微调可同时用`--backbone-root`指定新挂载位置，但固定上游骨干代码身份仍须满足；不同设备/分块的浮点逐位一致性不由此保证。
 
 需要暂停后恢复时，使用以下两条命令代替一次性完整执行，保持相同8750步预算、配置、路径和数据身份：
 

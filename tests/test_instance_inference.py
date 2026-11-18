@@ -148,7 +148,7 @@ def test_top_five_ties_and_valid_empty_instances():
     empty_model = FixedScorer()
     empty = infer_instance(empty_model, observation(0, support=0), stage='pretrain')
     assert empty['status'] == 'no_pose' and empty['poses'] == [] and empty_model.encode_calls == 0
-    assert empty['reason'] == 'no_eligible_queries'
+    assert empty['reason'] == 'insufficient_support'
     unsupported = infer_instance(FixedScorer(valid=[False, False]), observation(2, support=20), stage='pretrain')
     assert unsupported['status'] == 'no_pose' and unsupported['reason'] == 'insufficient_support'
     assert unsupported['rejection_counts'] == {'insufficient_support': 2}
@@ -177,6 +177,132 @@ def test_malformed_outputs_raise_instead_of_becoming_empty(override, match):
     if match == 'nonfinite':
         with pytest.raises(ValueError, match=match):
             infer_instance(FixedScorer(valid=[False, False], output_override=override), observation(2), stage='pretrain')
+
+
+def test_ineligible_placeholder_queries_are_filtered_without_renumbering():
+    obs = observation(5)
+    obs['query_valid'] = np.array([True, False, True, False, True])
+    obs['query_ids'] = np.array([21, 9, 7, 13, 4])
+    obs['query_source_ids'] = np.array([200, 210, 220, 230, 240])
+    obs['query_normals'][1] = 0
+    obs['query_normals'][3] = np.nan
+    obs['query_points'][1] = 0
+    obs['query_points'][3] = np.nan
+    options = {'scores': [.5, .5, .9], 'output_override': {
+        'region_counts': torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
+        'diagnostics': {'support_summary': torch.tensor([[.1], [.2], [.3]])}}}
+    model = FixedScorer(**options)
+    result = infer_instance(model, obs, stage='pretrain')
+    np.testing.assert_array_equal(model.last_points, obs['query_points'][obs['query_valid']])
+    np.testing.assert_array_equal(model.last_normals, obs['query_normals'][obs['query_valid']])
+    assert model.encode_calls == 1
+    assert [row['query_id'] for row in result['poses']] == [4, 7, 21]
+    assert [row['source_point_id'] for row in result['poses']] == [240, 220, 200]
+    assert [row['support']['region_counts'] for row in result['poses']] == [[7, 8, 9], [4, 5, 6], [1, 2, 3]]
+    assert [row['pose_id'] for row in result['poses']] == ['test-object:q4', 'test-object:q7', 'test-object:q21']
+    assert result['rejected_queries'] == [
+        {'query_id': 9, 'reason': 'ineligible_query'}, {'query_id': 13, 'reason': 'ineligible_query'}]
+    assert result['counts'] == {'input_queries': 5, 'eligible_queries': 3, 'geometry_valid_queries': 3,
+                                'before_nms': 3, 'after_nms': 3, 'returned': 3}
+    compact = dict(obs)
+    for key in ('query_points', 'query_normals', 'query_ids', 'query_source_ids', 'query_valid'):
+        compact[key] = obs[key][obs['query_valid']]
+    assert infer_instance(FixedScorer(**options), compact, stage='pretrain')['poses'] == result['poses']
+    json.dumps(result, allow_nan=False)
+
+
+def test_model_rejections_remain_aligned_after_filtering_input_slots():
+    obs = observation(4)
+    obs['query_valid'] = np.array([False, True, False, True])
+    obs['query_normals'][~obs['query_valid']] = 0
+    result = infer_instance(FixedScorer(valid=[False, True], output_override={'reason': ['no_anchor', 'ok']}),
+                            obs, stage='pretrain')
+    assert result['rejected_queries'] == [
+        {'query_id': 0, 'reason': 'ineligible_query'}, {'query_id': 1, 'reason': 'no_anchor'},
+        {'query_id': 2, 'reason': 'ineligible_query'}]
+    assert result['poses'][0]['query_id'] == 3 and result['poses'][0]['source_point_id'] == 1003
+    assert result['counts']['geometry_valid_queries'] == 1
+
+
+@pytest.mark.parametrize('field,value,match', [
+    ('query_normals', [0., 0., 0.], 'nonzero'),
+    ('query_normals', [np.nan, 0., -1.], 'finite'),
+    ('query_points', [np.nan, 0., .6], 'finite'),
+])
+def test_eligible_queries_still_reject_invalid_geometry(field, value, match):
+    obs = observation(2)
+    obs['query_valid'] = np.array([False, True])
+    obs['query_normals'][0] = 0
+    obs[field][1] = value
+    model = FixedScorer()
+    with pytest.raises(ValueError, match=match):
+        infer_instance(model, obs, stage='pretrain')
+    assert model.encode_calls == 0
+
+
+@pytest.mark.parametrize('count,any_valid', [(0, False), (1, False), (1, True), (3, False)])
+def test_insufficient_support_precedes_absent_or_ineligible_queries(count, any_valid):
+    obs = observation(count, support=20)
+    obs['query_valid'][:] = any_valid
+    obs['query_normals'][~obs['query_valid']] = 0
+    model = FixedScorer()
+    model.min_support_points = 21
+    result = infer_instance(model, obs, stage='pretrain')
+    assert result['reason'] == 'insufficient_support' and result['status'] == 'no_pose'
+    assert model.encode_calls == 0 and result['counts']['input_queries'] == count
+    assert len(result['rejected_queries']) == count
+
+
+@pytest.mark.parametrize('count', [0, 3])
+def test_supported_instance_with_no_eligible_queries_reports_each_rejection(count):
+    obs = observation(count)
+    obs['query_valid'][:] = False
+    obs['query_normals'][:] = np.nan
+    model = FixedScorer()
+    result = infer_instance(model, obs, stage='pretrain')
+    assert result['reason'] == 'no_eligible_queries' and model.encode_calls == 0
+    assert result['rejected_queries'] == [
+        {'query_id': i, 'reason': 'ineligible_query'} for i in range(count)]
+    assert result['rejection_counts'] == ({'ineligible_query': count} if count else {})
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize('failure_stage', [None, 'encode', 'score'])
+def test_inference_restores_mixed_module_modes_and_frozen_bn(failure_stage):
+    class ModeScorer(FixedScorer):
+        def __init__(self):
+            super().__init__()
+            self.features = nn.Sequential(nn.BatchNorm1d(3), nn.Dropout(.25))
+
+        def encode_instance(self, obs):
+            assert not any(module.training for module in self.modules())
+            if failure_stage == 'encode':
+                raise RuntimeError('intentional encode failure')
+            return super().encode_instance(obs)
+
+        def score_at_pose(self, encoded, p, n):
+            assert not any(module.training for module in self.modules())
+            self.features(torch.as_tensor(p, dtype=torch.float32))
+            if failure_stage == 'score':
+                raise RuntimeError('intentional score failure')
+            return super().score_at_pose(encoded, p, n)
+
+    model = ModeScorer()
+    model.train()
+    model.features.eval()
+    model.features[1].train()  # A deliberately mixed descendant state.
+    before_modes = {name: module.training for name, module in model.named_modules()}
+    before_buffers = {name: tensor.clone() for name, tensor in model.features[0].named_buffers()}
+    if failure_stage is None:
+        infer_instance(model, observation(), stage='finetune')
+    else:
+        with pytest.raises(RuntimeError, match=f'intentional {failure_stage} failure'):
+            infer_instance(model, observation(), stage='finetune')
+    assert {name: module.training for name, module in model.named_modules()} == before_modes
+    # No trainer phase reset is needed before a caller immediately reuses BN.
+    model.features(torch.ones((3, 3)))
+    for name, tensor in model.features[0].named_buffers():
+        assert torch.equal(tensor, before_buffers[name])
 
 
 def checkpoint_state(model, *, route='a', stage='pretrain'):

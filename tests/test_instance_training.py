@@ -10,7 +10,7 @@ from torch import nn
 
 from suction20.instance_training import (InstanceSchedule, InstanceTrainer,
     aggregate_instance_rows, check_source_splits, evaluate_instance_source, evaluate_instance_attempts,
-    load_instance_config, seed_all, source_loss)
+    load_instance_config, scheduled_evaluation_steps, seed_all, source_loss)
 
 
 class TinyInstanceModel(nn.Module):
@@ -139,6 +139,8 @@ def test_runtime_config_100_train_test_selected_deferred(tmp_path):
             c = load_instance_config(path)
             assert c['pretrain']['train_scene_range'] == [0, 99]
             assert c['pretrain']['selection_split'] == 'test'
+            assert scheduled_evaluation_steps(c['pretrain']) == (4375, 8750)
+            assert c['pretrain']['checkpoint_every'] == 875
             assert c['public_evaluation']['status'] == 'deferred'
     invalid = config(); invalid['pretrain']['selection_split'] = 'val'
     path = tmp_path/'invalid.json'; path.write_text(json.dumps(invalid))
@@ -159,6 +161,52 @@ def test_sampler_exact_resume_and_no_test_in_train():
     assert check_source_splits(MemorySource(), 'train', allow_partial=True)['scenes'] == 3
     with pytest.raises(ValueError, match='another split'):
         check_source_splits(MemorySource('test'), 'train', allow_partial=True)
+
+
+@pytest.mark.parametrize('nodes', [[3, 2], [2, 2], [0], [5], [True], [1.5], '2,4'])
+def test_invalid_explicit_evaluation_schedule_rejected(nodes):
+    with pytest.raises(ValueError, match='evaluation_steps'):
+        scheduled_evaluation_steps({'steps': 4, 'evaluation_steps': nodes})
+
+
+def test_evaluation_schedule_has_one_mode_and_keeps_budget_endpoint():
+    assert scheduled_evaluation_steps({'steps': 4, 'evaluation_steps': [2]}) == (2, 4)
+    assert scheduled_evaluation_steps({'steps': 4, 'evaluation_steps': []}) == (4,)
+    assert scheduled_evaluation_steps({'steps': 5, 'evaluate_every': 2}) == (2, 4, 5)
+    with pytest.raises(ValueError, match='not both'):
+        scheduled_evaluation_steps({'steps': 4, 'evaluation_steps': [2], 'evaluate_every': 2})
+
+
+def test_sparse_full_selection_schedule_survives_pause_and_resume(tmp_path):
+    cfg = config()
+    cfg['pretrain'].pop('evaluate_every')
+    cfg['pretrain'].update(steps=4, evaluation_steps=[2], checkpoint_every=1)
+    def make(path):
+        return InstanceTrainer(TinyInstanceModel(), cfg, MemorySource(), MemorySource('test'),
+                               path, allow_partial=True)
+    seed_all(91)
+    full = make(tmp_path/'full')
+    full.run()
+    seed_all(91)
+    part = make(tmp_path/'part')
+    part.run(stop_after=1)
+    assert not list((tmp_path/'part').glob('evaluation_step*.json'))
+    resumed = make(tmp_path/'resumed')
+    resumed.resume(tmp_path/'part/last.pt')
+    resumed.run()
+    assert_nested_equal(full.model.state_dict(), resumed.model.state_dict())
+    assert_nested_equal(full.optimizer.state_dict(), resumed.optimizer.state_dict())
+    assert_nested_equal(full.best, resumed.best)
+    for directory in ('full', 'resumed'):
+        reports = sorted((tmp_path/directory).glob('evaluation_step*.json'))
+        assert [p.name for p in reports] == ['evaluation_step000002.json', 'evaluation_step000004.json']
+        for path in reports:
+            report = json.loads(path.read_text())
+            assert report['metrics']['instance_count'] == len(full.selection)
+            assert report['policy']['evaluation_steps'] == [2, 4]
+            assert report['timing']['observations'] == len(full.selection)
+            assert report['timing']['wall_seconds'] >= 0
+    assert full.step == resumed.step == 4 and full.supervised_source_instances == 8
 
 
 def test_frame_scene_macro_keeps_no_pose():

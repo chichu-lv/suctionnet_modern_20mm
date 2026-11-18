@@ -232,9 +232,48 @@ q_inst = q_sw*(NOT C_self)
 
 ## 6. 缓存预算与身份
 
-当前builder按所选scene/frame范围构建固定 `(instance_uid,p,n)` 缓存，默认每训练实例128个标签；重复instance draw复用相同缓存，训练调度器的实际语义ID序列及RNG状态保存在checkpoint。按需异步缓存仍属于后续优化。已实现 `--workers N` 的scene分片多进程构建：每进程使用独立 `shards/part_XXXX` 输出目录，完成后由 `merge_source_manifests` 合并。训练默认128标签、test完整最多256；正式trainer仍要求完整100场景训练清单和90场景选择清单。
+当前builder按所选scene/frame范围构建固定 `(instance_uid,p,n)` 缓存，默认每训练实例128个标签；重复instance draw复用相同缓存，训练调度器的实际语义ID序列及RNG状态保存在checkpoint。按需异步缓存仍属于后续优化。训练默认128标签、test完整最多256；正式trainer仍要求完整100场景训练清单和90场景选择清单。
 
-外部分片可用 `scripts/merge_instance_manifests.py --manifests ... --output ... --split train|test` 合并；它重定位相对NPZ路径，核对真实文件存在、场景/帧声明、实例唯一性、已知physics及所有 `empty_gt_frames`，拒绝重叠、漏帧和跨split。默认只接受完整split。`--allow-partial` 只为显式成本/接线分片生成不完整汇总，训练时另须 `--allow-partial-manifests`，不能把这类输出登记为完整训练或选模集。[完整命令](IMPLEMENTATION.md#2-构建共同source缓存)
+### 6.1 独立输出目录和可执行合并
+
+未传 `--scenes` 和 `--frames` 时，完整构建仍把最终 `manifest_train.jsonl` 或 `manifest_test.jsonl` 发布到指定 `--output` 根目录。**显式传入其中任一参数时，自动改为独立目录**：
+
+```text
+<output>/shards/<camera>/<split>/scenes_<所选场景范围>/frames_<所选帧范围>/manifest_<split>.jsonl
+```
+
+实际ID排序、去重并压缩为四位数字范围。例如 `--output /data/instance_v3 --split train --scenes 0-49` 对应 `/data/instance_v3/shards/realsense/train/scenes_0000-0049/frames_0000-0255/manifest_train.jsonl`；`--scenes 0-1 --frames 0,8` 对应 `scenes_0000-0001/frames_0000_0008/`。即使显式列出全部ID，也不会退回输出根。长而稀疏的选择拆为多级目录，使单级路径长度保持有界；名称直接表达选择范围，不使用内容摘要。
+
+同一 `--output` 下不同显式请求的观测、标签、manifest和summary均写入各自目录。以下四个构建命令可串行运行，也可在不同终端并行运行；对应split的两次构建都成功后再合并。变量须替换为真实官方资产目录：
+
+```bash
+DATASET=/data/SuctionNet
+R20_LABELS=/data/suction20_r20
+CACHE=/data/instance_v3
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split train --camera realsense --scenes 0-49
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split train --camera realsense --scenes 50-99
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split test --camera realsense --scenes 100-144
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE" --split test --camera realsense --scenes 145-189
+
+python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/train/scenes_0000-0049/frames_0000-0255/manifest_train.jsonl" "$CACHE/shards/realsense/train/scenes_0050-0099/frames_0000-0255/manifest_train.jsonl" --output "$CACHE/train" --split train
+python scripts/merge_instance_manifests.py --manifests "$CACHE/shards/realsense/test/scenes_0100-0144/frames_0000-0255/manifest_test.jsonl" "$CACHE/shards/realsense/test/scenes_0145-0189/frames_0000-0255/manifest_test.jsonl" --output "$CACHE/test" --split test
+```
+
+最终消费路径为 `$CACHE/train/manifest_train.jsonl` 和 `$CACHE/test/manifest_test.jsonl`；前者覆盖0–99全部100场景，后者覆盖100–189全部90场景，均为每场景0–255帧。builder和merger的stdout JSON均以 `manifest` 字段返回**实际清单的绝对路径**，自动化应读取该字段；磁盘summary中的同名字段仍是相邻清单的文件名。
+
+`--workers N` 自动按scene分派独立进程，要求 `--split train` 或 `--split test`。最终输出位置仍遵守上述显式选择规则；每个worker在最终目录的 `shards/part_XXXX/` 下再写自己的scene/frame专属目录，最后自动合并到最终目录。不要硬编码worker内部的manifest路径，使用自动合并返回的清单。没有显式scene/frame选择时，完整自动构建仍发布 `--output/manifest_<split>.jsonl`；[A数据准备](route_a/DATA_PREPARATION.md#71-完整自动分片构建)和[B数据准备](route_b/DATA_PREPARATION.md#71-完整自动分片构建)提供这套替代命令。
+
+### 6.2 并发、发布保护和旧布局
+
+公共builder及merger对实际发布目录持有Linux排他文件锁；自动多进程构建在启动worker前先锁定最终目录，直到合并结束。相同目录有其他写入进程时立即失败，不先写NPZ；不同显式选择互不争抢清单或NPZ。锁在正常退出或异常时释放，锁文件保留同一inode，不应在运行期间删除。
+
+manifest和summary使用不同的唯一临时文件分别原子替换，manifest最后发布。替换已有清单前要求其coverage summary存在，且相机、split一致，新的scene/frame集合覆盖已有集合；不允许把已发布完整清单缩减成部分分片，也不允许同名清单换相机或split。需要不同配置或更小覆盖时使用另一个输出目录。
+
+合并器重定位相对NPZ路径，核对真实文件存在、场景/帧声明、实例唯一性、已知physics及所有 `empty_gt_frames`，拒绝重叠、漏帧、跨split/相机和已知配置冲突。默认只接受完整split。`--allow-partial` 只为显式成本/接线分片生成不完整汇总，训练时另须 `--allow-partial-manifests`，不能把这类输出登记为完整训练或选模集。
+
+旧布局的缓存与清单不自动搬迁，仍按原路径读取或作为merger输入。新显式请求只在自己的新目录查找可复用缓存，不自动发现或复制旧根目录的NPZ。merger也不移动源NPZ，合并后须保留其相对路径引用的分片资产；新子集构建不修改输出根原有完整清单。上述保护不扫描文件字节生成摘要，已有schema、实际数组、姿态/标签及已知配置检查保持不变。
+
+### 6.3 成本与缓存身份
 
 首次真实资产接入时，先在约 64–128 个覆盖不同实例尺寸与 dense 点数的样本上测量：加载时间、Seal 秒/query、self-envelope 时间、秒/instance、缓存大小和命中率。然后按实际不同实例及查询数估计总成本。该数量是成本剖析样本，不是收敛证明或新的性能结果；不能直接许诺几小时重算或训练。
 

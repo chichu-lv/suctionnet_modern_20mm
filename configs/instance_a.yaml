@@ -20,7 +20,7 @@ pretrain:
   peak_lr: 0.0003
   final_lr: 0.00001
   warmup_steps: 438
-  evaluate_every: 1750
+  evaluation_steps: [4375, 8750]
   evaluation_records: best_and_final
   checkpoint_every: 875
 finetune:
