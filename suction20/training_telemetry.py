@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timezone
-import hashlib
 import io
 import json
 import math
 import os
 from pathlib import Path
+from .pretrain_runtime import file_metadata
+from .metadata import without_legacy_checksums
 import shutil
 import socket
 import subprocess
@@ -200,7 +201,7 @@ class ResourceSampler:
 def _json(raw):
     def reject(value):
         raise ValueError(f"Nonfinite JSON value: {value}")
-    return json.loads(raw, parse_constant=reject, parse_float=_number)
+    return without_legacy_checksums(json.loads(raw, parse_constant=reject, parse_float=_number))
 
 
 def _safe_path(root, name):
@@ -208,22 +209,6 @@ def _safe_path(root, name):
     if not path.is_relative_to(root) or path == root:
         raise ValueError(f"Analysis reference outside run directory: {name}")
     return path
-
-
-def _sha(path, length=None):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        remaining = length
-        while remaining is None or remaining:
-            block = stream.read(1024 * 1024 if remaining is None else min(remaining, 1024 * 1024))
-            if not block:
-                if remaining:
-                    raise ValueError(f"Truncated source: {path}")
-                break
-            digest.update(block)
-            if remaining is not None:
-                remaining -= len(block)
-    return digest.hexdigest()
 
 
 def _flatten(value, prefix=""):
@@ -313,7 +298,8 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
     the rollback. A caller-designated live attempt is a label, not liveness proof.
     Existing output directories are refused; all inputs are read-only snapshots.
     Manifest analysis metadata is trusted as the run's publication authority;
-    checkpoint bytes and all committed log/result references are hash-verified.
+    file sizes, committed prefixes, schema and transaction identities are checked;
+    contents are never checksummed and equal-length edits are not detected.
     """
     root, output = Path(run_dir).resolve(), Path(output_dir).resolve()
     if checkpoint_role not in ("current", "predecessor", "best"):
@@ -333,10 +319,9 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
             raw = stream.read(size)
         if len(raw) != size:
             raise ValueError(f"Truncated {role}: {path}")
-        digest = hashlib.sha256(raw).hexdigest()
-        if expected is not None and digest != expected:
-            raise ValueError(f"{role} checksum mismatch: {path}")
-        sources.append(dict(path=str(path), role=role, size_bytes=size, sha256=digest))
+        if expected is not None and expected != {"size_bytes": size}:
+            raise ValueError(f"{role} size metadata mismatch: {path}")
+        sources.append(dict(path=str(path), role=role, size_bytes=size))
         return raw
 
     manifest_raw = snapshot(root / "checkpoint-manifest.json", "checkpoint_manifest")
@@ -347,9 +332,9 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
     if not isinstance(entry, dict):
         raise ValueError(f"No {checkpoint_role} checkpoint")
     checkpoint = _safe_path(root, entry["path"])
-    if checkpoint.stat().st_size != entry["size_bytes"] or _sha(checkpoint) != entry["sha256"]:
-        raise ValueError("Checkpoint checksum mismatch; select a verified predecessor explicitly if needed")
-    sources.append(dict(path=str(checkpoint), role="checkpoint", size_bytes=entry["size_bytes"], sha256=entry["sha256"]))
+    if checkpoint.stat().st_size != entry["size_bytes"]:
+        raise ValueError("Checkpoint size mismatch; select a valid predecessor explicitly if needed")
+    sources.append(dict(path=str(checkpoint), role="checkpoint", size_bytes=entry["size_bytes"], generation=entry.get("generation")))
     analysis = entry.get("analysis")
     if not isinstance(analysis, dict) or analysis.get("schema_version") != 1:
         raise ValueError("Checkpoint lacks supported analysis metadata; raw logs cannot establish accepted progress")
@@ -396,7 +381,7 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         if path in ends:
             raise ValueError("Repeated lineage segment would count updates twice")
         end = segment["end_offset"]
-        raw = snapshot(path, "committed_update_prefix", end, segment["sha256"])
+        raw = snapshot(path, "committed_update_prefix", end, segment.get("file_metadata"))
         rows = parse_rows(raw, path, "committed")
         for row in rows:
             attempts += 1
@@ -431,8 +416,8 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         if key in derived_counters and value != derived_counters[key]:
             raise ValueError(f"Checkpoint {key} differs from log-derived counter")
 
-    # Explicit abandoned tails survive resume. Their full-file prefix hashes bind
-    # the old bytes; never infer acceptance merely from successful step numbers.
+    # Explicit abandoned tails retain their recorded offsets across resume;
+    # never infer acceptance merely from successful step numbers.
     abandoned = {}
     for path in sorted((root / "attempts").glob("*/identity.json")):
         path = _safe_path(root, path)
@@ -442,7 +427,7 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
             lo, hi = tail["start_offset"], tail["end_offset"]
             if type(lo) is not int or type(hi) is not int or lo < 0 or hi < lo:
                 raise ValueError("Invalid abandoned tail interval")
-            snapshot(old, "abandoned_prefix", hi, tail["sha256"])
+            snapshot(old, "abandoned_prefix", hi, tail.get("file_metadata"))
             abandoned.setdefault(old, []).append((lo, hi))
     for path in sorted((root / "attempts").glob("*/updates.jsonl")):
         path = path.resolve()
@@ -452,11 +437,6 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         start = ends.get(path, 0)
         if len(raw) < start:
             raise ValueError("Committed log truncated during export")
-        # Recheck the committed bytes in the larger snapshot to detect in-place mutation.
-        for segment in ledger["lineage"]:
-            if _safe_path(root, segment["path"]) == path:
-                if hashlib.sha256(raw[:start]).hexdigest() != segment["sha256"]:
-                    raise ValueError("Committed prefix changed during export")
         offset = start
         for line in raw[start:].splitlines(keepends=True):
             end = offset + len(line)
@@ -481,7 +461,7 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
     validation_rows, validation_summary = [], []
     for key, reference in analysis.get("validations", {}).items():
         path = _safe_path(root, reference["path"])
-        result = _json(snapshot(path, "committed_validation", expected=reference["sha256"]))
+        result = _json(snapshot(path, "committed_validation", expected=reference.get("file_metadata")))
         if result.get("global_step") != int(key) or int(key) > step:
             raise ValueError("Validation step differs from committed reference")
         metrics = result["metrics"]
@@ -497,9 +477,9 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
                 raise ValueError("Duplicate frame in committed validation")
             seen.add(uid)
             validation_rows.append(dict(record, global_step=int(key), classification="committed",
-                                        source_sha256=reference["sha256"], source_path=str(path)))
+                                        source_metadata=reference.get("file_metadata"), source_path=str(path)))
         validation_summary.append(dict(global_step=int(key), frame_count=len(records),
-            source_sha256=reference["sha256"], metrics={k: v for k, v in metrics.items() if k != "frames"}))
+            source_metadata=reference.get("file_metadata"), metrics={k: v for k, v in metrics.items() if k != "frames"}))
     if "completed_validation_nodes" in analysis:
         effective = (analysis.get("budget") or {}).get("effective_batch_size")
         expected_nodes = [dict(step=r["global_step"], frame_count=r["frame_count"],
@@ -530,7 +510,7 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         path = _safe_path(root, segment["path"])
         if path in event_ends or path in ends:
             raise ValueError("Repeated or overlapping event lineage segment")
-        raw = snapshot(path, "committed_event_prefix", segment["end_offset"], segment["sha256"])
+        raw = snapshot(path, "committed_event_prefix", segment["end_offset"], segment.get("file_metadata"))
         event_ends[path] = segment
         for index, line in enumerate(raw.splitlines(keepends=True)):
             if not line.endswith(b"\n"):
@@ -548,8 +528,8 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         raw = snapshot(path, "event_snapshot")
         segment = event_ends.get(path)
         offset = segment["end_offset"] if segment else 0
-        if segment and hashlib.sha256(raw[:offset]).hexdigest() != segment["sha256"]:
-            raise ValueError("Committed event prefix changed during export")
+        if len(raw) < offset:
+            raise ValueError("Committed event prefix truncated during export")
         line_offset = raw[:offset].count(b"\n")
         for index, line in enumerate(raw[offset:].splitlines(keepends=True), start=line_offset):
             end = offset + len(line)
@@ -603,6 +583,7 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
         categories=summaries, validations=validation_summary,
         best=analysis.get("best"), resource_sample_count=len(resource_rows), event_count=len(event_rows), gaps=gaps,
         limitations=["Manifest analysis metadata is publication authority; no checkpoint pickle was loaded.",
+            "File sizes and record structure are checked; same-size byte changes are not detected.",
             "Training-block throughput excludes logging/checkpoint/validation/backup/pause overhead.",
             "Raw tails, event/resource observations and abandoned work never count as committed training progress.",
             "A live attempt label is supplied by the caller and does not prove process liveness.",
@@ -616,12 +597,12 @@ def export_training_logs(run_dir, output_dir, *, checkpoint_role="current", reso
                            ("validation_frames", validation_rows), ("events", event_rows)):
             _csv(temporary / f"{name}.csv", rows)
         (temporary / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n")
-        outputs = [dict(path=p.name, size_bytes=p.stat().st_size, sha256=_sha(p)) for p in sorted(temporary.iterdir())]
+        outputs = [dict(path=p.name, size_bytes=p.stat().st_size) for p in sorted(temporary.iterdir())]
         export_manifest = dict(schema_version="suction20.export.v1", run_dir=str(root),
-            checkpoint_role=checkpoint_role, checkpoint_sha256=entry["sha256"],
-            manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(), live_attempt_id=live_attempt_id,
+            checkpoint_role=checkpoint_role, checkpoint_reference=entry.get("generation", entry["path"]),
+            manifest_metadata={"size_bytes": len(manifest_raw)}, live_attempt_id=live_attempt_id,
             created_utc=datetime.now(timezone.utc).isoformat(), sources=sources, outputs=outputs,
-            exporter_sha256=_sha(Path(__file__)))
+            exporter_metadata=file_metadata(Path(__file__)))
         (temporary / "export-manifest.json").write_text(json.dumps(export_manifest, indent=2, sort_keys=True) + "\n")
         # The destination must not already exist; rename publishes the complete snapshot.
         if output.exists():

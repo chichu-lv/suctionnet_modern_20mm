@@ -22,7 +22,7 @@ validation = pd.read_csv('finetuning/validation_metrics.csv')
 candidates = pd.concat([pd.read_csv(p) for p in sorted(Path('inference/finetuned/candidates').glob('*.csv.gz'))], ignore_index=True)
 ```
 
-JSONL逐行读取；[文件清单与SHA256](FILES.json)用于检查下载完整性。大图像、模型checkpoint、点云、重复NPZ及大体积原始trace/归档包未上传，位置与覆盖范围见[DATA_LOCATIONS.md](DATA_LOCATIONS.md)。本目录不是可脱离外部数据集直接启动训练的完整运行镜像。
+JSONL逐行读取；[历史文件清单](FILES.json)保留当时的路径、大小和摘要元数据；当前不执行其摘要校验。大图像、模型checkpoint、点云、重复NPZ及大体积原始trace/归档包未上传，位置与覆盖范围见[DATA_LOCATIONS.md](DATA_LOCATIONS.md)。本目录不是可脱离外部数据集直接启动训练的完整运行镜像。
 
 ## 指标解释与限制
 

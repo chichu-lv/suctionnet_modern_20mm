@@ -11,7 +11,7 @@ pytest.importorskip('torch')
 from suction20.full_data import DEFAULT_CONFIG
 from suction20.observation import AugmentConfig, poses_to_original_camera
 from suction20.target_dataset import TargetSuction20Dataset, TargetGroupSchedule, collate_target
-from suction20.training import content_digest
+from suction20.training import configuration_identity
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ def test_sparse_independent_masks_zero_quality_and_directed_axes(target_files):
     batch = collate_target([sample])
     assert batch['attempts']['point_cam_m'].shape == (0, 3)
     assert batch['attempts']['feature_point_index'].shape == (0,)
-    assert ds.source_label_config_sha256 == content_digest(cfg)
+    assert ds.source_label_definition == configuration_identity(cfg)
 
 
 def test_missing_components_and_axis_masks_are_false(target_files):
@@ -265,3 +265,15 @@ def test_unlabeled_observation_helper_has_no_supervision_or_label_dependencies(t
     assert len(loaded['inputs']['xyz_cam_m']) == 25
     assert loaded['inputs']['normal_obs_valid'].sum() == 9
     assert loaded['targets'] == {}
+
+
+def test_historical_opaque_sampler_requires_fresh_finetuning(target_files):
+    root, cfg, arrays, obs = target_files
+    ds = TargetSuction20Dataset(manifest(root, [attempt_row(obs, arrays)]), mode='attempt_success',
+                                split='train', source_label_config=cfg, success_definition='pick')
+    sampler = TargetGroupSchedule(ds)
+    historical = sampler.state_dict()
+    historical['identity'].pop('manifest_definition')
+    historical['identity']['manifest_digest'] = 'retired-opaque-id'
+    with pytest.raises(ValueError, match='opaque observation IDs.*fresh finetuning'):
+        sampler.load_state_dict(historical)

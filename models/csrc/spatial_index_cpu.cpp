@@ -17,8 +17,8 @@
 #include <type_traits>
 #include <vector>
 
-#ifndef GRID_SOURCE_SHA256
-#define GRID_SOURCE_SHA256 "unknown"
+#ifndef GRID_SOURCE_VERSION
+#define GRID_SOURCE_VERSION "spatial_index_cpu_v1"
 #endif
 #ifndef GRID_COMPILE_FLAGS
 #define GRID_COMPILE_FLAGS "unknown"
@@ -745,7 +745,7 @@ PyMODINIT_FUNC PyInit__spatial_index_cpu() {
     if (PyModule_AddIntConstant(m, "GRID_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "CONTACT_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "GEOMETRY_FLOAT32_VERSION", 1) < 0 ||
-        PyModule_AddStringConstant(m, "SOURCE_SHA256", GRID_SOURCE_SHA256) < 0 ||
+        PyModule_AddStringConstant(m, "SOURCE_VERSION", GRID_SOURCE_VERSION) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", GRID_COMPILE_FLAGS) < 0 ||
         PyModule_AddStringConstant(m, "LINK_FLAGS", GRID_LINK_FLAGS) < 0 ||
         PyModule_AddStringConstant(m, "COMPILER", __VERSION__) < 0) {

@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +16,7 @@ import re
 import threading
 import time
 import uuid
+from .metadata import without_legacy_checksums
 
 
 def normalize_gpu_uuid(value):
@@ -32,20 +32,17 @@ def fsync_directory(path):
         os.close(descriptor)
 
 
-def file_digest(path, length=None):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        remaining = length
-        while remaining is None or remaining > 0:
-            block = stream.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
-            if not block:
-                if remaining:
-                    raise ValueError(f'Truncated committed file: {path}')
-                break
-            digest.update(block)
-            if remaining is not None:
-                remaining -= len(block)
-    return digest.hexdigest()
+def file_metadata(path, length=None):
+    """Describe size only, without opening or checksumming file contents.
+
+    A committed prefix must still exist. This does not detect same-size edits.
+    """
+    size = Path(path).stat().st_size
+    if length is not None:
+        if type(length) is not int or length < 0 or size < length:
+            raise ValueError(f'Truncated or invalid committed prefix: {path}')
+        size = length
+    return {'size_bytes': size}
 
 
 def atomic_json(path, value):
@@ -54,7 +51,7 @@ def atomic_json(path, value):
     temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
     try:
         with temporary.open('x') as stream:
-            json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
+            json.dump(without_legacy_checksums(value), stream, indent=2, sort_keys=True, allow_nan=False)
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
@@ -101,8 +98,8 @@ class CheckpointStore:
         path = self.root / entry['path']
         if path.parent.resolve() != self.blobs.resolve():
             raise ValueError('Checkpoint path is outside checkpoint store')
-        if path.stat().st_size != entry['size_bytes'] or file_digest(path) != entry['sha256']:
-            raise ValueError(f'Checkpoint checksum mismatch: {path}')
+        if path.stat().st_size != entry['size_bytes']:
+            raise ValueError(f'Checkpoint size mismatch: {path}')
         return path
 
     def recover(self, requested):
@@ -141,7 +138,7 @@ class CheckpointStore:
         generation = uuid.uuid4().hex
         path = self.blobs / f'{step:06d}-{generation}.pt'
         writer(path)
-        entry = {'path': str(path.relative_to(self.root)), 'sha256': file_digest(path),
+        entry = {'path': str(path.relative_to(self.root)),
                  'size_bytes': path.stat().st_size, 'global_step': step,
                  'generation': generation, 'attempt_id': attempt_id,
                  'pending_validation': copy.deepcopy(pending)}
@@ -207,8 +204,7 @@ class AttemptLog:
         self.events_lineage = copy.deepcopy((previous or {}).get('events_lineage', []))
         for segment in self.lineage + self.events_lineage:
             path = self.root / segment['path']
-            if file_digest(path, segment['end_offset']) != segment['sha256']:
-                raise ValueError('Committed attempt log checksum mismatch')
+            file_metadata(path, segment['end_offset'])
         ends = {segment['path']: segment['end_offset'] for segment in self.lineage + self.events_lineage}
         abandoned = []
         for path in sorted((self.root / 'attempts').glob('*/*.jsonl')):
@@ -216,7 +212,7 @@ class AttemptLog:
             offset = ends.get(name, 0)
             if path.stat().st_size > offset:
                 abandoned.append({'path': name, 'start_offset': offset,
-                                  'end_offset': path.stat().st_size, 'sha256': file_digest(path)})
+                                  'end_offset': path.stat().st_size})
         atomic_json(self.directory / 'identity.json', {'attempt_id': attempt_id, 'identity': identity,
                     'created_unix': time.time(), 'parent_lineage': self.lineage,
                     'abandoned_tails': [tail for tail in abandoned if tail['path'].endswith('/updates.jsonl')],
@@ -235,14 +231,14 @@ class AttemptLog:
         self.skipped += int(not row['updated'])
         self.frames += len(row['frames'])
         row = dict(row, attempt_id=self.attempt_id, optimizer_attempt=self.attempts)
-        self.stream.write((json.dumps(row, allow_nan=False) + '\n').encode())
+        self.stream.write((json.dumps(without_legacy_checksums(row), allow_nan=False) + '\n').encode())
         self.stream.flush()
 
     def event(self, kind, **fields):
         row = dict(schema_version='suction20.event.v1', event_id=uuid.uuid4().hex,
                    attempt_id=self.attempt_id, kind=kind, utc=datetime.now(timezone.utc).isoformat(),
                    unix=time.time(), monotonic=time.monotonic(), **fields)
-        self.events_stream.write((json.dumps(row, allow_nan=False) + '\n').encode())
+        self.events_stream.write((json.dumps(without_legacy_checksums(row), allow_nan=False) + '\n').encode())
         self.events_stream.flush()
         return row
 
@@ -253,9 +249,9 @@ class AttemptLog:
         os.fsync(self.events_stream.fileno())
         fsync_directory(self.directory)
         event_segment = {'attempt_id': self.attempt_id, 'path': str(self.events_path.relative_to(self.root)),
-                         'end_offset': self.events_stream.tell(), 'sha256': file_digest(self.events_path)}
+                         'end_offset': self.events_stream.tell()}
         segment = {'attempt_id': self.attempt_id, 'path': str(self.path.relative_to(self.root)),
-                   'end_offset': self.stream.tell(), 'sha256': file_digest(self.path)}
+                   'end_offset': self.stream.tell()}
         return {'lineage': self.lineage + [segment], 'events_lineage': self.events_lineage + [event_segment],
                 'attempts': self.attempts,
                 'skipped': self.skipped, 'frames': self.frames}
@@ -304,8 +300,8 @@ class Progress:
 
     def validation_grant(self, checkpoint, step):
         request = {'experiment': self.state['experiment'], 'attempt_id': self.state['attempt_id'],
-                   'step': step, 'checkpoint_sha256': checkpoint['sha256']}
-        request['request_id'] = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+                   'step': step, 'checkpoint_reference': checkpoint.get('generation', checkpoint.get('path'))}
+        request['request_id'] = uuid.uuid4().hex
         atomic_json(self.directory / 'validation.request.json', request)
         self.update(phase='waiting_validation')
         while not self.pause_requested():

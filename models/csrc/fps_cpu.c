@@ -5,8 +5,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#ifndef FPS_SOURCE_SHA256
-#define FPS_SOURCE_SHA256 "unknown"
+#ifndef FPS_SOURCE_VERSION
+#define FPS_SOURCE_VERSION "fps_cpu_v1"
 #endif
 #ifndef FPS_COMPILE_FLAGS
 #define FPS_COMPILE_FLAGS "unknown"
@@ -128,7 +128,7 @@ PyMODINIT_FUNC PyInit__fps_cpu(void) {
     if (m == NULL) return NULL;
     if (PyModule_AddIntConstant(m, "FPS_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "FPS_FLOAT32_VERSION", 1) < 0 ||
-        PyModule_AddStringConstant(m, "SOURCE_SHA256", FPS_SOURCE_SHA256) < 0 ||
+        PyModule_AddStringConstant(m, "SOURCE_VERSION", FPS_SOURCE_VERSION) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", FPS_COMPILE_FLAGS) < 0 ||
         PyModule_AddStringConstant(m, "COMPILER", __VERSION__) < 0) {
         Py_DECREF(m);

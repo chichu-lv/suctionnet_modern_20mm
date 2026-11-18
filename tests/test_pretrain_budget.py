@@ -80,7 +80,7 @@ def test_all_six_formal_configs_are_pending_profiles_with_resolvable_v3_budget()
 
 def resumed_state():
     budget=resolve_budget(config(8));step=budget['validation_steps'][0]
-    reference={'path':'validations/2880-node.json','sha256':'a'*64}
+    reference={'path':'validations/2880-node.json','file_metadata':{'size_bytes':1024}}
     node={'step':step,'effective_samples':23040,'frame_count':320}
     state={'global_step':step,'best_metric':{'global_step':step,'values':[.4,.2]},'runtime_state':{
         'budget':budget,'effective_samples_completed':step*8,'ledger':{'attempts':step+2,'skipped':2,'frames':(step+2)*8},

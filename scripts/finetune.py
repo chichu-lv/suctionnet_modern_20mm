@@ -13,7 +13,7 @@ from suction20.finetuning import (apply_phase, make_finetune_optimizer, resolve_
 from suction20.losses import source_losses
 from suction20.runner import (add_runtime_arguments, augmentation_from_config, make_model,
                               make_source_dataset, require_device)
-from suction20.training import (FrameSchedule, content_digest, load_checkpoint, load_config,
+from suction20.training import (FrameSchedule, configuration_identity, load_checkpoint, load_config,
                                move_to_device, optimizer_update, save_checkpoint, seed_everything,
                                validate_resume_config)
 
@@ -28,9 +28,9 @@ def finetune(config, run_dir, device, *, init_checkpoint=None, resume=None, stop
         raise ValueError("Run already has a checkpoint; resume it or choose a new run directory")
     run_dir.mkdir(parents=True, exist_ok=True)
     state = torch.load(resume or init_checkpoint, map_location="cpu", weights_only=False)
-    source_cfg = state["source_label_config"]
-    if content_digest(source_cfg) != state["source_label_config_sha256"]:
-        raise ValueError("Checkpoint frozen source definition is corrupt")
+    source_cfg = configuration_identity(state["source_label_config"])
+    if not isinstance(source_cfg, dict):
+        raise ValueError("Checkpoint source label definition must be a mapping")
     config = resolve_finetune_config(config, state)
     seed_everything(config.get("seed", 42))
     runtime = config.get("runtime", {})
@@ -50,7 +50,7 @@ def finetune(config, run_dir, device, *, init_checkpoint=None, resume=None, stop
     if not len(target) or not len(validation):
         raise ValueError("Target adaptation requires independent nonempty train and validation groups")
     source = make_source_dataset(config, augment=True)
-    if content_digest(source.data_cfg) != content_digest(source_cfg):
+    if configuration_identity(source.data_cfg) != configuration_identity(source_cfg):
         raise ValueError("Source replay label definition differs from checkpoint")
     source_index = {key: index for index, key in enumerate(source.keys)}
     source_schedule = FrameSchedule(split_scene_ids("train"), seed=config.get("sampling_seed", 20261110))
@@ -68,7 +68,10 @@ def finetune(config, run_dir, device, *, init_checkpoint=None, resume=None, stop
         if loaded.get("stage") != "target_finetune" or loaded.get("target_mode") != mode:
             raise ValueError("Resume requires a target checkpoint of the same mode")
         validate_resume_config(loaded["training_config"], config)
-        if loaded["target_manifest_digest"] != target.manifest_digest:
+        if "target_manifest_definition" not in loaded:
+            raise ValueError("Legacy target sampler uses opaque observation IDs; exact resume is unavailable. "
+                             "Load the weights as initialization for a fresh finetuning run.")
+        if loaded["target_manifest_definition"] != target.manifest_definition:
             raise ValueError("Target manifest changed on resume")
         target_schedule.load_state_dict(loaded["target_sampler_state"])
         step, best = loaded["global_step"], loaded.get("best_target_metric")
@@ -83,7 +86,7 @@ def finetune(config, run_dir, device, *, init_checkpoint=None, resume=None, stop
         save_checkpoint(run_dir / name, model, optimizer, scaler, source_schedule,
                         global_step=step, config=config, source_label_config=source_cfg, best_metric=best,
                         stage="target_finetune", target_mode=mode, source_checkpoint_ref=source_ref,
-                        target_manifest_digest=target.manifest_digest, target_split_groups=target.split_groups,
+                        target_manifest_definition=target.manifest_definition, target_split_groups=target.split_groups,
                         success_definition=target.success_definition, target_sampler_state=target_schedule.state_dict(),
                         task_success_head_present=mode == "attempt_success",
                         parameter_phase="heads_only" if step < 200 else "decoder_and_heads",

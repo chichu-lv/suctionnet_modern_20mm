@@ -8,8 +8,11 @@
 
 **公开方法对比（2026-11-18）：** E5 best 已完成 RealSense 官方三个测试划分的全量评价（90场景、23,040帧）。官方 R10 的 Seen/Similar/Novel AP Top50 为 **16.33/20.22/5.69%**，AP Top1 为 **47.60/51.49/20.22%**。与 SuctionNet、Diffusion-Suction、MultiGraspNet、UISN 完整版及 Only Depth 的对照、R20候选覆盖分析见[方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)，紧凑数值见[结果表与来源](docs/experiments/COMPARISON-20261118/README.md)。这些是 GT 实例输入、R20 训练条件下的结果；论文值与本项目计算值分别标明。
 
+单物体 A/B 的模型实现分别维护在 [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) 与 [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings)。本主线同步共用运行工具和无内容校验和约束，保留既有 E0–E5 模型。
+
 ## Done（已完成）
 
+- [x] 按项目约束移除 SHA-256 计算与校验，覆盖数据、缓存、checkpoint、备份、导出、原生扩展和基准脚本；保留实际结构/配置/事务检查，并增加 [永久约束](AGENTS.md) 与 [回归门禁](tests/test_no_sha256_verification.py)。兼容范围见[当前读取规则](docs/NO_CONTENT_CHECKSUMS.md)。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
 - [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
 
@@ -27,7 +30,7 @@
 - [x] 模型实现阶段 CPU 测试复跑 **129 passed / 1 skipped**，梯度 checkpoint 一致性和两种微调跨阶段恢复复核；跳过项需要真实 release 路径。这里保留历史测试范围，各轮后续记录见 [验证说明](docs/MODEL_VALIDATION.md)。
 - [x] 已有 H20 完整观测 smoke：**E1 2 次 + E5 18 次成功更新**，含重启与独立推理检查；32 个原候选的物理评价一致性检查通过。这里只记录历史链路验证，完整训练与测试效果见上方实验资料和方法对比。
 
-- [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [正式配置及 SHA256](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
+- [x] v3 样本预算、硬件 profile、持久 supervisor、checkpoint/日志恢复与 CSV 分析导出；17 次零更新 profile 测量、六份 [历史正式配置清单](configs/runtime_profiles/cd009-v3/manifest.json) 已记录。
 - [x] [P1 性能优化历史方案与实现](docs/PERFORMANCE_OPTIMIZATION.md)：精确 C FPS、core/lip 局部几何复用、CPU 几何上下文、按需读取与体素整理、有序预取和显式 checkpoint 迁移；该轮本地测试 **296 passed / 1 skipped**。四帧真实数据的共享骨干配对对照（含完整梯度回传）通过；H20/E5 在第 380 步保持学习状态迁移并正常续训。独立进程对照的数值差异及验收边界见方案；H20/E5、L20/E0、L20/E3 正常窗口中位数分别由 33.835→10.927、11.349→4.208、34.190→12.184 秒/更新。前后使用不同自然帧，E3 还改变了 GPU 放置；详见 [P1 真实检查与窗口证据](docs/performance/P1_REAL_RESULTS.json)。
 - [x] P1 后 [11 组 batch/CPU 对照](docs/performance/P1_BATCH_CPU_RESULTS.json)：保留 B1A4、8 个逻辑核、2 个数据 worker；当时正常训练暴露的数据等待仅约 1–2 ms/update。公开记录对应 2026-11-12 的历史窗口；P3 后 E0/E1 的 loader 等待已重新显现。
 - [x] [P2 全点 CPU 网格与坐标快路径](docs/PERFORMANCE_PHASE2.md) 通过真实四帧原容差对照并用于训练，最新 P3 来源 checkpoint 已确认其应用身份；voxel heads 的 AMP 梯度对照未通过，继续关闭。

@@ -12,11 +12,11 @@ import argparse
 import ast
 import copy
 from contextlib import contextmanager
-import hashlib
 import importlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 import time
 
 
@@ -61,42 +61,69 @@ class Checkout:
         return module
 
 
-def digest(path):
-    result = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            result.update(block)
-    return result.hexdigest()
+def file_metadata(path):
+    path = Path(path).resolve()
+    return {'path': str(path), 'size_bytes': path.stat().st_size}
+
+
+def checkout_state(checkout, training):
+    # The historical baseline may predate the descriptive metadata API.
+    if hasattr(training, 'worktree_state'):
+        return training.worktree_state()
+    changes = subprocess.check_output(
+        ['git', '-C', str(checkout.root), 'status', '--porcelain', '--untracked-files=no'],
+        text=True).splitlines()
+    return {'revision': training.code_revision(), 'tracked_changes': changes}
 
 
 def shared_backbone_dependencies(roots):
     # The shared backbone imports only mlp from heads.py. chunk_apply belongs
     # to each separately executed suffix and is intentionally different in P3.
-    hashes = []
+    definitions = []
     for root in roots:
         tree = ast.parse((root.root / 'models/heads.py').read_text())
         mlp = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'mlp')
-        hashes.append(hashlib.sha256(ast.dump(mlp, include_attributes=False).encode()).hexdigest())
-    if hashes[0] != hashes[1]:
+        definitions.append(ast.dump(mlp, include_attributes=False))
+    if definitions[0] != definitions[1]:
         raise ValueError('Shared-backbone dependency changed: models/heads.py::mlp')
-    return {'models/heads.py::mlp_ast': hashes[0]}
+    return {'models/heads.py::mlp_ast': definitions[0]}
 
 
-def fingerprint(value):
+def array_structure(value):
+    """Small JSON description, never used as an array equality test."""
     import numpy as np
     import torch
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
     if isinstance(value, np.ndarray):
-        return dict(shape=list(value.shape), dtype=str(value.dtype),
-                    sha256=hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest())
+        return dict(shape=list(value.shape), dtype=str(value.dtype))
     if isinstance(value, dict):
-        return {str(k): fingerprint(v) for k, v in sorted(value.items())}
+        return {str(k): array_structure(v) for k, v in sorted(value.items())}
     if isinstance(value, (tuple, list)):
-        return [fingerprint(v) for v in value]
+        return [array_structure(v) for v in value]
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def exact_equal(left, right):
+    """Compare bounded in-memory diagnostic values, including signed zeros."""
+    import numpy as np
+    import torch
+    if isinstance(left, torch.Tensor):
+        if not isinstance(right, torch.Tensor):
+            return False
+        left, right = left.detach().cpu().numpy(), right.detach().cpu().numpy()
+    if isinstance(left, np.ndarray):
+        return (isinstance(right, np.ndarray) and left.dtype == right.dtype and
+                left.shape == right.shape and left.tobytes() == right.tobytes())
+    if isinstance(left, dict):
+        return (isinstance(right, dict) and left.keys() == right.keys() and
+                all(exact_equal(left[key], right[key]) for key in left))
+    if isinstance(left, (tuple, list)):
+        return (isinstance(right, (tuple, list)) and len(left) == len(right) and
+                all(exact_equal(a, b) for a, b in zip(left, right)))
+    return bool(left == right)
 
 
 class Comparisons:
@@ -105,20 +132,30 @@ class Comparisons:
         self.failures, self.numeric = [], {}
 
     def check(self, left, right, path, *, exact=False):
+        import numpy as np
         import torch
         if isinstance(left, torch.Tensor):
             if not isinstance(right, torch.Tensor) or left.dtype != right.dtype or left.shape != right.shape:
                 self.failures.append(path + ': tensor contract'); return
+            if exact:
+                if not exact_equal(left, right):
+                    self.failures.append(path)
+                return
             if left.is_floating_point():
                 a, b = left.double(), right.double()
                 difference = (a - b).abs()
                 self.numeric[path] = dict(max_abs=float(difference.max()) if a.numel() else 0.,
                     max_rel=float((difference / a.abs().clamp_min(1e-12)).max()) if a.numel() else 0.)
                 okay = bool(torch.isfinite(a).all() and torch.isfinite(b).all())
-                okay = okay and (torch.equal(left, right) if exact else torch.allclose(left, right, atol=self.atol, rtol=self.rtol))
+                okay = okay and torch.allclose(left, right, atol=self.atol, rtol=self.rtol)
             else:
                 okay = torch.equal(left, right)
             if not okay:
+                self.failures.append(path)
+        elif isinstance(left, np.ndarray):
+            if not isinstance(right, np.ndarray) or left.dtype != right.dtype or left.shape != right.shape:
+                self.failures.append(path + ': array contract'); return
+            if not exact_equal(left, right):
                 self.failures.append(path)
         elif isinstance(left, dict):
             if not isinstance(right, dict) or left.keys() != right.keys():
@@ -242,10 +279,10 @@ def compare_query_captures(baseline, candidate, comparisons, path):
 
         left_discrete, left_geometry = parts(left['value'])
         right_discrete, right_geometry = parts(right['value'])
-        comparisons.check(fingerprint(left_discrete), fingerprint(right_discrete),
+        comparisons.check(left_discrete, right_discrete,
                           prefix + '.actual.discrete', exact=True)
         comparisons.check(left_geometry, right_geometry, prefix + '.actual.geometry')
-        inputs_equal = fingerprint((left['args'], left['kwargs'])) == fingerprint((right['args'], right['kwargs']))
+        inputs_equal = exact_equal((left['args'], left['kwargs']), (right['args'], right['kwargs']))
         rng_equal = torch.equal(left['rng_before'], right['rng_before'])
         if inputs_equal and rng_equal:
             fixed, fixed_rng_after = right['value'], right['rng_after']
@@ -265,11 +302,10 @@ def compare_query_captures(baseline, candidate, comparisons, path):
                 for name, value in timings.items():
                     setattr(grouping, name, value)
             mode = 'replay_baseline_query'
-        left_fingerprint, fixed_fingerprint = fingerprint(left['value']), fingerprint(fixed)
-        comparisons.check(left_fingerprint, fixed_fingerprint, prefix + '.fixed_input', exact=True)
+        comparisons.check(left['value'], fixed, prefix + '.fixed_input', exact=True)
         comparisons.check(left['rng_after'], fixed_rng_after, prefix + '.fixed_input_rng_after', exact=True)
         checks.append(dict(fixed_input_mode=mode, actual_input_equal=inputs_equal,
-            actual_rng_before_equal=rng_equal, fixed_input_output_exact=left_fingerprint == fixed_fingerprint,
+            actual_rng_before_equal=rng_equal, fixed_input_output_exact=exact_equal(left['value'], fixed),
             fixed_input_rng_after_exact=torch.equal(left['rng_after'], fixed_rng_after)))
     return checks
 
@@ -277,12 +313,12 @@ def compare_query_captures(baseline, candidate, comparisons, path):
 def run(args, report):
     import torch
     roots = [Checkout(args.baseline_repo), Checkout(args.candidate_repo)]
-    report['shared_backbone_source_sha256'] = shared_backbone_dependencies(roots)
-    report['heads_source_sha256'] = {
-        label: digest(root.root / 'models/heads.py')
+    report['shared_backbone_dependency'] = shared_backbone_dependencies(roots)
+    report['heads_source_metadata'] = {
+        label: file_metadata(root.root / 'models/heads.py')
         for label, root in zip(('baseline', 'optimized'), roots)}
-    report['backbone_wrapper_source_sha256'] = {
-        label: digest(root.root / 'models/backbones/spconv_resunet14.py')
+    report['backbone_wrapper_source_metadata'] = {
+        label: file_metadata(root.root / 'models/backbones/spconv_resunet14.py')
         for label, root in zip(('baseline', 'optimized'), roots)}
     bundles = []
     state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
@@ -293,10 +329,10 @@ def run(args, report):
         if len(fixed_frames.get('frames', [])) != 4:
             raise ValueError('Frame plan must contain exactly four previously recorded frames')
         sampler_state = fixed_frames['sampler_before']
-        report['frame_plan_report_sha256'] = digest(args.frame_plan_report)
+        report['frame_plan_report_metadata'] = file_metadata(args.frame_plan_report)
     report.update(checkpoint_step=state['global_step'], checkpoint_sampler_before=state['sampler_state'],
                   sampler_before=sampler_state,
-                  initial_rng=fingerprint(state['rng_state']))
+                  initial_rng=array_structure(state['rng_state']))
     device = torch.device(args.device)
     if device.type != 'cuda' or not torch.cuda.is_available():
         raise ValueError('Real paired pipeline diagnostic requires an authorized CUDA device')
@@ -335,7 +371,8 @@ def run(args, report):
             schedule.load_state_dict(sampler_state)
             queries = []
             install_query_capture(model, queries)
-            identity = dict(repo=str(checkout.root), code_revision=training.code_revision(), worktree_sha256=training.worktree_digest())
+            identity = dict(repo=str(checkout.root), code_revision=training.code_revision(),
+                            worktree_state=checkout_state(checkout, training))
             identity['model_execution'] = getattr(model, 'execution_settings', {
                 'profile_dense_chunk_size': config['model'].get('dense_chunk_size', 16384),
                 'effective_dense_chunk_size': model.chunk_size,
@@ -351,7 +388,7 @@ def run(args, report):
     # One common pinned sparse network. Wrapper alignment is checked separately
     # on this network's same raw output, before projection; no second forward.
     baseline, optimized = bundles
-    if fingerprint(baseline['source'].data_cfg) != fingerprint(optimized['source'].data_cfg):
+    if not exact_equal(baseline['source'].data_cfg, optimized['source'].data_cfg):
         raise ValueError('Frozen source label configuration differs')
     with roots[0].active():
         baseline_wrapper = roots[0].module('models.backbones.spconv_resunet14')
@@ -386,7 +423,7 @@ def run(args, report):
                 key = item['datasets'].frame_key(key, item['config']['data'].get('camera', 'realsense'))
                 sample = item['source'].get_sample(item['keys'][key], aug_seed)
                 packed = item['datasets'].collate_public([sample], item['config']['model'].get('voxel_size_m', .002))
-                data = fingerprint({key: packed[key] for key in ('inputs', 'targets', 'meta')})
+                data = {key: packed[key] for key in ('inputs', 'targets', 'meta')}
                 prepared.append(dict(packed=packed, frame_key=list(key), augmentation_seed=aug_seed, data=data))
                 del sample
         if fixed_frames is not None:
@@ -397,7 +434,8 @@ def run(args, report):
             comparisons.check(prepared[0][key], prepared[1][key], f'frame.{frame_index}.{key}', exact=True)
         if any(path.startswith(f'frame.{frame_index}.') for path in comparisons.failures):
             raise ValueError('Paired data contract differs; stopped before model computation')
-        frame.update({key: prepared[0][key] for key in ('frame_key', 'augmentation_seed', 'data')})
+        frame.update({key: prepared[0][key] for key in ('frame_key', 'augmentation_seed')})
+        frame['data'] = array_structure(prepared[0]['data'])
         with roots[0].active():
             inputs = baseline['training'].move_to_device(prepared[0]['packed']['inputs'], device)
             common_backbone.train()
@@ -428,7 +466,7 @@ def run(args, report):
                     raise ValueError('Expected one raw sparse-output alignment check')
                 frame['backbone_alignment_checks'] = alignment_checks
             post_backbone_rng = baseline['training'].capture_rng()
-        frame['shared_backbone_features'] = fingerprint(features)
+        frame['shared_backbone_features'] = array_structure(features)
         named_backbone = [(name, p) for name, p in common_backbone.named_parameters() if p.requires_grad]
         for item, data in zip(bundles, prepared):
             with item['checkout'].active():
@@ -465,7 +503,7 @@ def run(args, report):
         with roots[1].active():
             frame['query_checks'] = compare_query_captures(baseline['queries'], optimized['queries'],
                 comparisons, f'frame.{frame_index}.queries')
-        comparisons.check(fingerprint(rng_after[0]), fingerprint(rng_after[1]), f'frame.{frame_index}.rng_after', exact=True)
+        comparisons.check(rng_after[0], rng_after[1], f'frame.{frame_index}.rng_after', exact=True)
         # No suffix graph remains. Apply both actual cotangents to the SAME real
         # retained backbone graph. Release that graph after the second VJP.
         vjps = []
@@ -521,9 +559,9 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     report = dict(schema_version='suction20.paired-pipeline-comparison.v1', passed=False,
         scope='paired suffix/data/geometry plus VJP through one shared real backbone graph per frame',
-        checkpoint_sha256=digest(args.checkpoint), config_sha256=digest(args.config),
-        performance_config_sha256=digest(args.performance_config),
-        baseline_performance_config_sha256=(digest(args.baseline_performance_config)
+        checkpoint_metadata=file_metadata(args.checkpoint), config_metadata=file_metadata(args.config),
+        performance_config_metadata=file_metadata(args.performance_config),
+        baseline_performance_config_metadata=(file_metadata(args.baseline_performance_config)
             if args.baseline_performance_config else None), optimizer_updates=0,
         limitations=['Does not supersede the failed independent-process end-to-end comparison.',
             'Shared-backbone boundary removes independent sparse CUDA forward variation from this diagnostic.',

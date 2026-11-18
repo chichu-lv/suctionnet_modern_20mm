@@ -258,7 +258,7 @@ checkpoint = {
     "model_config": resolved_model_config,
     "quality_target": "gt_B",               # E0 为 gt_A，不能混淆
     "source_label_config": frozen_label_config,
-    "source_label_config_sha256": config_digest,
+    "source_label_definition": frozen_physical_config,
     "experiment": "E5",
     "optimizer_state_dict": optimizer.state_dict(),
     "scheduler_state_dict": scheduler.state_dict(),
@@ -276,7 +276,7 @@ checkpoint = {
 }
 ```
 
-`source_label_config_sha256` 对冻结配置的稳定序列化内容计算，不依赖本地绝对路径。完整物理和归一化常量同时保存在 checkpoint，迁移时仍能找回原标签定义。数据目录路径可由运行参数覆盖，标签含义不能被路径覆盖。旧冻结 JSON 中可能保留 `wrench_threshold_factor` 等新生产器 parser 不接受的键，适配器应直接读取原 JSON 并提取所需字段，不借新 parser 重建默认物理配置。
+`source_label_definition` 直接保存冻结物理配置的小型结构，不计算内容校验和。加载时与当前实际配置逐项比较；路径可以调整，标签含义不可隐式改变。旧冻结 JSON 仍直接按实际字段解析，不通过新默认配置猜测旧标签物理参数。
 
 两种加载语义必须分开：
 

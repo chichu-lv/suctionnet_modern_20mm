@@ -15,6 +15,7 @@ import sys
 
 from .from_scratch import from_scratch_config
 from .pretrain_budget import resolve_budget
+from .metadata import without_legacy_checksums
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +111,7 @@ def _write_json(path, value, *, exclusive=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('x' if exclusive else 'w') as stream:
-        json.dump(value, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        json.dump(without_legacy_checksums(value), stream, indent=2, ensure_ascii=False, allow_nan=False)
         stream.write('\n')
 
 
@@ -234,10 +235,9 @@ def finalize_pretraining(plan, summary, training_root, *, resource_map=None,
             'contact_feature_gather_mode': performance['contact_feature_gather_mode'],
             'precision': config['training']['precision'], 'process_spawned': False,
         })
-        import hashlib
         for section, path in (('profiles', train_path), ('performance_configs', performance_path)):
             supervisor_entries[section][hardware][experiment] = {
-                'config_path': str(path), 'config_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                'config_path': str(path), 'config_definition': json.loads(path.read_text())}
 
     report = {
         'schema_version': 'suction20.final_pretraining.v1',

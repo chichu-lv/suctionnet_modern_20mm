@@ -24,7 +24,7 @@ def test_shared_backbone_dependency_allows_suffix_chunk_change(tmp_path):
             'def mlp(widths):\n    return widths\n\n'
             f'def chunk_apply(fn, values):\n    return fn(values) + {index}\n')
     result = paired.shared_backbone_dependencies(roots)
-    assert len(result['models/heads.py::mlp_ast']) == 64
+    assert result['models/heads.py::mlp_ast'].startswith("FunctionDef(name='mlp'")
     (roots[1].root / 'models/heads.py').write_text('def mlp(widths):\n    return list(widths)\n')
     with pytest.raises(ValueError, match='Shared-backbone dependency changed'):
         paired.shared_backbone_dependencies(roots)
@@ -135,8 +135,8 @@ def captured_query_pair(*, change_axis):
 
 def test_query_replay_tolerates_axis_rounding_but_keeps_actual_selection_exact():
     baseline, candidate = captured_query_pair(change_axis=True)
-    assert paired.fingerprint(baseline[0]['value']) != paired.fingerprint(candidate[0]['value'])
-    actual = paired.fingerprint(candidate[0]['value'])
+    assert not paired.exact_equal(baseline[0]['value'], candidate[0]['value'])
+    actual = copy.deepcopy(candidate[0]['value'])
     grouping = candidate[0]['grouping']
     timings = copy.deepcopy((grouping.last_query_timings, grouping.last_timings))
     torch.rand(3)
@@ -149,14 +149,14 @@ def test_query_replay_tolerates_axis_rounding_but_keeps_actual_selection_exact()
     assert grouping.calls == 2 and baseline[0]['grouping'].calls == 1
     assert torch.equal(torch.get_rng_state(), caller_rng)
     assert (grouping.last_query_timings, grouping.last_timings) == timings
-    assert paired.fingerprint(candidate[0]['value']) == actual
+    assert paired.exact_equal(candidate[0]['value'], actual)
 
     # Even a passing fixed-input replay cannot hide a changed actual selection.
     candidate[0]['value']['core']['indices'][0, 0] += 1
     comparisons = paired.Comparisons(amp=True)
     checks = paired.compare_query_captures(baseline, candidate, comparisons, 'query')
     assert checks[0]['fixed_input_output_exact']
-    assert comparisons.failures == ['query.0.actual.discrete.core.indices.sha256']
+    assert comparisons.failures == ['query.0.actual.discrete.core.indices']
     assert torch.equal(torch.get_rng_state(), caller_rng)
     assert (grouping.last_query_timings, grouping.last_timings) == timings
 
@@ -174,6 +174,22 @@ def test_identical_query_inputs_skip_replay_and_keep_descriptor_check_exact():
     comparisons = paired.Comparisons(amp=True)
     checks = paired.compare_query_captures(baseline, candidate, comparisons, 'query')
     assert not checks[0]['fixed_input_output_exact']
-    assert comparisons.failures == ['query.0.fixed_input.core.geometry.sha256']
+    assert comparisons.failures == ['query.0.fixed_input.core.geometry']
     assert candidate[0]['grouping'].calls == 1
     assert torch.equal(torch.get_rng_state(), caller_rng)
+
+
+def test_exact_arrays_preserve_shape_dtype_signed_zero_and_nan_bits():
+    expected = np.array([0., np.nan, 3.], dtype=np.float64)
+    equal = expected.copy()
+    assert paired.exact_equal(expected, equal)
+    assert not paired.exact_equal(expected, equal.astype(np.float32))
+    assert not paired.exact_equal(expected, equal.reshape(1, -1))
+    equal[0] = -0.
+    assert not paired.exact_equal(expected, equal)
+    comparisons = paired.Comparisons(amp=True)
+    comparisons.check(expected, equal, 'array', exact=True)
+    assert comparisons.failures == ['array']
+    comparisons = paired.Comparisons(amp=True)
+    comparisons.check(torch.from_numpy(expected), torch.from_numpy(expected.copy()), 'tensor', exact=True)
+    assert not comparisons.failures and not comparisons.numeric

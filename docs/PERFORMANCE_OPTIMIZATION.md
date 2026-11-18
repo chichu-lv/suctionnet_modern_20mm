@@ -1,5 +1,7 @@
 # CD-009 预训练性能优化方案
 
+本页包含历史性能设计和实测记录。项目当前已移除 SHA-256 计算与核验，历史摘要字段不再作为运行条件；当前操作以 [MODEL_USAGE](MODEL_USAGE.md)、[CHECKPOINT_POLICY](CHECKPOINT_POLICY.md) 和[无内容校验和规则](NO_CONTENT_CHECKSUMS.md)为准。下面的历史数值不重算、不改写。
+
 > **归档提示（2026-11-18）**：本报告中的 CD-009 checkpoint 迁移命令与 supervisor 例外流程仅为历史证据。当前分支已移除迁移工具；不要据此在最新代码上恢复旧运行。请参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
 
 > **历史阶段：** 本文保留 P1 的原始设计、测量与完成证据；最初的串行数据准备和 22 秒查询基线不再代表当前训练。后续 P2/P3 已有实际应用，当前 H20/E5 采用 64k、L20/E0/E1/E3 采用 16k 的 split 组合，见 [优化全程总览](PERFORMANCE_HISTORY.md) 和 [P3 正常窗口](performance/P3_INTEGRATED_RESULTS.md)。P1 当时的预取等待已基本隐藏；P3 后 E0/E1 反向缩短，loader 等待重新显现。
@@ -75,7 +77,7 @@ GitHub 发布是源码快照，不承诺包含部署提交的原 Git 祖先链�
 - 仅对接触区域用到的原始点并集做局部特征投影，以及 dense/pose 的 chunk 处理。
 - CPU affinity 隔离，`OPENBLAS_NUM_THREADS=1`、`MKL_NUM_THREADS=1`、`OMP_NUM_THREADS=1` 的启动环境。
 - 持久日志句柄和追加式 attempt/update/event 记录；监控进程及约 60 秒的资源采样。
-- checkpoint 单次序列化、last/best 别名、原子 manifest、校验和及恢复链。
+- checkpoint 单次序列化、last/best 别名、原子 manifest、generation/长度及恢复链。
 - **每 100 次成功更新或 900 秒**保存，以先到者为准；验证前后和暂停等边界另行保存。
 
 按 33.6 秒/更新估算，900 秒条件通常约 27 次更新就会触发保存；不能把现状描述成“每 100 步保存一次”。验证前后的两个保存分别对应 pending 和完成事务，也不应合并删除。源码依据见第 14 节。
@@ -512,7 +514,7 @@ def read_view_payload(path, source_format, compatibility, corrupt_depth):
 
 #### 6.1.4 meta 不在本阶段被精简
 
-以下当前 meta 保持：`sample_uid`、`source_indices`、`image_shape`、`T_world_cam`、`T_aug_from_cam`、`source_format`、`source_schema_version`、`source_label_config_sha256`、`augmentation_seed`、`label_path`，以及存在时的 `candidate_row/candidate_id/class_id/match_distance/normal_valid`。选点仍由 `select_aligned()` 同步应用到输入、目标和逐点 meta。
+以下当前 meta 保持：`sample_uid`、`source_indices`、`image_shape`、`T_world_cam`、`T_aug_from_cam`、`source_format`、`source_schema_version`、`source_label_definition`、`augmentation_seed`、`label_path`，以及存在时的 `candidate_row/candidate_id/class_id/match_distance/normal_valid`。选点仍由 `select_aligned()` 同步应用到输入、目标和逐点 meta。
 
 `source_indices` 尤其不能全局删除：验证的 `predict_observation()` 明确用它输出每个候选的原像素身份。训练是否把它上传 GPU，与是否保存它是两件事。
 
@@ -878,226 +880,19 @@ skipped_samples = ledger.skipped * E
 
 AMP 跳步后仍提交已消费的四帧，并保存需要保存的 scaler/RNG/BN 状态；`global_step`、LR 和候选阶段不推进。暂停后的恢复从消费游标开始，丢弃旧进程提前算好的样本；这些未消费的样本没有进入训练账本。
 
-## 9. 现有训练如何切换性能版本
+## 9. 历史性能迁移已退出当前实现
 
-### 9.1 为什么必须显式转换
+P1 阶段曾在正常暂停点通过一次性转换器保持模型、optimizer、RNG、采样游标及样本预算，再切换性能实现。该迁移工具、来源白名单、receipt 生成与过渡放行均已移除。此前的运行结果仍保留在第 11 节及关联实验 JSON 中；这里不再提供退役的转换命令、摘要计算或收据核验伪代码。
 
-现有恢复有两层检查，优化版应继续保留：
+当前普通恢复直接比较实际训练配置、小型物理定义、预算、运行及后端元数据，并载入原模型/optimizer/RNG/sampler 状态。不允许用删除收据、伪造来源、重置预算或任意改变配置的方法将历史迁移 checkpoint 变成新运行。项目所有读取、保存、恢复和备份都遵守[无内容校验和规则](NO_CONTENT_CHECKSUMS.md)，不会重新计算旧摘要。
 
-1. `training.py:68` 的 `validate_resume_config` 比较语义配置。它排除 `runtime` 和可迁移路径，但**保留 `runtime_profile`**。
-2. `train_pretrain.py:139` 要求 `runtime_state.identity` 与当前运行身份整体相同。该身份包含代码 revision、worktree hash、原配置 hash、数据 hash、依赖版本、数学设置及正式 profile。
-
-此外，`CheckpointStore.recover` 只接受本 run 的 current checkpoint/last 别名；`validate_resume_progress` 核对 v3 成功样本、attempt/skip、验证节点和 best。只修改一个 Git SHA，或使用 `--init-checkpoint`，都不能保持这些续训语义。
-
-因此提供一个**一次性的受限转换脚本**，在同一 run 目录内发布一个新 generation。之后仍使用普通 `--resume`，仍执行原有严格检查。不提供 `--ignore-identity`、`--force-resume` 或通用“任意字段可修改”的入口。
-
-### 9.2 冻结硬件 profile，另外绑定性能身份
-
-保留 `configs/runtime_profiles/cd009-v3/*.json` 原字节及其 `raw_config_sha256`。新 CLI 不改写硬件 profile，不把 `runtime_profile.profile_id` 改成新字符串；`training.budget_contract` 和全部样本预算不动。
-
-已在 `suction20/performance.py` 提供 `build_runtime_identity`，trainer 和转换器共用身份构造逻辑。以下保留设计示意，实际合并由 `attach_performance` 完成：
-
-```python
-config = resolve_config(load_config(base_profile_path))
-config = apply_existing_path_overrides(config, source_root, label_root, backbone_root)
-config["runtime"]["raw_config_sha256"] = file_digest(base_profile_path)
-
-performance = load_performance_config(performance_config_path)  # 严格检查 v1 字段
-config["runtime"]["performance"] = performance
-
-identity = build_existing_identity(config, source_data, environment)
-identity["performance"] = {
-    "schema_version": "suction20.performance.v1",
-    "config_sha256": file_digest(performance_config_path),
-    "backend_builds": resolved_backend_build_identity,
-}
-```
-
-性能配置的路径不是身份，文件原始字节 SHA256 才是；后端构建信息使用可复核的实现版本、源码/构建指纹和编译选项，不包含临时目录等无关路径。后端应在转换前准备完成，使转换器与后续训练构造出完全相同的性能身份。
-
-`runtime.performance` 被现有 `semantic_config` 排除，所以合并这个配置不会改变 `semantic_config_sha256`。普通恢复仍比较完整 identity，包括新增的 `performance`。漏传性能文件、文件内容变化或后端构建身份变化都会拒绝普通恢复；这不是允许性能身份静默漂移的后门。
-
-本转换允许的身份差异只有：
-
-| 字段 | 允许的变化 |
-| --- | --- |
-| `code_revision` | 从已核实的旧部署版本变为此次优化版本 |
-| `worktree_sha256` | 从对应旧源码快照变为此次优化源码快照 |
-| 新增 `performance` | 绑定此次性能文件和后端构建身份 |
-
-其余字段逐项相等，包括 `raw_config_sha256`、`semantic_config_sha256`、`runtime_profile`、`budget_contract`、数据 manifest/冻结配置 hash、依赖版本和 math settings。转换器在目标训练环境计算这些值，不从旧 checkpoint 复制环境值来伪装兼容。
-
-此轮转换范围限定为：同一实验、同一模型参数名称/形状/optimizer 参数顺序、同一精度与数值设置、同一数据与样本合同；执行实现采用已经确认语义兼容的性能优化。更改 microbatch、loss、候选数量、体素大小、AMP 类型或学习率不在本转换器范围内。
-
-源版本应绑定已核对的训练机部署身份。当前发布文档记录旧部署 revision 为 `98862f4d6a133c99afa082a0755dbb888b41b38d`，源码 SHA256 为 `d634627b180cee10be2c42949c8d10cec21ac49424aa734f6b5acf2c5f2c30c8`；最终以源 checkpoint 的 identity 与已审阅的部署身份一致为准，不能把 GitHub 发布 SHA `9d8ecc...` 填成训练机原身份。
-
-### 9.3 转换入口与正常操作流程
-
-已实现 `scripts/migrate_performance_checkpoint.py`，在旧进程已经暂停并释放 run lock 后运行。它使用目标训练环境，`torch.load(..., map_location="cpu")` 读取状态，不执行训练，也不重新实例化 optimizer 来“重建”其状态。
-
-正常流程如下：
-
-1. 使用现有暂停控制，在完整 update 边界保存并退出旧 trainer。当前 supervisor 的脚本路径与 cwd 固定为 `root/repo`；同一主机共享 checkout/venv 的任务一起正常暂停，此时仍保留旧代码和环境。先完成 H20/E5 的切换，再安排 L20。
-2. 在更新公共 checkout/venv **之前**，确认各 run 的 `pending_validation is None`。若已有 pending，先用旧代码完成这个**原定**验证节点并再次暂停；不增设验证。历史 validation JSON 保持原 identity 和原字节。
-3. 统一更新已暂停主机的公共 checkout 和扩展，按现有 supervisor 流程使用新版入口。在各原 run 目录运行转换器，传入原冻结 profile、额外 performance 配置及当前已提交 checkpoint 的预期 SHA256。不在其他任务运行时替换共用 import 路径，也不新增每实验独立部署系统。
-4. 转换器取得现有 `RunLock`，复用当前 blob 校验和语义/预算检查；目标身份只允许上一节的版本变化。日志前缀和验证引用继续由正常 resume 的现有逻辑核对，不另写重复核验器。
-5. 保存源 checkpoint 的硬链接、源 manifest 原始字节和转换 receipt，再使用现有 `CheckpointStore.publish` 发布新的 current generation。
-6. 现有 supervisor 使用已更新的固定代码路径与相同硬件 profile，透传性能文件，以普通 `--resume RUN/last.pt` 继续。optimizer step、采样游标及所有训练账本从原值接续。
-
-以下是已实现命令；先核对退出、备份、目标构建和源 checkpoint 摘要，正式训练恢复仍走既有 supervisor：
-
-```bash
-python scripts/migrate_performance_checkpoint.py \
-  --run-dir /path/to/run/E5 \
-  --control-dir /path/to/control/attempts/PAUSED_TOKEN \
-  --config configs/runtime_profiles/cd009-v3/H20-E5.json \
-  --performance-config configs/performance/cd009-p1.json \
-  --source-root /path/to/SuctionNet \
-  --label-root /path/to/suction20_output \
-  --backbone-root /path/to/graspness_modern \
-  --expected-source-checkpoint-sha256 SOURCE_COMMITTED_SHA256
-
-```
-
-转换器限定源 checkpoint 为 manifest 的 current，并要求给出的 SHA256 一致；不根据目录里修改时间选择文件，也不在转换时自动回退或自动重新初始化。现有普通恢复路径仍保留其既有 predecessor 行为。
-
-### 9.4 训练状态保持原值，改动仅限版本元数据
-
-以下对象原样保留，不重建、不归零：
-
-- `model_state_dict`，包括 BN buffers；
-- `optimizer_state_dict` 的 Adam moments、step、parameter groups 和顺序；
-- `scaler_state_dict`、`scheduler_state_dict`、`global_step`；
-- `rng_state` 的 Python、NumPy、Torch CPU/CUDA 状态；
-- `sampler_state`、`epoch`、`next_microbatch_in_epoch`；
-- `runtime_state.budget`、`effective_samples_completed`、`consecutive_skips`；
-- `runtime_state.ledger` 的计数、lineage、events_lineage、字节偏移和 hash；
-- `best_metric`、`validations`、`completed_validation_nodes`、`last_completed_validation`。
-
-转换入口复用现有 `validate_resume_progress`；新版本普通恢复仍执行原来的检查。转换本身不是 optimizer attempt，不增加 `attempts`、`skipped`、`frames` 或有效样本。下一次普通训练日志的 optimizer_attempt 从原 attempts+1 开始。
-
-只更新当前新 generation 的：
-
-- 顶层 `code_revision`、`code_worktree_sha256`；
-- `training_config.runtime.performance`；
-- `runtime_state.identity` 中明确允许的版本变化；
-- 新增的 `runtime_state.performance_migration` receipt 引用；
-- manifest current 对应 `analysis.identity`、发布 attempt ID 和 receipt 引用。
-
-`training_config` 的其他语义字段保持原值，并继续通过原 `validate_resume_config`。模型与 optimizer tensors 可以直接沿用读入 CPU state 的对象，不执行任何数值转换。普通恢复时新模型继续 strict load，随后加载原 optimizer/scaler/sampler/RNG。
-
-### 9.5 源 checkpoint 不能只依赖一代 predecessor 留存
-
-`CheckpointStore.publish` 只保留 current、predecessor、best 和 nodes 中引用的 blob（`pretrain_runtime.py:189`）。新 trainer 一启动又会执行 `save(reason="resume")`，所以原迁移源 blob 不一定长期留在 predecessor 中。不能认为“发布时保留了 predecessor”就已经永久保留原状态。
-
-转换时建立一个小的不可变目录：
-
-```text
-run/migrations/<migration_id>/
-    source.pt                 # 源 current blob 的硬链接，不复制模型数据
-    source-manifest.json      # 原 manifest 字节快照
-    performance-config.json   # 此次性能配置原字节
-    receipt.json              # 旧/新 identity、源hash、源成功步与版本差异
-```
-
-这些文件位于 `checkpoints/` 清理范围之外。源 blob 的常规名称即使随后被清理，硬链接仍保留其内容。原 best、nodes、validation JSON、attempt 日志不重写，继续使用原路径和 hash。
-
-receipt 先写入，记录源 checkpoint hash、源 manifest hash、目标 identity 和源成功步；**不把尚未产生的目标 checkpoint hash放进 receipt**，避免 receipt 与 checkpoint 相互包含 hash。新 checkpoint 内保存 receipt 的相对路径及 SHA256，目标 checkpoint 的 SHA256由现有 manifest 绑定即可。
-
-实际 receipt schema 如下；`files` 的大小/hash 均来自归档文件，`allowed_changes` 只列实际发生变化的允许字段：
-
-```json
-{
-  "schema_version": "suction20.performance-migration.v1",
-  "migration_id": "performance-UUID",
-  "source_identity": {},
-  "target_identity": {},
-  "global_step": 123,
-  "source_attempt_id": "SOURCE_ATTEMPT",
-  "allowed_changes": ["code_revision", "performance", "worktree_sha256"],
-  "files": {
-    "source.pt": {"size_bytes": 123, "sha256": "SOURCE_HASH"},
-    "source-manifest.json": {"size_bytes": 123, "sha256": "MANIFEST_HASH"},
-    "performance-config.json": {"size_bytes": 123, "sha256": "SIDECAR_HASH"}
-  }
-}
-```
-
-数字及 hash 是示例占位值。新 checkpoint 的 `runtime_state.performance_migration` 和 manifest 的 `analysis.performance_migration` 均保存 `{path: "migrations/performance-UUID/receipt.json", sha256: "RECEIPT_HASH"}`；后续保存持续透传，并核对归档三文件。源成功步不重置。
-
-### 9.6 转换伪代码与发布规则
-
-以下保留设计伪代码，用于解释发布顺序；实际入口是上一节 CLI。当前 `RunLock` 用 `try/finally: close()`，实际写入 helper 名为 `write_checkpoint_state`，不把本段当作可直接复制执行的脚本。
-
-```python
-with RunLock(run_dir):
-    store = CheckpointStore(run_dir)
-    source_entry = store.manifest["current"]
-    source_path = store.verify(source_entry)
-    assert source_entry["sha256"] == expected_source_checkpoint_sha256
-    store.current = source_entry
-    source = torch.load(source_path, map_location="cpu", weights_only=False)
-
-    assert source["stage"] == "public_pretrain"
-    assert source["runtime_state"]["pending_validation"] is None
-    assert_reviewed_source_code_pair(source["runtime_state"]["identity"])
-    validate_resume_config(source["training_config"], new_config)  # 不改此函数
-    budget = resolve_budget(new_config)
-    validate_resume_progress(source, budget)
-    assert_identity_diff_is_exactly_allowed(
-        source["runtime_state"]["identity"], target_identity
-    )
-
-    # 浅拷贝顶层并仅深拷贝要修改的元数据，所有数值状态不计算、不重建。
-    target = copy.copy(source)
-    target["training_config"] = deepcopy(new_config)  # 已通过原语义配置检查
-    target["runtime_state"] = deepcopy(source["runtime_state"])
-    target["code_revision"] = target_identity["code_revision"]
-    target["code_worktree_sha256"] = target_identity["worktree_sha256"]
-    target["runtime_state"]["identity"] = deepcopy(target_identity)
-
-    receipt_ref = preserve_source_and_write_receipt(
-        source_path, store.manifest, source_entry, source, target_identity,
-        performance_config_path
-    )
-    target["runtime_state"]["performance_migration"] = receipt_ref
-
-    analysis = deepcopy(source_entry["analysis"])
-    analysis["identity"] = deepcopy(target_identity)
-    analysis["attempt_id"] = migration_id
-    analysis["performance_migration"] = receipt_ref
-    # analysis 的 ledger/counters/budget/validations/best 均保持原值。
-    best = source.get("best_metric")
-    store.publish(
-        writer=lambda path: write_checkpoint_state_atomically(path, target),
-        step=source["global_step"], attempt_id=migration_id,
-        pending=None, best_step=best["global_step"] if best else None,
-        retain=False, promote_best=False, analysis=analysis,
-    )
-```
-
-实现中的 `write_checkpoint_state` 提取并复用现有 `training.py` 的 torch.save、fsync、临时文件及原子替换逻辑；无需实例化一个新 checkpoint 服务。这里的 lambda 只供当前进程同步调用，不传给 DataLoader worker。
-
-发布使用 `retain=False`，避免覆盖同一步已经保留的原 prefix/validation node；`promote_best=False` 保留原 best。entry 与 analysis 的发布 attempt ID 同时改为 migration ID，因为 telemetry 和 supervisor 已要求两者一致；这不增加训练账本的 optimizer attempts。
-
-后续 `save()` 必须从已载入 runtime_state 透传 `performance_migration` 到新的 runtime_state 和 analysis，否则 trainer 第一次 resume save 会丢掉这条来源引用。根目录的 `runtime.json`、`resolved_config.json` 继续保存本 run 最初版本的元数据，不伪装成优化版；当前执行版本以 current checkpoint、receipt 和新 attempt 的 `identity.json` 为准。
-
-### 9.7 与现有日志、supervisor 和备份衔接
-
-历史日志无需重写。`training_telemetry.py:416` 会检查每个已提交 update 的 runtime_profile 与当前 analysis 一致；本设计保留原硬件 profile，因此这项检查仍成立。源 ledger 的字节前缀及其 hash 完全不变，转换后新 attempt 接续原 lineage。新旧代码阶段通过各 attempt 的 identity 和迁移 receipt 区分，不把历史行改写成新性能结果。
-
-以下接线已实现：
-
-1. `run_supervisor.trainer_command` 透传 `--performance-config`，assignment 记录并核对其原始字节 hash。沿用现有方式保存所选性能文件快照；正式 profile 的路径/hash 校验原样保留。普通 resume 同时核对 performance 身份。
-2. 现有备份覆盖 checkpoint 与顶层 JSON、attempts、validations，并已加入 receipt 引用的迁移目录文件及性能配置快照，复用原有 pinning、checksum 和备份去重；不新建备份流程。源 `source.pt` 的硬链接内容也必须被纳入，不能只备份 receipt 后丢掉它指向的源状态。
-
-验收统一按第 11 节的三个正常路径执行，本章不另加测试矩阵。
+新训练使用当前 v4 参数和[选定正式配方](SELECTED_PRETRAINING_RECIPE.md)。既有 checkpoint 的可加载范围、旧 target sampler 限制及权重初始化区别见 [CHECKPOINT_POLICY.md](CHECKPOINT_POLICY.md)。历史部署 revision 与原数值结果可用于追溯，不能当作当前源码的运行凭据。
 
 ## 10. 实施接口、配置与交付拆分
 
 ### 10.1 性能配置独立于已冻结 profile
 
-已实现 `--performance-config configs/performance/cd009-p1.json`，合并到 `config['runtime']['performance']`，原始文件 SHA256 单独存为 `runtime.performance_config_sha256`。仓库提供的 [第一轮 sidecar](../configs/performance/cd009-p1.json) 如下；当前真实帧测量选择逐候选共享几何查询：
+已实现 `--performance-config configs/performance/cd009-p1.json`，合并到 `config['runtime']['performance']`，解析后的实际参数进入运行身份，路径/大小另作出处记录。仓库提供的 [第一轮 sidecar](../configs/performance/cd009-p1.json) 如下；当前真实帧测量选择逐候选共享几何查询：
 
 ```json
 {
@@ -1120,11 +915,11 @@ with RunLock(run_dir):
 
 一维 key、按需读取、core/lip 坐标复用和 CPU context 是验证等价后的实现替换，不必给业务运行入口暴露一长串开关；基准脚本通过对照实现或旧 checkout 做比较即可。
 
-保持 `configs/runtime_profiles/cd009-v3/*.json` 及其 manifest 原始字节，保留原 microbatch、accumulation、硬件配置和 profile ID。新身份另外记录性能配置内容哈希和编译后端构建信息。原 `raw_config_sha256` 继续指正式 profile，不能用它代指性能配置。普通 `--resume` 必须同时匹配新的性能身份；初次从旧身份切换使用第 9 节的受限迁移。
+保持 `configs/runtime_profiles/cd009-v3/*.json` 及其 manifest 原始字节，保留原 microbatch、accumulation、硬件配置和 profile ID。新身份直接记录性能配置结构和编译后端版本/ABI信息。普通 `--resume` 必须匹配实际训练和执行设置；第 9 节的历史迁移已退役，不再提供该切换入口。
 
 `suction20/runner.py:make_model` 将 `runtime.performance` 传入模型；`scripts/train_pretrain.py` 将 loader 配置传入有序预取器；`Suction20Net`、`CandidateSampler`、`ContactGrouping` 可增加可选的非参数配置，**不改变模型 state_dict 参数名或形状**。推理、验证、微调可复用同一精确 CPU 算子，但第一轮仅接入预训练的后台 loader，不同时重写所有训练入口。
 
-supervisor 需要将性能文件路径及内容哈希加入 assignment/启动参数，并在日志记录实际解析值；保持原 affinity、设备、数据路径覆盖和 owner 流程。只对已配置性能版本的任务传递新参数。禁止修改固定 profile 的字节后沿用旧的 `config_sha256`。
+supervisor 将性能文件路径及实际解析值加入 assignment，并在启动前比较小型配置结构；保留原 affinity、设备、数据路径覆盖和 owner 流程。旧摘要字段忽略，不能用路径/大小冒充配置内容相同。
 
 ### 10.2 文件级修改清单
 
@@ -1140,7 +935,7 @@ supervisor 需要将性能文件路径及内容哈希加入 assignment/启动参
 | `suction20/batching.py` | 一维 key 去重，保持 packed 数据与 inverse 顺序 | voxel、inverse、8 通道数值一致 |
 | `suction20/prefetch.py`（新） | ticket、map-style wrapper、顶层 worker/collate 函数、有限有序队列 | 不消费模型 RNG；worker 完成顺序不影响样本序列 |
 | `scripts/train_pretrain.py` | 区分 issued/consumed 游标；接收 CPU/GPU 批；保留账本、AMP/v3 和 pending validation | 连续/恢复后的下一批及预算一致 |
-| `suction20/training.py` | 只搬运 GPU 所需字段；`non_blocking` 参数；去掉重复的代码哈希计算 | 完整 checkpoint 状态保持 |
+| `suction20/training.py` | 只搬运 GPU 所需字段；`non_blocking` 参数；记录显式代码版本与工作树路径状态 | 完整 checkpoint 状态保持 |
 | `suction20/pretrain_runtime.py` | 沿用发布事务；为迁移入口复用必要的校验/发布方法 | current、predecessor、best、nodes 与日志前缀对应 |
 | `scripts/migrate_performance_checkpoint.py`（新） | 第 9 节的显式、限定身份迁移；原始状态直接转存 | 未重置 optimizer、scaler、RNG、采样器或成功步 |
 | `suction20/run_supervisor.py` | 透传性能配置和真实构建身份，按原流程暂停/恢复 | 单 owner、原 CPU/GPU 分配继续生效 |
@@ -1164,7 +959,7 @@ CPU context 已放在独立小模块，未增加通用任务编排、缓存服�
 | 接口 | 当前行为 |
 | --- | --- |
 | `geometry_ops.make_fps_backend(name)` | 返回每实例独立 callable；`numpy`/`compiled` 显式选择，`fps_indices(..., first=None, presorted=False)` 保持排序与 tie；C buffer 使用 native FP64 `[M,3]` |
-| `fps_backend_identity(name)` | `backend/abi_version/python_cache_tag/compile_flags/compiler/source_sha256/binary_sha256`；构建选项 `-O3 -fno-fast-math -ffp-contract=off` |
+| `fps_backend_identity(name)` | `backend/abi_version/python_cache_tag/compile_flags/compiler/source_version/binary_filename`；构建选项 `-O3 -fno-fast-math -ffp-contract=off` |
 | `ContactGrouping.query` / `query_reference` | 优化四球分块/core-lip 复用与原调度参考；基准可设置 `query_chunk_size=None` 比较逐候选共享实现，再与 64 候选、1/4 workers 比较；正式 v1 sidecar 接受 `null`（逐候选共享查询，当前 P1 选择）或 1–64（分块） |
 | `CpuGeometry.from_inputs` / `SamplerTargetsCPU.from_targets` | 主进程 CPU view；`xyz64`/`frame_rows` 懒构造，空间树由 encoded 缓存，仅观测进入 encoder |
 | `make_ticket_loader` / `consume_tickets` | spawn CPU workers、有序 ticket、独立 generator；backward 后推进已消费游标，退出关闭持久 workers |
@@ -1322,7 +1117,7 @@ H20 的情况不同：B2A2 短测快约1.48%，但收益主要来自一个块；
 
 复现工具为 [scripts/benchmark_batch_cpu.py](../scripts/benchmark_batch_cpu.py)，是本轮实际测量 helper 的逐字节副本，SHA256 `2e2406b6d55b82576edf63b33423bc6f7510dc7751fda735f3ef1bf84e79784e`。它是一次性诊断工具，不是正式训练入口；本次工具/文档发布不部署到 live checkout。`--help`、`--self-test` 和语法检查已通过，额外 CPU toy-source 检查验证16票有序消费、主进程 RNG 不变和正常 worker 退出。
 
-运行者先确认授权空闲 GPU、独立 CPU affinity 与共享 GPU 锁；每候选单独进程、顺序运行，沿用原 cap，不在 OOM 后自动改变设置。脚本需要显式的 `--repo-root`、`--expected-code-revision`、`--expected-worktree-sha256`、`--config`、`--performance-config`、单一 `--gpu-uuid` 与现有 `--gpu-lock`，以及数据/backbone 根目录和新的 `--out`。工具应从冻结 checkout 外执行，以免新增文件改变其源码身份；预先核对实际 checkout 的 commit 与摘要，不能把后续文档 HEAD 当作测量版本。
+运行者先确认授权空闲 GPU、独立 CPU affinity 与共享 GPU 锁；每候选单独进程、顺序运行，沿用原 cap，不在 OOM 后自动改变设置。脚本需要显式的 `--repo-root`、`--expected-code-revision`、`--config`、`--performance-config`、单一 `--gpu-uuid` 与现有 `--gpu-lock`，以及数据/backbone 根目录和新的 `--out`。工具应从冻结 checkout 外执行，以免新增文件改变其源码身份；预先核对实际 checkout 的 commit 与显式源码版本，不能把后续文档 HEAD 当作测量版本。
 
 使用 `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`，`CUDA_VISIBLE_DEVICES` 只暴露指定 UUID，`taskset` 的核数与 `--cpu-threads 8|16` 一致。固定 `--microbatch 1|2|4 --accumulation 4|2|1 --workers 2`、`--sampler-epoch 0`，并传入 `--gpu-memory-limit-gib 36|112` 与 `--memory-fraction .85`。内部 `--max-wall-seconds 1180` 配合外部 `timeout --signal=TERM --kill-after=10s 1190s`；不使用 `--foreground`，确保超时覆盖自己的 spawned workers。清理并复查 GPU 空闲后才能下一候选或正式恢复。超时留下的 starting/不完整报告不能计作成功；无数据等待证据时不扩成四 workers 扫描。
 
@@ -1337,7 +1132,7 @@ H20 的情况不同：B2A2 短测快约1.48%，但收益主要来自一个块；
 | 加大静态 metadata cache | miss 和元数据读取时间实际突出，RSS 有余量 | 先扩大小型 scene/object 缓存；每 worker 独立驻留；不默认缓存全帧增强结果 |
 | 整帧存储格式或本地只读镜像 | 优化解压/预取后，实测 I/O 仍限制吞吐 | 仅此时考虑，复用原标签及 manifest；不列为本轮准备工作 |
 
-小型收尾可随相应模块一起做：`save_checkpoint()` 已收到 `code_revision`/`code_worktree_sha256` 时，不再先计算一次又被 `extra` 覆盖；使用显式 `if key in extra`，不要写会提前求值的 `dict.get(key, expensive_function())`。它减少保存时的冗余，不能解释当前 22 秒 query。
+保存 checkpoint 时记录 Git revision、工作树路径状态和实际小型配置，不扫描代码或资产计算内容摘要。构建版本的显式变更必须同步更新 native source version/ABI；不能把这类元数据记录解释为内容认证。
 
 候选采样与接触分组共用 FPS 后可自然受益；暖启动时 proposal 预算为零且 high/low 已填足的情形，可再考虑惰性计算 proposal，但必须保留不足时的回填优先级和所有 `torch.randperm` 调用顺序。此项不是本轮上线条件。
 

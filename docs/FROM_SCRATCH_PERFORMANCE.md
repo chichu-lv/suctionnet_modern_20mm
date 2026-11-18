@@ -307,8 +307,8 @@ python scripts/evaluate.py \
 
 `selected_profile()` 已允许 `selection_status="from_scratch"` 与 v4 sidecar 配对，仍使用现有启动、暂停、备份和自身恢复入口。生成器输出 `supervisor_entries`，包含：
 
-- `profiles[host][experiment]`：新 train.json 的绝对路径和原字节 SHA256。
-- `performance_configs[host][experiment]`：新 performance.json 的绝对路径和原字节 SHA256。
+- `profiles[host][experiment]`：新 train.json 的绝对路径及可选的实际 `config_definition`。
+- `performance_configs[host][experiment]`：新 performance.json 的绝对路径及可选的实际 `config_definition`。
 
 若以后使用supervisor，把这些项填入 **CD-010 的独立控制配置**；本次已通过[最终入口](FINAL_OPTIMIZATION_AND_TRAINING.md)直接启动新trainer，旧协调器仍停止。原supervisor接线使用新的root/run/ledger路径。v4 worker会把 trainer 的 `PYTHONPATH` 指向新 root 下的 `repo/`，避免复用venv时从旧editable安装导入模型。若已经确认相同机器的基础环境，不需要为了该实现再设计一套机器检查、19项连续性审计或故障演练。原管理器正常运行所需字段照现有 [运行指南](MODEL_USAGE.md) 提供即可。新的组合补测不调用旧协调器，正常暂停/恢复使用正在运行的冻结checkout及原配置。
 

@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import fcntl
 from functools import partial
-import hashlib
 import itertools
 import json
 import os
@@ -61,12 +60,19 @@ def summarize(blocks):
                 all_gradients_finite=all(b['gradients_finite'] for b in rows) if rows else None)
 
 
-def parameter_digest(model):
-    digest = hashlib.sha256()
-    for name, parameter in model.named_parameters():
-        value = parameter.detach().cpu().contiguous()
-        digest.update(name.encode() + b'\0' + str(value.dtype).encode() + value.numpy().tobytes())
-    return digest.hexdigest()
+def parameter_snapshot(model):
+    """Bounded diagnostic copy; compare parameters directly without a checksum."""
+    return {name: parameter.detach().cpu().clone()
+            for name, parameter in model.named_parameters()}
+
+
+def parameters_unchanged(model, snapshot):
+    import torch
+    current = dict(model.named_parameters())
+    return current.keys() == snapshot.keys() and all(
+        current[name].dtype == previous.dtype and
+        torch.equal(current[name].detach().cpu(), previous)
+        for name, previous in snapshot.items())
 
 
 class Monitor:
@@ -109,17 +115,16 @@ def run_trial(args, report):
     from suction20.performance import attach_performance, build_runtime_identity
     from suction20.prefetch import (TicketDataset, TicketBatchSampler, collate_tickets,
         worker_init_cpu_only, consume_tickets, close_ticket_loader)
-    from suction20.pretrain_runtime import file_digest, normalize_gpu_uuid
+    from suction20.pretrain_runtime import file_metadata, normalize_gpu_uuid
     from suction20.runner import make_model, make_source_dataset, override_paths
     from suction20.run_supervisor import process_identity
-    from suction20.training import (load_config, seed_everything, FrameSchedule, content_digest,
-        code_revision, worktree_digest, move_to_device, select_training_gpu_inputs,
+    from suction20.training import (load_config, seed_everything, FrameSchedule, configuration_identity,
+        code_revision, worktree_state, move_to_device, select_training_gpu_inputs,
         source_supervision_counts, decay_groups)
 
     require(Path(sys.modules['suction20.training'].__file__).resolve().is_relative_to(repo), 'Wrong package import root')
-    revision, source_hash = code_revision(), worktree_digest()
-    require(revision == args.expected_code_revision and source_hash == args.expected_worktree_sha256,
-            'Frozen code revision/worktree digest mismatch')
+    revision, source_state = code_revision(), worktree_state()
+    require(revision == args.expected_code_revision, 'Frozen code revision mismatch')
     require(len(os.sched_getaffinity(0)) == args.cpu_threads, 'Launch with taskset: affinity width must equal requested CPU threads')
     require(all(os.environ.get(k) == '1' for k in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')),
             'Launch with OMP_NUM_THREADS=MKL_NUM_THREADS=OPENBLAS_NUM_THREADS=1')
@@ -152,7 +157,7 @@ def run_trial(args, report):
     config['training'].update(microbatch_size=args.microbatch, gradient_accumulation_steps=args.accumulation,
                               effective_batch_size=4)
     config['runtime']['cpu_threads'] = args.cpu_threads
-    config['runtime']['raw_config_sha256'] = file_digest(args.config)
+    config['runtime']['raw_config_metadata'] = file_metadata(args.config)
     # Preserve validated sidecar identity. This research-only override cannot be
     # supplied to the frozen formal launcher, whose schema accepts workers0/2.
     loader_settings = dict(config['runtime']['performance']['loader'], num_workers=args.workers)
@@ -168,18 +173,17 @@ def run_trial(args, report):
     planned = [plan_schedule.next() for _ in range(16)]
     dataset = make_source_dataset(config, frame_keys=list(dict.fromkeys(k for k, _ in planned)), augment=True)
     report['planned_frames'] = [dict(sample_uid=list(frame_key(k, 'realsense')), augmentation_seed=s) for k, s in planned]
-    report['planned_frames_sha256'] = content_digest(report['planned_frames'])
     report['identity'] = dict(runtime=build_runtime_identity(base_config, dataset.data_cfg),
         original_config=base_config, actual_model_config=config, loader_override=loader_settings,
-        config_raw_sha256=file_digest(args.config), helper_sha256=file_digest(__file__),
-        performance_raw_sha256=file_digest(args.performance_config), fps=fps_backend_identity('compiled'),
-        code_revision=revision, worktree_sha256=source_hash, python=sys.version, host=platform.node(),
+        config_metadata=file_metadata(args.config), helper_metadata=file_metadata(__file__),
+        performance_metadata=file_metadata(args.performance_config), fps=fps_backend_identity('compiled'),
+        code_revision=revision, worktree_state=source_state, python=sys.version, host=platform.node(),
         gpu_uuid=gpu_uuid, gpu_name=props.name, total_gpu_bytes=props.total_memory,
         allocator_fraction=fraction, allocator_limit_bytes=int(props.total_memory * fraction),
         cpu_affinity=sorted(os.sched_getaffinity(0)), torch_cpu_threads=torch.get_num_threads(),
         torch_cuda=torch.version.cuda, cudnn=torch.backends.cudnn.version(),
         detailed_cpu_timing_override=False, sampler_regime_epoch=args.sampler_epoch,
-        effective_profile_sha256=content_digest(dict(config=config, loader=loader_settings)))
+        effective_profile=configuration_identity(dict(config=config, loader=loader_settings)))
     model = make_model(config, dataset.data_cfg, device).train()
     report['identity']['model_execution'] = getattr(model, 'execution_settings', {
         'profile_dense_chunk_size': config['model'].get('dense_chunk_size', 16384),
@@ -190,7 +194,8 @@ def run_trial(args, report):
     optimizer = torch.optim.AdamW(decay_groups(model, weight_decay=config.get('optimizer', {}).get('weight_decay', 1e-4)))
     scaler = torch.amp.GradScaler('cuda', enabled=True)
     report['estimated_excluded_adam_moment_bytes'] = 2 * sum(p.numel() * p.element_size() for p in parameters)
-    report['initial_parameters_sha256'] = parameter_digest(model)
+    initial_parameters = parameter_snapshot(model)
+    report['parameter_tensor_count'] = len(initial_parameters)
     # Same production loader components/options, except finite issuance and the
     # explicit worker candidate. No extra prepared frames beyond the16 tickets.
     indices = {frame_key(key, 'realsense'): i for i, key in enumerate(dataset.keys)}
@@ -279,9 +284,9 @@ def run_trial(args, report):
         observed = [dict(sample_uid=f['sample_uid'], augmentation_seed=f['augmentation_seed'])
                     for b in report['blocks'] for m in b['microbatches'] for f in m['frames']]
         require(observed == report['planned_frames'], 'Consumed frame/augmentation order differs from plan')
-        report['consumed_frames_sha256'] = content_digest(observed)
-        report['final_parameters_sha256'] = parameter_digest(model)
-        require(report['final_parameters_sha256'] == report['initial_parameters_sha256'], 'Unexpected parameter update')
+        report['consumed_frames_match_plan'] = True
+        report['parameters_unchanged'] = parameters_unchanged(model, initial_parameters)
+        require(report['parameters_unchanged'], 'Unexpected parameter update')
         require(not optimizer.state, 'Unexpected Adam moment state')
         report['status'] = 'completed'
     finally:
@@ -294,7 +299,7 @@ def run_trial(args, report):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--self-test', action='store_true')
-    for flag in ('repo-root', 'config', 'performance-config', 'expected-code-revision', 'expected-worktree-sha256', 'gpu-uuid', 'gpu-lock', 'out'):
+    for flag in ('repo-root', 'config', 'performance-config', 'expected-code-revision', 'gpu-uuid', 'gpu-lock', 'out'):
         p.add_argument('--'+flag)
     p.add_argument('--microbatch', type=int, choices=(1,2,4), default=1)
     p.add_argument('--accumulation', type=int, choices=(1,2,4), default=4)
@@ -320,7 +325,7 @@ def main():
         assert result['frames_per_second'] == 1.2 and result['median_block_seconds'] == 3
         print('Bounded issuance and warmup-excluding throughput self-test passed (CPU/stdlib).')
         return 0
-    for field in ('repo_root','config','performance_config','expected_code_revision','expected_worktree_sha256','gpu_uuid','gpu_lock','out','gpu_memory_limit_gib'):
+    for field in ('repo_root','config','performance_config','expected_code_revision','gpu_uuid','gpu_lock','out','gpu_memory_limit_gib'):
         require(getattr(args, field) is not None, f'--{field.replace("_", "-")} required')
     require(args.microbatch * args.accumulation == 4, 'Fixed effective batch4 required')
     require(0 < args.memory_fraction <= .85 and args.gpu_memory_limit_gib > 0, 'Invalid allocator cap')

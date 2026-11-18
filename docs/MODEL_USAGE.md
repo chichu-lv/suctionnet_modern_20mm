@@ -1,5 +1,7 @@
 # 模型运行入口
 
+当前全项目采用[无内容校验和的读取与恢复检查](NO_CONTENT_CHECKSUMS.md)：不计算或验证 SHA-256，实际配置、模型、ID、shape/有限性和事务状态检查继续保留。历史性能段落中的旧档案不构成当前校验要求。
+
 实现包含只读源数据适配、E0–E5、预训练、两种目标域微调、实际姿态 R20 评价和无标签推理。CPU 合成测试不需要 spconv；生产稀疏主干需要 CUDA。运行结果及限制见 [验证记录](MODEL_VALIDATION.md)，性能变化与部署过程见 [性能优化全程总览](PERFORMANCE_HISTORY.md)。
 
 ## 环境与外部主干
@@ -90,45 +92,44 @@ python -c 'import json; from models.spatial_index import spatial_index_backend_i
 
 实际 H20 部署使用 `/usr/bin/python3 setup.py build_ext --inplace`：训练 venv 没有 setuptools，系统 Python 已有；二者均为 Python 3.10.12，ABI 匹配。L20 构建采用相同方式，不因此自动启动迁移。使用这种方式前核对两解释器的版本和 `sysconfig.get_config_var("SOABI")`，构建后必须用**训练 venv 的 Python**执行上面的 `fps_backend_identity("compiled")` 导入检查。不要把 ABI 不匹配的系统扩展当作可用，也不需要为本次构建修改旧训练依赖。
 
-历史 P1 H20 部署的 FPS binary SHA256 为 `9d1aa3a31aa1e855fccc9504e2bcf89c54d3e191aa231e582ede06d060971bf7`。临时 staging 与正式 checkout 的构建路径会影响带调试信息的二进制摘要，因此现场身份以正式构建的实际 hash 为准；C source、编译 flags、ABI 也同时记录，迁移后普通恢复必须匹配。
+当前 native 身份使用显式 source version、ABI、compiler、编译参数、Python cache tag 和二进制文件名，不读取源文件或二进制来计算内容摘要。历史部署报告中的旧字段保留作档案，当前不验证。
 
-`setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码摘要；实际扩展的 binary/source SHA256、compiler、flags、ABI 和 Python cache tag 单独进入运行身份。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
+`setup.py` 使用 `-O3 -fno-fast-math -ffp-contract=off`。安装时扩展是 optional，但 `fps_backend:"compiled"` 启动时必须成功导入；不会静默换成 NumPy。`.so` 和 `build/` 不纳入源码版本引用；扩展版本、compiler、flags、ABI 和 Python cache tag 单独进入运行元数据。冻结部署前完成构建和文档更新，之后不能在 live checkout 修改文件或重建扩展后直接恢复旧身份。
 
-当前额外 JSON sidecar 按主机选择 [H20 64k](../configs/performance/cd009-p3-integrated.json) 或 [L20 16k](../configs/performance/cd009-p3-l20-16k.json)，保持原正式 profile 字节和哈希。[P2 sidecar](../configs/performance/cd009-p2.json) 保留作源身份及历史参考。`--performance-config PATH` 在预训练入口加载所选文件，写入 `runtime.performance` 和原始字节 `runtime.performance_config_sha256`。v2/v3 保留下面的 v1 字段契约：
+当前额外 JSON sidecar 按主机选择 [H20 64k](../configs/performance/cd009-p3-integrated.json) 或 [L20 16k](../configs/performance/cd009-p3-l20-16k.json)，保留原正式 profile 参数。[P2 sidecar](../configs/performance/cd009-p2.json) 保留作源身份及历史参考。`--performance-config PATH` 在预训练入口加载所选文件，写入 `runtime.performance`，直接保存解析后的配置及路径/大小元数据。v2/v3 保留下面的 v1 字段契约：
 
-- 当前整合目标为 `schema_version:"suction20.performance.v3"`；既有 v1/v2 与原 v3 字段集仍兼容，不自动补写字段或改变 sidecar 原字节哈希。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
+- 当前整合目标为 `schema_version:"suction20.performance.v3"`；既有 v1/v2 与原 v3 字段集仍兼容，不自动改动显式配置参数。`fps_backend:"compiled"` 或显式参考 `"numpy"`。
 - NumPy 参考路径中，`query_chunk_size:null` 显式选择逐候选共享几何查询；整数 1–64 选择分块查询。`query_workers` 为 1 或 4，仅分块路径使用。当前 native 配置要求 `null / 1`；原生候选线程独立固定为 `min(2, CPU affinity)`，不由这两个字段控制。
 - `loader` 含 `num_workers:2`、`prefetch_factor:2`、`persistent_workers:true`、`pin_memory:true`、`multiprocessing_context:"spawn"`。`num_workers:0` 仅供显式 CPU/reference 路径；不引入另一套训练进度。
 - `detailed_cpu_timing:false` 为常规值。未知键、错误类型和范围被拒绝。
 
-P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`backbone_coordinate_fastpath:true`、`no_instance_voxel_heads:false`。空间网格和FPS的源码/编译器/flags/ABI/二进制摘要分别绑定到当前身份；原始全点几何和排序不变。不要启用未通过真实梯度验收的voxel路径。
+P2新增 `spatial_index:{"backend":"uniform_grid_cpu","cell_size_m":0.02}`、`backbone_coordinate_fastpath:true`、`no_instance_voxel_heads:false`。空间网格和FPS的显式版本、编译器、flags与ABI分别进入运行元数据；原始全点几何和排序不变。不要启用未通过真实梯度验收的voxel路径。
 
 整合 v3 使用 `contact_query_backend:"native_cpu"`、顶层 `dense_chunk_size_override`（H20 为 65536，L20 为 16384）及 `chunk_input_mode:"split"`。覆盖值只改变模型实际执行参数，不回写 `model.dense_chunk_size` 或 profile 字节；split 用一次 `torch.split` 连接同一输入的所有块，保留逐块前向及 checkpoint 顺序。训练 attempt 的 `execution.model_execution`、配对报告的 `identities.*.model_execution`、batch benchmark 的 `identity.model_execution` 会同时显示原 profile 值和实际值。历史 L20/E5 64k 零更新短测不是当前 L20 16k 配置的收益，也不覆盖随后 E3 checkpoint 的 64k 梯度失败。
 
 主进程在 pinning 后建立 `CpuGeometry` 与独立 `SamplerTargetsCPU`，上传 GPU 消费字段；观测上下文不含标签、不进入 state_dict。worker 只准备 CPU 数据；独立 DataLoader generator 不消耗模型 RNG。已发出 ticket 与已完成 backward 的消费游标分开，checkpoint 只持久化消费游标；AMP 跳步保留实际帧消费，但不推进成功更新预算。
 
-在私有 supervisor 配置增加所需 host/experiment 项，路径必须是对应主机的绝对路径，hash 是 sidecar 的原始字节 SHA256：
+在私有 supervisor 配置增加所需 host/experiment 项，路径必须是对应主机的绝对路径；可选 `config_definition` 保存实际 JSON 小型配置供直接比较：
 
 ```json
 {
   "performance_configs": {
     "H20": {
       "E5": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p3-integrated.json",
-        "config_sha256": "REPLACE_WITH_RAW_FILE_SHA256"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/performance/cd009-p3-integrated.json"
       }
     }
   }
 }
 ```
 
-上例为 H20/E5；L20 按实际迁移批次登记 16k sidecar。本轮 L20/E0、E1、E3 使用运行根目录 `performance/` 下的独立固定文件，SHA256 为 `39c8422e1c817d1af14e8ff160299669d008d8ca9fc56b782d22368b7e5b1f24`。缺省项沿用无性能 sidecar 路径。assignment 保存 `performance_config_path`、`performance_config_sha256` 和解析后的 `performance_settings`，worker 校验后复制为其 control attempt 下的 `performance-config.json`，实际 CLI 使用该快照。原 `profiles[host][experiment]` 和 `config_sha256` 保持不变。新建 run 使用同一 supervisor 入口；尚未切换的既有 run 按下述流程迁移，已完成者继续原训练。
+上例为历史 H20/E5 参数布局；L20 按实际运行配置选择对应 sidecar。assignment 保存 `performance_config_path` 与解析后的 `performance_settings`，worker 对实际小型配置作直接比较并复制到 control attempt 的 `performance-config.json`，CLI 使用该快照。新记录不包含内容校验字段；旧字段读取时忽略。当前新训练优先使用上文选定的 v4 配方，P1/P2/P3 参数不自动迁移既有学习状态。
 
 ### 历史 checkpoint 迁移（当前版本不再支持）
 
 CD-009 在 P1/P2/P3 阶段曾使用一次性转换器，对暂停运行做显式 checkpoint 迁移；该流程、来源版本白名单、receipt 迁移链及过渡期 supervisor 例外放行均已退出当前代码。**本节及相关 P1/P2/P3 报告仅作为历史实验记录，不是当前可执行的操作说明。**
 
-当前代码不再提供 `scripts/migrate_performance_checkpoint.py`，也不会自动改写 checkpoint 权重、optimizer、sampler、RNG 或运行身份。正常 `--resume` 只允许代码、数据、配置与 performance sidecar 身份完全匹配的同版本续训。历史 checkpoint 如包含 `performance_migration` 收据，应使用迁移清理前的固定历史源码版本 `fb8a2dacc996b98d86cd0aa52dd7a859f92dd32c` 及对应的归档核验流程；不要删除收据后强制恢复。
+当前代码不再提供 `scripts/migrate_performance_checkpoint.py`，也不会自动改写 checkpoint 权重、optimizer、sampler、RNG 或运行身份。正常 `--resume` 只允许代码、数据、配置与 performance sidecar 身份完全匹配的同版本续训。历史 checkpoint 如包含 `performance_migration` 收据，当前代码拒绝该已退役的迁移恢复路径；档案只作历史追溯，不删除收据强制恢复，也不重新运行旧摘要核验流程。
 
 现行支持范围、拒绝策略与历史资料说明参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
 
@@ -268,7 +269,7 @@ uses a new attempt token and the same device.
 After verifying the next successful update, record `evidence prefix:E3 --file ...`
 with `passed:true`, the derived `paused_step`/`resumed_step`, and
 `identity_and_sampler_passed:true`. V3 prefix/stability/completion evidence also
-binds the current `attempt_id`, `profile_sha256` and `contract_version`.
+binds the current `attempt_id`, the actual `profile_definition` and `contract_version`.
 Every experiment requires its own prefix evidence. Record `stable:E3`, then
 `stable:E0`, then `stable:E1` after each corresponding run's prefix/resume checks
 and at least20 successful updates plus600 seconds of healthy observations. A
@@ -325,8 +326,8 @@ reconcile all old owners before assigning work. They snapshot the authoritative
 checkpoint manifest, all referenced immutable checkpoint blobs, metadata,
 validation JSON and bounded append-only attempt logs. Logs may contain a tail
 beyond the committed checkpoint; its ledger cursor remains authoritative.
-Checkpoint objects are deduplicated by SHA256, reread to verify, and linked within
-the backup root. `backup-complete.json` is published last. Two ordinary hourly
+Checkpoint objects reuse immutable generation IDs and expected byte lengths within
+the backup root; copying does not compute or reread content checksums. `backup-complete.json` is published last. Two ordinary hourly
 snapshots per attempt and all validation-node/final snapshots are retained; local
 originals remain intact. Final/pause workers keep locks while waiting for their
 last backup grant, even after the trainer has exited. Two copy failures stop the
@@ -335,7 +336,7 @@ proceed; missing-grant/network waits do not release ownership. Immutable blobs
 and atomic metadata are locally hardlink-pinned before copying, preventing
 pruning/replacement races. Selected assignment/command/status/resource evidence
 is included; SSH transport secrets are excluded. Restore a complete snapshot with
-links dereferenced (`cp -aL` or equivalent), then verify its hashes before using
+links dereferenced (`cp -aL` or equivalent), then inspect referenced files, expected lengths, run IDs and parsed records before using
 its manifest. A collection of mountpoints is still one shared backup copy.
 
 ```bash
@@ -378,7 +379,7 @@ a fresh assignment without a checkpoint.
 
 Completion is an explicit acceptance operation. Record `complete:E3` evidence
 with `passed:true`, derived `global_step`, `effective_samples_completed:230400`,
-`validation_nodes:10`, and `hashes_passed/ledger_passed/backup_passed:true`, plus
+`validation_nodes:10`, and `ledger_passed/backup_passed:true`, plus
 the current attempt/profile/contract identity. The supervisor independently
 checks the ten exact sample coordinates and320-frame completion metadata. Then
 `release E3`. Release verifies exited owner, free locks and published checkpoint again.
@@ -417,8 +418,9 @@ with `runtime_profile` containing `profile_id`, `training_version:"v3"`,
 Set positive `runtime.cpu_threads` explicitly. Set `runtime.gpu_memory_limit_gib`
 to a positive GiB cap or explicit JSON `null` for no artificial GPU memory limit;
 new fresh-run presets default to `null`, while existing finite profiles stay unchanged.
-Register its absolute path and raw SHA256 in supervisor `profiles[host][experiment]`.
-The supervisor binds the profile, sample budget and config hash to each assignment,
+Register its absolute path in supervisor `profiles[host][experiment]`. An optional
+`config_definition` can specify the actual expected JSON configuration.
+The supervisor binds the parsed profile, sample budget and configuration to each assignment,
 then copies the exact config into its attempt directory before launch.
 
 A changed batch requires a separate version/run namespace, not changed-config
@@ -451,12 +453,12 @@ python scripts/export_training_logs.py --run-dir /path/to/run \
   --output-dir /path/to/new-analysis-snapshot
 ```
 
-The exporter verifies checkpoint and source hashes and writes update/frame/event/
+The exporter checks checkpoint references, file lengths, record IDs and committed log prefixes, then writes update/frame/event/
 resource/validation CSVs, a summary and a source manifest. Committed progress,
 caller-designated live tails, uncommitted tails and abandoned attempts are labeled
 separately. `--checkpoint-role predecessor` records an explicit rollback view;
 `--live-attempt-id` labels a tail and does not prove its process is alive. Missing
-metadata or hash failures are errors, not grounds to infer progress from log rows.
+metadata, truncation or record identity failures are errors, not grounds to infer progress from log rows.
 Persistent last-completed-validation metadata supports observers even after the
 trainer clears its transient validation phase. ETA histories must be scoped by
 contract, profile, hardware and attempt; profiling and old-version work do not

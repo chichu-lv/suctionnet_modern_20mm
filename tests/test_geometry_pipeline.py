@@ -98,7 +98,7 @@ def test_production_trainer_completes_two_pipelined_updates(tmp_path, monkeypatc
 
     monkeypatch.setattr(entry, "make_source_dataset", lambda *args, **kwargs: Source())
     monkeypatch.setattr(entry, "make_model", make_model)
-    monkeypatch.setattr(entry, "worktree_digest", lambda: "synthetic-fixed-source")
+    monkeypatch.setattr(entry, "worktree_state", lambda: {"revision": "synthetic-fixed-source", "tracked_changes": []})
     base = {"experiment": "E3", "seed": 42,
             "model": {"experiment": "E3", "quality_target": "gt_B", "seed_count": 4,
                       "pose_chunk_size": 4},

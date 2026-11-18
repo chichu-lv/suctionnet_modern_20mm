@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack, contextmanager
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +22,8 @@ import time
 import uuid
 
 from suction20.pretrain_budget import CONTRACT_VERSION, resolve_budget, resolve_config
+from suction20.metadata import without_legacy_checksums
+from suction20.pretrain_runtime import file_metadata
 
 GIB = 1024 ** 3
 EXPERIMENTS = tuple(f"E{i}" for i in range(6))
@@ -47,7 +48,7 @@ def atomic_json(path, value):
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         with temp.open("x") as stream:
-            json.dump(value, stream, sort_keys=True)
+            json.dump(without_legacy_checksums(value), stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -59,14 +60,6 @@ def atomic_json(path, value):
             os.close(fd)
     finally:
         temp.unlink(missing_ok=True)
-
-
-def digest(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
 
 
 def machine_id():
@@ -371,9 +364,11 @@ def selected_profile(config, experiment, host):
         raise Refused(f"missing selected profile for {host}/{experiment}")
     path = Path(selection["config_path"])
     payload = path.read_bytes()
-    if not path.is_absolute() or hashlib.sha256(payload).hexdigest() != selection.get("config_sha256"):
-        raise Refused("selected profile config hash/path mismatch")
-    raw = json.loads(payload)
+    if not path.is_absolute():
+        raise Refused("selected profile config path must be absolute")
+    raw = without_legacy_checksums(json.loads(payload))
+    if selection.get("config_definition") is not None and raw != without_legacy_checksums(selection["config_definition"]):
+        raise Refused("selected profile configuration changed")
     if raw.get("experiment") != experiment or raw.get("seed", 42) != 42:
         raise Refused("selected config experiment/seed mismatch")
     resolved = resolve_config(raw)
@@ -403,8 +398,8 @@ def selected_profile(config, experiment, host):
         if type(affinity_count) is not int or affinity_count < 1:
             raise Refused("selected profile CPU affinity count must be a positive integer")
         selected_runtime["cpu_affinity_count"] = affinity_count
-    return {"config_path": str(path), "config_sha256": selection["config_sha256"],
-            "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    return {"config_path": str(path), "config_definition": raw,
+            "profile_definition": profile,
             "runtime_profile": profile, "budget": budget,
             "runtime": selected_runtime}
 
@@ -415,15 +410,17 @@ def selected_performance(config, experiment, host):
         return {}
     from suction20.performance import load_performance_config
     path = Path(selection["config_path"])
-    if not path.is_absolute() or digest(path) != selection.get("config_sha256"):
-        raise Refused("performance sidecar hash/path mismatch")
-    return {"performance_config_path": str(path), "performance_config_sha256": selection["config_sha256"],
-            "performance_settings": load_performance_config(path)}
+    if not path.is_absolute():
+        raise Refused("performance sidecar path must be absolute")
+    settings = load_performance_config(path)
+    if selection.get("config_definition") is not None and settings != selection["config_definition"]:
+        raise Refused("selected performance configuration changed")
+    return {"performance_config_path": str(path), "performance_settings": settings}
 
 
 def verify_assignment_performance(config, assignment):
     selected = selected_performance(config, assignment["experiment"], assignment["host"])
-    keys = ("performance_config_path", "performance_config_sha256", "performance_settings")
+    keys = ("performance_config_path", "performance_settings")
     if any(assignment.get(key) != selected.get(key) for key in keys):
         raise Refused("assignment performance sidecar changed; restore the original assignment or start a new run")
     return selected
@@ -431,7 +428,7 @@ def verify_assignment_performance(config, assignment):
 
 def verify_assignment_profile(config, assignment):
     selected = selected_profile(config, assignment["experiment"], assignment["host"])
-    if any(assignment.get(key) != value for key, value in selected.items()):
+    if any(assignment.get(key) != value for key, value in selected.items() if key in assignment):
         raise Refused("assignment profile/budget changed; fresh version required")
     if assignment.get("budget", {}).get("contract_version") == CONTRACT_VERSION and not selected:
         raise Refused("v3 assignment cannot fall back to legacy configuration")
@@ -458,8 +455,16 @@ def verify_checkpoint_contract(assignment, checkpoint, *, complete=False):
             analysis.get("completed_validation_nodes") != checkpoint.get("completed_validation_nodes") or
             analysis.get("last_completed_validation") != checkpoint.get("last_completed_validation")):
         raise Refused("checkpoint inline analysis disagrees with committed identity/counters")
-    if assignment.get("performance_config_sha256") and (analysis.get("identity") or {}).get("performance", {}).get("config_sha256") != assignment["performance_config_sha256"]:
-        raise Refused("checkpoint performance sidecar identity mismatch")
+    if assignment.get("performance_settings"):
+        saved_performance = (analysis.get("identity") or {}).get("performance") or {}
+        saved_settings = saved_performance.get("settings")
+        if saved_settings is not None:
+            if saved_settings != assignment["performance_settings"]:
+                raise Refused("checkpoint performance sidecar identity mismatch")
+        elif saved_performance.get("schema_version") != assignment["performance_settings"].get("schema_version"):
+            raise Refused("historical checkpoint performance schema mismatch")
+        # Legacy inline metadata lacks actual settings. The trainer checks its
+        # saved training config before the first resumed optimizer update.
     if complete:
         expected = [{"step": node, "effective_samples": node * budget["effective_batch_size"], "frame_count": 320}
                     for node in budget["validation_steps"]]
@@ -727,7 +732,7 @@ def committed_checkpoint(run):
         path = (run / entry["path"]).resolve()
         if run.resolve() not in path.parents:
             raise Refused("checkpoint path escapes run")
-        if path.is_file() and digest(path) == entry["sha256"]:
+        if path.is_file() and path.stat().st_size == entry["size_bytes"]:
             return dict(entry, recovery_role=role)
     return None
 
@@ -759,7 +764,8 @@ def final_backup_verified(config, assignment, checkpoint, done):
         return False
     if not any(files[name].get("size_bytes", 0) > 0 for name in logs):
         return False
-    if current.get("sha256") != checkpoint["sha256"] or files[checkpoint["path"]].get("sha256") != checkpoint["sha256"]:
+    if (current.get("generation", current.get("path")) != checkpoint.get("generation", checkpoint["path"])
+            or files[checkpoint["path"]].get("size_bytes") != checkpoint["size_bytes"]):
         return False
     total = 0
     for name, entry in files.items():
@@ -771,7 +777,7 @@ def final_backup_verified(config, assignment, checkpoint, done):
         if type(size) is not int or size < 0 or backup_root not in path.parents:
             return False
         total += size
-        if total > 100 * GIB or not path.is_file() or path.stat().st_size != size or digest(path) != entry.get("sha256"):
+        if total > 100 * GIB or not path.is_file() or path.stat().st_size != size:
             return False
     return True
 
@@ -779,7 +785,7 @@ def final_backup_verified(config, assignment, checkpoint, done):
 def check_evidence(assignment, category, evidence):
     budget = assignment_budget(assignment)
     if budget["contract_version"] == CONTRACT_VERSION:
-        if (evidence.get("profile_sha256") != assignment.get("profile_sha256") or
+        if (evidence.get("profile_definition") != assignment.get("profile_definition") or
                 evidence.get("contract_version") != CONTRACT_VERSION or evidence.get("attempt_id") != assignment["token"]):
             raise Refused("evidence contract/profile/attempt mismatch")
     if category == "prefix":
@@ -787,7 +793,7 @@ def check_evidence(assignment, category, evidence):
             raise Refused("prefix requires budget boundary pause, next update resume and sampler/identity check")
     if category == "complete":
         if evidence.get("global_step") != budget["target_updates"] or evidence.get("validation_nodes") != 10 or not all(
-                evidence.get(key) for key in ("hashes_passed", "ledger_passed", "backup_passed")):
+                evidence.get(key) for key in ("file_sizes_passed", "ledger_passed", "backup_passed")):
             raise Refused("completion evidence incomplete")
         if budget["contract_version"] == CONTRACT_VERSION:
             if evidence.get("effective_samples_completed") != budget["target_samples"]:
@@ -868,7 +874,7 @@ def backup_snapshot(config, assignment, request):
                     source = (run / relative).resolve()
                     if run.resolve() not in source.parents:
                         raise Refused("checkpoint path escapes run")
-                    target = pin_root / entry["sha256"]
+                    target = pin_root / Path(entry["path"]).name
                     if not target.exists():
                         os.link(source, target)
                     pins[relative] = target
@@ -920,7 +926,7 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
             files[relative] = {"size_bytes": size}
         safe_config = {key: config[key] for key in (
             "root", "python", "source_root", "label_root", "backup_root",
-            "backbone_root", "manifest_sha256")}
+            "backbone_root", "manifest_metadata") if key in config}
         safe_config.update({key: config[key] for key in (
             "contract_version", "profiles", "performance_configs", "lock_root",
             "extra_authorized_gpus", "control_repo") if key in config})
@@ -934,7 +940,7 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         files[relative] = {"size_bytes": snapshot.stat().st_size}
     destination = backup / assignment["experiment"] / assignment["token"] / request["request_id"]
     destination.mkdir(parents=True, exist_ok=True)
-    hashes = {}
+    copied_files = {}
     started, written = time.monotonic(), 0
     for relative, entry in sorted(files.items()):
         source = pins.get(relative) or control_sources.get(relative) or (run / relative).resolve()
@@ -943,24 +949,25 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         temp = target.with_name(target.name + ".partial")
-        # Reuse verified immutable objects across hourly snapshots. Links stay
-        # inside the backup root; restore with cp -L or equivalent.
-        object_path = (backup / "objects" / entry["sha256"]) if entry.get("sha256") else None
-        if object_path and object_path.exists() and digest(object_path) == entry["sha256"]:
+        # Reuse committed generations, never content-address or scan checksums.
+        # IDs are immutable publication IDs, not proof of unchanged file bytes.
+        object_id = entry.get("generation")
+        if object_id is not None and (not isinstance(object_id, str) or not object_id.isalnum()):
+            raise Refused("invalid checkpoint generation ID")
+        object_path = backup / "objects" / object_id if object_id else None
+        if object_path and object_path.is_file() and object_path.stat().st_size == entry["size_bytes"]:
             target.unlink(missing_ok=True)
             target.symlink_to(os.path.relpath(object_path, target.parent))
             fsync_directory(target.parent)
-            hashes[relative] = {"sha256": entry["sha256"], "size_bytes": entry["size_bytes"]}
+            copied_files[relative] = {"object_id": object_id, "size_bytes": entry["size_bytes"]}
             continue
         remaining = entry["size_bytes"]
-        result = hashlib.sha256()
         with source.open("rb") as src, temp.open("wb") as out:
             while remaining:
                 block = src.read(min(1024 * 1024, remaining))
                 if not block:
                     raise Refused("source truncated during backup")
                 out.write(block)
-                result.update(block)
                 remaining -= len(block)
                 written += len(block)
                 delay = written / (25 * 1024 * 1024) - (time.monotonic() - started)
@@ -968,11 +975,8 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
                     time.sleep(delay)
             out.flush()
             os.fsync(out.fileno())
-        sha = result.hexdigest()
-        if entry.get("sha256") and entry["sha256"] != sha:
-            raise Refused("checkpoint checksum changed during backup")
-        if digest(temp) != sha:
-            raise Refused("backup readback hash mismatch")
+        if temp.stat().st_size != entry["size_bytes"]:
+            raise Refused("backup size mismatch")
         if object_path:
             object_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(temp, object_path)
@@ -982,9 +986,11 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         else:
             os.replace(temp, target)
         fsync_directory(target.parent)
-        hashes[relative] = {"sha256": sha, "size_bytes": entry["size_bytes"]}
+        copied_files[relative] = {"size_bytes": entry["size_bytes"]}
+        if object_id:
+            copied_files[relative]["object_id"] = object_id
     atomic_json(destination / "checkpoint-manifest.json", manifest)
-    atomic_json(destination / "backup-complete.json", {"files": hashes, "request": request,
+    atomic_json(destination / "backup-complete.json", {"files": copied_files, "request": request,
                                                         "completed_unix": time.time()})
     # Keep two ordinary hourly snapshots per attempt plus all node/final ones.
     # The newest snapshot includes complete bounded logs; originals stay local.
@@ -1000,9 +1006,9 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
     # collect while copying (this function runs under the global backup grant).
     referenced = set()
     for marker in backup.glob("E*/*/*/backup-complete.json"):
-        referenced.update(item["sha256"] for item in read_json(marker)["files"].values())
+        referenced.update(item["object_id"] for item in read_json(marker)["files"].values() if item.get("object_id"))
     for path in (backup / "objects").glob("*"):
-        if path.name not in referenced:
+        if len(path.name) == 32 and path.name not in referenced:
             path.unlink()
     return str(destination)
 
@@ -1046,8 +1052,10 @@ def run_worker(config, host, assignment):
                     if sample < 2:
                         time.sleep(30)
                 manifest = Path(config["label_root"]) / "manifest.json"
-                if digest(manifest) != config["manifest_sha256"]:
-                    raise Refused("dataset manifest identity mismatch")
+                if not manifest.is_file():
+                    raise Refused("dataset manifest missing")
+                if config.get("manifest_metadata") is not None and file_metadata(manifest) != config["manifest_metadata"]:
+                    raise Refused("dataset manifest size mismatch")
                 if assignment.get("resume"):
                     path = run / assignment["resume"]
                     checkpoint = committed_checkpoint(run)
@@ -1060,7 +1068,7 @@ def run_worker(config, host, assignment):
                 command = trainer_command(config, assignment)
                 if assignment.get("config_path"):
                     payload = Path(assignment["config_path"]).read_bytes()
-                    if hashlib.sha256(payload).hexdigest() != assignment["config_sha256"]:
+                    if assignment.get("config_definition") is not None and without_legacy_checksums(json.loads(payload)) != assignment["config_definition"]:
                         raise Refused("selected config changed before launch")
                     snapshot = control / "selected-config.json"
                     temporary = snapshot.with_name(snapshot.name + "." + uuid.uuid4().hex + ".tmp")
@@ -1073,7 +1081,7 @@ def run_worker(config, host, assignment):
                     command[command.index("--config") + 1] = str(snapshot)
                 if assignment.get("performance_config_path"):
                     payload = Path(assignment["performance_config_path"]).read_bytes()
-                    if hashlib.sha256(payload).hexdigest() != assignment["performance_config_sha256"]:
+                    if json.loads(payload) != assignment["performance_settings"]:
                         raise Refused("performance sidecar changed before launch")
                     snapshot = control / "performance-config.json"
                     with snapshot.open("xb") as stream:
@@ -1453,7 +1461,7 @@ def main(argv=None):
                 if category == "complete":
                     coordinator.reconcile()
                 check_evidence(coordinator.state["assignments"][experiment], category, evidence)
-            coordinator.state["evidence"][args.key] = {"content": evidence, "sha256": digest(args.file),
+            coordinator.state["evidence"][args.key] = {"content": evidence, "file_metadata": file_metadata(args.file),
                                                         "recorded_unix": time.time()}
             coordinator.save()
         elif args.command == "pause":

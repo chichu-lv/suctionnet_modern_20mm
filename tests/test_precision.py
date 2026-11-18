@@ -82,11 +82,11 @@ def test_mixed_precision_sparse_boundary(monkeypatch, dtype, training):
 
 
 def test_inference_inherits_saved_explicit_precision():
-    from suction20.training import content_digest
+    from suction20.training import configuration_identity
     from suction20.validation import checkpoint_inference_config
     source = {"radius": .02}
     state = {"format_version": "suction20.checkpoint.v1", "source_label_config": source,
-             "source_label_config_sha256": content_digest(source), "experiment": "E1",
+             "source_label_definition": configuration_identity(source), "experiment": "E1",
              "model_config": {"experiment": "E1"},
              "training_config": {"training": {"precision": "bf16"}}}
     resolved = checkpoint_inference_config({"experiment": "E1", "model": {}}, state)

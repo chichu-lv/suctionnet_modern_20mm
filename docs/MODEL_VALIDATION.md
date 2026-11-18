@@ -1,5 +1,13 @@
 # 模型验证与当前训练状态
 
+## 2026-11-18 无内容校验和的运行修复
+
+主线同步删除现行训练、数据、checkpoint、监督器、备份、日志导出、原生扩展及基准/归档脚本中的 SHA-256 计算和验证，加入根 AGENTS 约束与 `tests/test_no_sha256_verification.py`。不以另一内容摘要算法替代；实际配置、模型形状、物理定义、长度、ID、预算、原子写入和运行所有权继续检查。历史结果数值与旧元数据档案保持原记录。[当前读取规则](NO_CONTENT_CHECKSUMS.md)及[旧checkpoint兼容范围](CHECKPOINT_POLICY.md)说明了未知来源与旧target sampler的限制。
+
+主线共用旧运行链路的16组回归为 **268 passed / 1 skipped（11.07s）**；覆盖新旧pretrain恢复、optimizer/RNG连续性、微调、备份、导出、截断与配置冲突。唯一skip需要真实 `R20_RELEASE_ROOT`。永久禁用门禁的 **60项测试通过**；原生扩展用GCC成功重编译，数组对照直接比较实际数值。最终各分支完整CI以提交的Actions结果为准，本地合成检查不等于真实GPU或全量数据训练。
+
+A/B实例模型仍分别位于 [A分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) 和 [B分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings)，这次主线没有合入实例模型。
+
 ## E5完整测试与公开方法对比（2026-11-18）
 
 E0–E5从头预训练和E5目标微调的完成记录见[实验资料](experiments/CD010-20261117/README.md)。本次汇总冻结的 **E5 best step2880**（checkpoint SHA256 `5bc2c14c014fbf23cbef48062a0dac523ea243b6c18e540bb5af022ff7d0ea3a`）的完整公开测试，使用RealSense、GT实例输入、模型排序分数`q`，覆盖scene100–189的全部256视角，三组各7,680帧，共23,040帧。

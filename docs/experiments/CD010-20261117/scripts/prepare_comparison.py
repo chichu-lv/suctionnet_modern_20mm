@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from infer_target import asset, atomic_json, case_key, sha256
+from infer_target import asset, atomic_json, clean_metadata, existing_cases, file_record
 
 
 SCHEMA = "suction20.target-comparison.v1"
@@ -160,11 +160,19 @@ def sample_pixels(valid, mask, maximum):
     return np.sort(np.concatenate(selected))
 
 
-def prepare_case(case_path, prepared, output, results, source_config, source_identity, maximum, shared_cloud_root=None):
-    case = json.loads(case_path.read_text())
-    key = case_key(case)
-    if key != case_path.stem:
-        raise ValueError(f"Case filename does not match sample identity: {case_path}")
+def checkpoint_record(case):
+    identity = clean_metadata(case.get("identity", {}))
+    return {key: identity[key] for key in ("checkpoint", "checkpoint_step", "checkpoint_stage",
+                                         "target_mode", "schema_version") if key in identity}
+
+
+def prepare_case(case_path, prepared, output, results, source_config, source_identity, maximum,
+                 shared_cloud_root=None, shared_case_paths=None):
+    case = clean_metadata(json.loads(case_path.read_text()))
+    # Archival filenames are opaque paths. Stored sample_id joins observations.
+    key = case_path.stem
+    if not isinstance(case.get("sample_id"), str) or not case["sample_id"]:
+        raise ValueError(f"Case has no sample_id: {case_path}")
     observation = case["observation"]
     if observation.get("projection_convention") != "pinhole":
         raise ValueError(f"Unsupported projection for {key}")
@@ -173,12 +181,16 @@ def prepare_case(case_path, prepared, output, results, source_config, source_ide
         raise ValueError(f"Invalid intrinsics for {key}")
     originals, comparisons = compare_poses(case, intrinsic)
     if shared_cloud_root is not None:
-        # Reuse the immutable observed cloud; only model candidates and pairing change.
-        reference_path = shared_cloud_root / "comparison" / f"{key}.json"
-        reference = json.loads(reference_path.read_text())
-        source_case = json.loads((shared_cloud_root / "cases" / case_path.name).read_text())
+        # Reuse by declared observation identity and validated binary dimensions.
+        if shared_case_paths is None:
+            shared_case_paths = existing_cases(shared_cloud_root)
+        source_case_path = shared_case_paths.get(case["sample_id"])
+        if source_case_path is None:
+            raise ValueError(f"Shared cloud has no sample_id: {case['sample_id']}")
+        reference_path = shared_cloud_root / "comparison" / f"{source_case_path.stem}.json"
+        reference = clean_metadata(json.loads(reference_path.read_text()))
+        source_case = clean_metadata(json.loads(source_case_path.read_text()))
         if (reference["sample_id"] != case["sample_id"] or
-                source_case["asset_sha256"] != case["asset_sha256"] or
                 source_case["observation"] != observation or
                 source_case.get("metadata") != case.get("metadata")):
             raise ValueError(f"Shared cloud source identity/geometry mismatch: {key}")
@@ -188,21 +200,20 @@ def prepare_case(case_path, prepared, output, results, source_config, source_ide
         if binary.stat().st_size != cloud["count"] * cloud["stride_bytes"]:
             raise ValueError(f"Shared cloud size mismatch: {binary}")
         cloud["url"] = Path(os.path.relpath(binary, results)).as_posix()
-        cloud["shared_immutable_observation"] = True
-        result.update(originals=originals, comparisons=comparisons, notice=NOTICE,
+        cloud.pop("shared_immutable_observation", None)
+        cloud["shared_observation_provenance"] = "sample_id and declared observation/metadata; binary size checked"
+        result.update(case_key=key, originals=originals, comparisons=comparisons, notice=NOTICE,
                       ranking_score=case.get("ranking", {}).get("score_field", "q"))
-        result["provenance"].update(case_json_sha256=sha256(case_path),
-                                     checkpoint_sha256=case["identity"]["checkpoint_sha256"],
-                                     shared_cloud_comparison_sha256=sha256(reference_path))
+        result["provenance"].update(case_json=file_record(case_path),
+                                    checkpoint=checkpoint_record(case),
+                                    shared_cloud_comparison=file_record(reference_path))
         atomic_json(output / f"{key}.json", result)
         return result
     arrays = {}
-    hashes = {}
+    assets = {}
     for field in ("depth_path", "rgb_path", "instance_mask_path"):
         path = asset(prepared, observation[field])
-        hashes[field] = sha256(path)
-        if hashes[field] != case["asset_sha256"][field]:
-            raise ValueError(f"Frozen input digest mismatch: {path}")
+        assets[field] = file_record(path)
         with Image.open(path) as image:
             arrays[field] = np.array(image.convert("RGB") if field == "rgb_path" else image)
     depth, rgb, mask = (arrays[field] for field in ("depth_path", "rgb_path", "instance_mask_path"))
@@ -245,7 +256,7 @@ def prepare_case(case_path, prepared, output, results, source_config, source_ide
                  full_valid_count=int(valid.sum()), foreground_count=int(np.count_nonzero(packed[:, 6])),
                  background_count=int(np.count_nonzero(packed[:, 6] == 0)), maximum_points=maximum,
                  sampling="deterministic source-pixel bins within instance strata; 60% foreground budget, rest background; redistribute unused budget",
-                 source_pixel_roundtrip_max_px=roundtrip_error, sha256=sha256(binary))
+                 source_pixel_roundtrip_max_px=roundtrip_error, size_bytes=binary.stat().st_size)
     result = dict(schema_version=SCHEMA, case_key=key, sample_id=case["sample_id"],
                   original_status="missing" if not originals else "single" if len(originals) == 1 else "multiple",
                   original_count=len(originals), original_source_pose_count=len(case.get("metadata", {}).get("planned_poses", [])),
@@ -254,8 +265,8 @@ def prepare_case(case_path, prepared, output, results, source_config, source_ide
                               coordinate_frame=observation.get("coordinate_frame"), projection_convention="pinhole",
                               depth_scale_m=scale, depth_min_m=minimum, depth_max_m=maximum_depth,
                               depth_clip_source="case observation override, otherwise frozen source config"),
-                  provenance=dict(case_json_sha256=sha256(case_path), asset_sha256=hashes,
-                                  source_config=source_identity, checkpoint_sha256=case["identity"]["checkpoint_sha256"],
+                  provenance=dict(case_json=file_record(case_path), assets=assets,
+                                  source_config=source_identity, checkpoint=checkpoint_record(case),
                                   planned_pose_source="metadata.planned_pose_cam", original_metadata_join="object_id+instance_id",
                                   geometry_provenance=case.get("metadata", {}).get("geometry_provenance")), notice=NOTICE)
     atomic_json(output/f"{key}.json", result)
@@ -288,16 +299,18 @@ def main():
         parser.error("Output must be a subdirectory of results")
     output.mkdir(parents=True, exist_ok=True)
     config = json.loads(args.source_config.read_text())
-    identity = dict(path=str(args.source_config.resolve()), sha256=sha256(args.source_config),
+    identity = dict(**file_record(args.source_config),
                     depth_min_m=config["depth_min_m"], depth_max_m=config["depth_max_m"])
     cases = sorted((results/"cases").glob("*.json"))
     if not cases:
         parser.error("No existing case JSON files found")
     completed = []
+    shared_root = args.shared_cloud_root.resolve() if args.shared_cloud_root else None
+    shared_case_paths = existing_cases(shared_root) if shared_root else None
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         def prepare(path):
             return prepare_case(path, args.prepared, output, results, config, identity, args.max_points,
-                                args.shared_cloud_root.resolve() if args.shared_cloud_root else None)
+                                shared_root, shared_case_paths)
         for index, result in enumerate(pool.map(prepare, cases), 1):
             completed.append(result)
             if index % 25 == 0 or index == len(cases):
@@ -316,7 +329,7 @@ def main():
                    angle_formula="degrees(acos(clamp(dot(a,b)/(norm(a)*norm(b)),-1,1))); oriented outward axes, no abs(dot)",
                    sampled_points=sum(result["cloud"]["count"] for result in completed),
                    maximum_roundtrip_error_px=max(result["cloud"]["source_pixel_roundtrip_max_px"] for result in completed),
-                   source_config=identity, generator_sha256=sha256(__file__), notice=NOTICE)
+                   source_config=identity, generator=file_record(__file__), notice=NOTICE)
     atomic_json(output/"summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

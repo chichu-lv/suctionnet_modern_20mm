@@ -1,6 +1,5 @@
 """Small normal-path comparisons for exact FPS, queries and CPU model contexts."""
 import copy
-import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +59,7 @@ def assert_query_equal(expected, actual):
                                           err_msg=f'{name}.{field}')
             if field == 'geometry':
                 # Numerical equality hides signed-zero drift caught by the real
-                # paired query hashes. Descriptor identity is byte-exact.
+                # paired query comparisons. Descriptor identity is byte-exact.
                 assert actual[name][field].tobytes() == expected[name][field].tobytes(), name
     np.testing.assert_array_equal(actual['lip_sector_counts'], expected['lip_sector_counts'])
 
@@ -75,8 +74,8 @@ def test_compiled_fps_matches_reference_order_and_records_build(compiled_fps):
     identity = fps_backend_identity('compiled')
     assert identity['abi_version'] == 1
     assert identity['compile_flags'] == ['-O3', '-fno-fast-math', '-ffp-contract=off']
-    assert identity['source_sha256'] == hashlib.sha256(Path('models/csrc/fps_cpu.c').read_bytes()).hexdigest()
-    assert len(identity['binary_sha256']) == 64 and identity['compiler']
+    assert identity['source_version'] == 'fps_cpu_v1'
+    assert identity['binary_filename'].startswith('_fps_cpu.') and identity['compiler']
 
 
 def test_bounded_four_ball_queries_match_reference_and_rng(compiled_fps):
