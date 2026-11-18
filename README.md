@@ -19,8 +19,11 @@
 
 当前完成的是实施规格与阅读入口；两分支沿用相同的数据、物理 teacher、法向/候选、训练预算及评价合同。共同约定的变更须同步到两分支，并保存相同版本身份。模型、真实标签缓存、训练和部署按各分支的阶段验收推进。
 
+公开对照采用[逐方法成对协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)：每条路线分别对照S1B、Diffusion-Suction、UISN两种前端配置，以及待核验的MultiGraspNet两种配置。论文值已登记，本方法待测；不做参考方法之间的排行榜。
+
 ## Done（已完成）
 
+- [x] 整理[A/B与公开方法的比较协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)及[论文数值目录](docs/instance_routes/reference/paper_baselines.json)：固定RealSense全测试、六指标、预测前端/工作区、100场景source-only重训与仅半径参数化的官方评价合同；各分支提供六组成对表。
 - [x] 分别整理 [A](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) / [B](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 的六部分实施计划及独立开发分支，明确输入产物、实现接口、失败处理、训练配方和实验验收；生产接线与真实实验继续列为待办。
 - [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v3几何边界复核、保留目标自碰的同姿态标签、谐波/投影门控、稳健法向及候选回填规范；参考工具共129项合成检查通过。A/B模型、teacher接线和训练入口仍待实现。
 - [x] 单物体 v3 方法架构图：[路线 A](docs/instance_routes/METHOD_ARCHITECTURE_A.md) · [路线 B](docs/instance_routes/METHOD_ARCHITECTURE_B.md)；沿用论文式三面板版式，提供可编辑 SVG、PDF、高清 PNG、双语图注及确定性绘图脚本。
@@ -62,6 +65,7 @@
 
 ## TODO（待完成）
 
+- [ ] 按[公开比较执行顺序](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)接通全场景导出和官方半径适配，完成R10等价/空帧验收；A/B各自完成100场景public20训练及每推理profile的23,040帧评价后填成对表。
 - [ ] 按[单物体路线实施顺序](docs/instance_routes/TRAIN_EVAL_REPRODUCE.md)接通共用实例/查询数据、S/W/self/INST标签和A/B模型训练入口；先实现A，再在同一协议下验证B。
 - [ ] 在已有87条未参与选模的有标签test历史动作上，对冻结的E5预训练best与微调best完成一次同动作评分比较；开发验证和401帧新候选推理已完成。
 - [ ] 接入原定正常工况业务执行对比，以新动作的实际吸取和搬运结果判断部署收益。

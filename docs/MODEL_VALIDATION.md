@@ -1,5 +1,15 @@
 # 模型验证与当前训练状态
 
+## 2026-11-18 A/B 公开方法成对比较方案
+
+两分支新增[公共对照合同](instance_routes/PUBLIC_METHOD_COMPARISON.md)和[论文数值目录](instance_routes/reference/paper_baselines.json)，各实验页提供本路线分别与S1B、Diffusion-Suction、UISN UOIS/UOAIS、MultiGraspNet vacuum/joint的六组成对表。本方法各格保持待测；MultiGraspNet未报告的Top1保持缺失，其评价物理语义未核实，暂作论文参考。没有新增第三方重训、参考方法互比或虚构A/B成绩。
+
+本次直接核对S1B v2 Table IV、Diffusion v2 Table I、MultiGraspNet v2 Table I，以及固定官方API/基线和UISN代码。UISN表格沿用仓库既有原PDF核验转录，本轮未重新读取全文；引用身份明确区分。公开训练采用90/10开发后100场景source-only固定预算last。推理按无GT工作区的UOIS、UISN工作区的UOIS/UOAIS分为三种profile；后两项GT联合前景范围确实改变候选池，不能扩大授权至其他比较。
+
+已审查原项目R20与官方评价在Seal归一化、力矩范数、碰撞和后处理上的差异，规定sn-paper-radius-v1仅参数化三处半径、保留官方±1mm环与全场景六指标。固定官方物理函数的有限合成边界检查观察到严格相机Z轴法向可产生非有限Wrench/Q，原阈值判定为未命中；该历史行为及空帧扩展分别记录，不能据此声称适配层或真实数据评价已完成。
+
+本轮验收限于文档/机器可读来源的一致性、90个已报告指标数值、18个缺失指标、每分支成对表、链接、输入/输出合同和分支差异。生产模型、公开exporter、半径适配实现、R10等价验收、100场景refit、全测试与GPU性能仍待执行。旧129项为已有数学/schema参考，未改写为本轮新模型测试数；CI状态按本轮提交查看。
+
 ## 2026-11-18 A/B 独立分支实施文档
 
 从共同的 [v3 设计及架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分别整理 [A：route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) 与 [B：route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)。每条路线提供六篇实施计划及一个总入口，覆盖数据准备、预处理、模型设计、后处理、训练和实验。

@@ -9,6 +9,8 @@
 
 数值基线：v3参考及首版几何正确性验收从原始深度值/内参以float64构造XYZ、canonical query和理想环，在转为网络FP32特征前完成接触边界判定。历史p/n从原记录以float64读取并保持原姿态，不从深度重建或覆盖。已存为FP32的XYZ升精度不能恢复原值；FP32部署几何须另记precision-contract并核验。参考1e-12m仅处理float64边界舍入，不是像素/深度误差容限。[边界与精度说明](BOUNDARY_REVIEW.md)
 
+以下90/10划分和GT实例诊断属于native开发模式；[公开论文比较](PUBLIC_METHOD_COMPARISON.md)的最终评分模型另用100训练场景，测试按匹配的预测分割/工作区profile执行完整场景评价。teacher、normal及sampler数学合同不变，manifest/运行身份分开；INST标签不替代公开AP的官方物理评价。
+
 ## 1. 原始资产与固定划分
 
 源域需要已下载的 SuctionNet RGB-D、相机内参、实例掩码、场景与相机位姿、完整对象 `dense_point_clouds`、既有 R20 Seal 候选及冻结物理配置。GitHub 汇总不含这些完整训练资产。RGB、深度、分割必须在同一已校正相机网格，标定文件及深度单位随 manifest 固定。

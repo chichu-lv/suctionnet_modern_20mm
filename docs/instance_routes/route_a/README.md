@@ -6,6 +6,8 @@
 
 图示说明、双语图注及 SVG/PDF 下载见[路线 A 方法架构图](../METHOD_ARCHITECTURE_A.md)。
 
+公开验证入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [统一公开协议](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。使用独立public20评分权重和三种匹配的前端/工作区推理身份；论文数值已填，本方法结果待测。
+
 ## 1. 阅读顺序与交付物
 
 | 顺序 | 文档 | 实施后应交付 |
