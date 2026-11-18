@@ -6,6 +6,13 @@
 
 生产代码审查基线为 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。初稿保留在 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)；v2修订保留在 [`8e63e92`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/8e63e925bc54c442e8b5df6422ed51a69ce73fc1)；本页及子文档以v3为准。[逐项复核与修正](REVIEW_AND_CORRECTIONS.md)说明初稿缺陷和v2决策；[v3几何边界复核](BOUNDARY_REVIEW.md)说明本次四项修订、数值反例与限制。
 
+## 分支实施入口
+
+- **A：稀疏 3D + RGB** — [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) / [六部分实施文档](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md)。
+- **B：共享二维编码 + 投影环带** — [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) / [六部分实施文档](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)。
+
+两分支共同起点为包含本规范及方法图的 `a9f4a8451c6bc42cfd8867dd96c051398644ad71`。路线目录只组织各自实施步骤，公共数据/teacher/查询/训练/评价仍以本目录共同文件为准；共同变更需要同步相同版本。两边的源域次级 selected-Q 选模统计已在共同训练页明确为相同的三层宏平均，`no_pose=0`，未知 teacher 标签不作为零质量。
+
 ## 1. 阅读和执行顺序
 
 | 文档 | 内容 |

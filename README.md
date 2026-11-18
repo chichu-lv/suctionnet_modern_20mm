@@ -8,8 +8,20 @@
 
 **公开方法对比（2026-11-18）：** E5 best 已完成 RealSense 官方三个测试划分的全量评价（90场景、23,040帧）。官方 R10 的 Seen/Similar/Novel AP Top50 为 **16.33/20.22/5.69%**，AP Top1 为 **47.60/51.49/20.22%**。与 SuctionNet、Diffusion-Suction、MultiGraspNet、UISN 完整版及 Only Depth 的对照、R20候选覆盖分析见[方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)，紧凑数值见[结果表与来源](docs/experiments/COMPARISON-20261118/README.md)。这些是 GT 实例输入、R20 训练条件下的结果；论文值与本项目计算值分别标明。
 
+## 单物体路线开发分支
+
+两条路线从共同的 [v3 设计与架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分出，各自维护数据准备、预处理、模型设计、后处理、训练和实验六篇实施文档。
+
+| 路线 | 开发分支 | 实施文档入口 |
+|---|---|---|
+| A：单物体稀疏 3D + RGB | [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) | [A 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) |
+| B：共享二维编码 + 投影环带 | [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) | [B 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) |
+
+当前完成的是实施规格与阅读入口；两分支沿用相同的数据、物理 teacher、法向/候选、训练预算及评价合同。共同约定的变更须同步到两分支，并保存相同版本身份。模型、真实标签缓存、训练和部署按各分支的阶段验收推进。
+
 ## Done（已完成）
 
+- [x] 分别整理 [A](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) / [B](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 的六部分实施计划及独立开发分支，明确输入产物、实现接口、失败处理、训练配方和实验验收；生产接线与真实实验继续列为待办。
 - [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v3几何边界复核、保留目标自碰的同姿态标签、谐波/投影门控、稳健法向及候选回填规范；参考工具共129项合成检查通过。A/B模型、teacher接线和训练入口仍待实现。
 - [x] 单物体 v3 方法架构图：[路线 A](docs/instance_routes/METHOD_ARCHITECTURE_A.md) · [路线 B](docs/instance_routes/METHOD_ARCHITECTURE_B.md)；沿用论文式三面板版式，提供可编辑 SVG、PDF、高清 PNG、双语图注及确定性绘图脚本。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。

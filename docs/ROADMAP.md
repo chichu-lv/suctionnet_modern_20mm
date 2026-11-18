@@ -38,9 +38,13 @@
 
 ## 单物体路线 A/B 设计与实施
 
+- [x] 在 [A 分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) / [B 分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) 分别整理数据准备、预处理、模型、后处理、训练和实验六篇实施计划；从相同 v3 设计及架构图提交出发，共同协议同步维护。
 - [x] [完成工程实施规范](instance_routes/README.md)：物理v2同姿态含目标自碰标签、单动作监督，以及v3的A谐波摘要、B投影支持门控、稳健法向和稀疏候选回填；统一训练/指标/位姿合同。
 - [x] [几何与数据契约参考](instance_routes/TRAIN_EVAL_REPRODUCE.md)：v3新增74项、v2保留26项与基础29项合成检查通过，共129项，demo/标签命令通过，范围见[验证记录](instance_routes/reference/VALIDATION.json)。
-- [ ] 实现实例构建、target-only self/SW/INST缓存、新模型与训练入口，按固定验证协议评价。设计配置不是旧E5训练器的运行配置；未新增A/B真实训练或速度结果。
+- [ ] 接通共同实例清单、v3 normal/query 缓存及 target-only S/W/self/INST teacher，完成精确姿态与真实标签核验。
+- [ ] 按 [A 实施顺序](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) 接通 12 维稀疏主干、原始接触支撑、531 维融合及 A 的训练/推理接口。
+- [ ] 按 [B 实施顺序](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 接通共享二维特征、可靠投影环带、330 维融合及 B 的训练/推理接口。
+- [ ] 完成两路线既定预训练、目标微调、冻结测试与同硬件延迟比较；B 导出按子图和组合结果核验。设计配置不是旧 E5 训练器的运行配置，计划文档不记作真实训练或速度结果。
 
 ## 代码管理
 

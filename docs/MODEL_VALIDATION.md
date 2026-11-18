@@ -1,5 +1,16 @@
 # 模型验证与当前训练状态
 
+## 2026-11-18 A/B 独立分支实施文档
+
+从共同的 [v3 设计及架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分别整理 [A：route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) 与 [B：route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)。每条路线提供六篇实施计划及一个总入口，覆盖数据准备、预处理、模型设计、后处理、训练和实验。
+
+本轮文档审查核对了划分/标签身份、输入及头部维数、精确历史姿态、预算与损失归约、冻结/恢复、排序/NMS、指标分母、实验阶段和导出边界。A 的 teacher 步骤明确保留 raw Seal 到冻结归一化 S20 的转换；B 明确支持摘要按每半径两字段交错、raw 摘要按每区域四字段排列。
+
+共同训练页细化两条实施口径：无有效源监督的实例不计成功监督预算；次级 selected-Q 与主指标采用相同三层宏平均、no_pose=0，并另报有输出条件下的微平均。任何所需 teacher 标签未知或非法使相应评价不完整，不伪造质量零。物理质量、标签 schema 和 v3 观测定义未变。
+
+本次验收范围为 Markdown 链接、示例语法、命令所指文件、各分支差异及共同文件一致性。生产代码、四份参考程序和 A/B 设计 JSON 沿用共同基线。此前129项是已有数学/schema合成验证；本轮没有新增真实 teacher、模型训练、GPU性能或机器人试验结果。两分支后续真实验收分别按其阶段计划记录，仓库 CI 按对应提交查看。
+
+
 ## 2026-11-18 单物体路线v3边界复核与合成参考
 
 [两路线工程规范](instance_routes/README.md)已修订为v3，保留物理v2目标自碰合同与B共享编码结构。新增A中心化高度RMS/前三阶谐波、B实际半径/角槽门控与显式缺测/原始高度摘要；共同法向改为同实例3×3平滑加±3差分，候选加入位反转Morton逐轮格内FPS回填。[v3边界复核](instance_routes/BOUNDARY_REVIEW.md)区分成立风险、已有保护和不能过度推广的结论。Python3.12.14、NumPy2.3.5下基础29项、v2 26项、v3法向/采样26项与接触边界48项检查通过，共129项。细长掩码固定样例1,132个合法像素从46个首轮候选补到256个唯一候选。
