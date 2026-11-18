@@ -1,6 +1,6 @@
 # B 模型设计：共享图像编码与姿态条件环查询
 
-计划模型名为 `InstanceSuction2DFastV3`，计划实现位置为 `models/instance_b.py`。本页是待实现接口规格，数值依据为[B v3 原规范](../ROUTE_B.md)与[机器可读设计](../reference/route_b.json)；架构全图见[方法图说明](../METHOD_ARCHITECTURE_B.md)。输入由[预处理](PREPROCESSING.md)构造，真实模型尚需按本页验收。
+模型 `InstanceSuction2DFastV3` 已实现在 `models/instance_route_b.py`，同时提供别名 `InstanceRouteB`。数值依据为[B v3 原规范](../ROUTE_B.md)与[机器可读设计](../reference/route_b.json)；架构全图见[方法图说明](../METHOD_ARCHITECTURE_B.md)。ResNet-18/GN、原生纹理和接触分支直接用PyTorch实现，不依赖torchvision、spconv或逐候选局部栅格。真实网络CPU前向、反向和边界测试已通过，真实数据训练、GPU性能与部署导出尚未验证。
 
 ## 1. 编码一次，多姿态共用
 
@@ -50,7 +50,7 @@ $$R_a=I+[v]_\times+\frac{[v]_\times^2}{1+c},\qquad e_1=R_a b_1,\quad e_2=R_a b_2
 | inner | 10、14、17 | [10,18) |
 | lip | 18、20、22 | [18,22] |
 
-`theta_j=2π(j+0.5)/72+phi`，`x_rj=p+r*(e1*cos(theta)+e2*sin(theta))`。验证/推理 phi=0；训练由 seed、样本/query ID、成功更新步确定性抽取 Uniform[0,2π)，只改变特征采样，不改变 p/n 或 teacher 标签。9×72=648逻辑槽，r=0只读取一次再广播，最多577个不同模板位置；不同模板仍可能命中同一原像素，不能当577个独立观测。
+`theta_j=2π(j+0.5)/72+phi`，`x_rj=p+r*(e1*cos(theta)+e2*sin(theta))`。验证/推理 phi=0；训练由seed、样本身份、精确p/n字节表示的稳定query身份和成功更新步确定性生成[0,2π)相位。该身份也适用于候选池之外的历史动作，不依赖当前query顺序或chunk大小；只改变特征采样，不改变p/n或teacher标签。9×72=648逻辑槽，r=0只读取一次再广播，最多577个不同模板位置；不同模板仍可能命中同一原像素，不能当577个独立观测。
 
 ## 4. 从真实深度读取，再做支持门控
 
@@ -91,8 +91,24 @@ raw摘要按**名义模板区域**汇总门控前观测；实际rho越区也保�
 
 五个头均从h_pose128读取，都是128→64→1、隐藏ReLU：q_inst/Seal/Wrench经sigmoid；ell为Laplace log b，按[训练方案](TRAINING_PLAN.md)初始化/限幅；task输出原始logit。没有独立碰撞头，q不是预测Seal×Wrench的乘积，q_sw只作离线诊断。源阶段随机初始化的task头不参与排序。
 
+实现返回 `ell` 和同义 `log_scale`；若读取兼容字段 `log_variance`，其定义是 `log(2)+2*ell`，不是ell本身。返回的 `points_cam_m` 为原始query中心，`normals_out_cam` 为保留原有向符号的单位轴；`valid/query_valid` 显式标记中心支持与轴是否合法。无支持query的数值占位输出不得解释为真实失败标签。
+
+```python
+from models.instance_route_b import InstanceSuction2DFastV3
+
+model = InstanceSuction2DFastV3(query_chunk=64, phase_seed=42)
+model.eval()
+encoded = model.encode_instance(observation)  # prepare_instance或缓存读取的单实例字典
+scores = model.score_at_pose(encoded, observation['query_points'], observation['query_normals'])
+# 历史姿态可直接传入原始p_plan/n_plan；encode_instance只需执行一次。
+```
+
+首版仅支持单实例编码；`query_batch_index` 省略或全部为0，其他值明确报错。`parameter_groups()` 返回互斥且覆盖全部参数的encoder/decoder/contact/heads：encoder为ResNet-18；decoder包括中层/G投影和纹理stem；contact包括三个环编码器及融合MLP；heads为五个输出头。训练器通过 `set_training_context(update, seed)` 设置相位身份。
+
 ## 7. 模型交付验收
 
 必须核验 Fq 梯度定位到L1/L2相应位置；stride4/8单像素脉冲无固定偏移；任意合法历史轴确实改变本次投影条件；共享编码不随query重跑；chunk64与完整查询一致。45°、h=-6mm的18mm理想环两侧actual rho约24.254558/12.254558mm，应拒绝lip但保留负高度。反向槽、中心相位不变、71→0缺口、全空LN/池化、GN padding、输入精度和非有限grid均须覆盖。
 
 整数角槽循环移位的一致性可检查，但有限插值不提供任意连续SO(2)不变性；连续phase敏感性另测。拟导出的Conv/GN/LN、投影、gather/grid_sample及mask组合必须实际解析和对照，不能仅凭“普通二维算子”宣称完整TensorRT已可用。后处理与导出边界见[下一页](POSTPROCESSING.md)。
+
+`python -m pytest -q tests/test_instance_route_b.py` 当前通过12项CPU测试，覆盖真实网络前后向、Fq位置及梯度、chunk一致性、掩码LN、循环缺口、视差反例、原生四角采样/回退、空query/实例、NaN/Inf和超大有限坐标的有限反向梯度、相位身份及参数组。另已连接共同 `prepare_instance` 做合成RGB-D输入到网络的验证。以上不是实物成功率、真实teacher重算或GPU时延证据。

@@ -2,7 +2,7 @@
 
 方法图入口：[三面板架构图、双语图注与关键维度](METHOD_ARCHITECTURE_B.md) · [SVG](../figures/instance-route-b-architecture.svg) · [PDF](../figures/instance-route-b-architecture.pdf)。
 
-本文替换 B v1 的 U-Net 加逐候选切平面栅格方案。基线仓库为 suctionnet_modern_20mm@87f29d29bea8fa5153d6df3f8253d9ced9e4b441；旧设计留存于 [e495fd8](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e495fd89678b5f696e1819437fef5ced5103aa57/docs/instance_routes/ROUTE_B.md)，不作为另一条同时维护的默认路线。**本文是经审查修订的工程规格，新的 B 模型、训练器和部署引擎尚未实现或测速。** 公共定义见[数据与标签](DATA_AND_LABELS.md)与[训练复现](TRAIN_EVAL_REPRODUCE.md)。
+本文替换 B v1 的 U-Net 加逐候选切平面栅格方案。基线仓库为 suctionnet_modern_20mm@87f29d29bea8fa5153d6df3f8253d9ced9e4b441；旧设计留存于 [e495fd8](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e495fd89678b5f696e1819437fef5ced5103aa57/docs/instance_routes/ROUTE_B.md)，不作为另一条同时维护的默认路线。**B模型、共同实例数据/teacher与新训练器已实现，已验证CPU合成输入前向/反向与边界行为；真实完整训练、GPU时延和部署引擎尚未完成。** 执行入口为[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)，模型位于 `models/instance_route_b.py`，运行配置为 `configs/instance_b.yaml`。公共定义见[数据与标签](DATA_AND_LABELS.md)与[训练复现](TRAIN_EVAL_REPRODUCE.md)。
 
 ## 1. 本次结构修正及路线边界
 
@@ -108,7 +108,7 @@ $$
 | inner | 10、14、17 | 10≤rho<18 mm |
 | lip | 18、20、22 | 18≤rho≤22 mm |
 
-角度为 theta_j=2π(j+0.5)/72+phi，j=0…71。默认验证和推理 phi=0；训练时按 seed、样本 ID、query ID、成功更新步确定地抽取 phi~Uniform[0,2π)。这是接触特征采样相位增强，不改变 p、n 或 teacher 姿态标签。
+角度为 theta_j=2π(j+0.5)/72+phi，j=0…71。默认验证和推理 phi=0；训练时按seed、样本ID、精确p/n字节的稳定query身份和成功更新步确定地生成[0,2π)相位，避免query重排或chunk改变随机序列。这是接触特征采样相位增强，不改变 p、n 或 teacher 姿态标签。
 
 每个点：
 
@@ -236,6 +236,8 @@ q_inst 监督 Q_inst20=S20·W20·(1−C_self)。q_sw 只作为独立缓存物理
 
 源域只对本 query 姿态的有效 teacher 标签计算损失。默认使用共同候选清单前128项，teacher 生成、缓存身份、仅自碰物理定义、样本预算与验证频率见共同文档。颜色增强在全局图和原生纹理图共享同一实例级参数；相位增强只改变环采样，不改 teacher 姿态。
 
+本轮直接从头使用source scene 0–99全部100场景，固定140000个成功受监督实例/8750次更新；不再拆90/10或追加final refit。每875成功步在完整test scene 100–189、每场景256帧上选best，checkpoint与该成绩明确标记 `test_selected`、非独立测试估计，同时保存预算终点last。目标域仍按1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”已设为deferred，不是开训门槛；论文对比表保持B待测，不能用test-selected实例指标代替公开AP。可运行命令与身份见[训练方案](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/TRAINING_PLAN.md)。
+
 目标域对历史 p_plan、n_plan 计算一次 BCEWithLogits。actual_execution_verified=false 意味着标签可能包含落点、跟踪和执行误差，不能把单点监督写成真实执行位姿已知。轻度毫米/角度微扰只作为需预注册、在验证集评估的鲁棒正则，遵循共同训练说明；不恢复半径20 mm的标签扩散。
 
 v3 微调前200步只训练五个输出头；后800步再解冻融合 MLP、Fq 两个投影、G 投影、纹理 stem 与环带编码，低学习率按共同规范。ResNet-18 encoder 保持冻结。各 GN/LN 的 affine 是否可训练由所在模块是否解冻决定；不存在 BatchNorm running stats。模块组名必须由新模型导出，不能照抄旧 global decoder/local CNN 的名字。训练记录成功步、有效查询数量、无效原因和相位种子。
@@ -276,7 +278,7 @@ NMS 按真实米制距离和轴角度执行；最终返回选中 query 原来的
 | 大物体 | 全局图包含整个对象，纹理图保留原生分辨率并记录尺寸 |
 | 空 query / 空实例 | no_pose，排序无 NaN，不伪造坐标 |
 
-几何参考检查的通过只证明对应代数/数据合同，不代表本模型已实现、收敛、导出成功或满足产线延迟。
+`tests/test_instance_route_b.py` 已通过12项CPU测试，包含真实网络前后向、Fq梯度、采样/门控、空集、非有限输入与chunk/相位一致性；共同prepare_instance也已连接合成RGB-D到模型。数学与网络合成检查不代表真实物理成功率、收敛、导出成功或满足产线延迟。
 
 ## 10. 部署与必须测量的边界
 

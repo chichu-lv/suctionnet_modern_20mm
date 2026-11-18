@@ -1,0 +1,92 @@
+{
+  "schema": "instance_b_synthetic_smoke_v1",
+  "fixture": "official_directory_format_synthetic",
+  "model": "InstanceSuction2DFastV3_actual_production_network",
+  "real_dataset_training": false,
+  "public_comparison_ready": false,
+  "public_evaluation_status": "deferred",
+  "device": "cpu",
+  "threads": 1,
+  "torch_version": "2.5.1+cpu",
+  "numpy_version": "2.3.5",
+  "train_scenes": [
+    0
+  ],
+  "test_scenes": [
+    100
+  ],
+  "frames": [
+    0
+  ],
+  "training_queries": 8,
+  "testing_queries": 256,
+  "steps": 2,
+  "rgb_augmentation": true,
+  "resume_equal_to_continuous": {
+    "model": true,
+    "optimizer": true,
+    "rng": true,
+    "augmentation_rng": true,
+    "source_schedule": true,
+    "best": true,
+    "global_step": true,
+    "identity": true,
+    "policy": true,
+    "initialization": true
+  },
+  "training_logs_equal": true,
+  "source_loss": [
+    3.1743345260620117,
+    2.985110282897949
+  ],
+  "grad_norm": [
+    6.459857940673828,
+    6.202812194824219
+  ],
+  "parameter_tensors_compared": 126,
+  "last": {
+    "step": 2,
+    "selection_role": "budget_endpoint_or_progress"
+  },
+  "best": {
+    "step": 1,
+    "selection_role": "test_selected"
+  },
+  "checkpoint_policy": {
+    "selection_split": "test",
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "public_evaluation_status": "deferred",
+    "paper_comparison_ready": false
+  },
+  "code_sha256": "ba35fa1443214e8a0fab22aff3354f7c5834fadcea71ff601ffc40f2aab4ba21",
+  "shared_frozen_teacher_identity": {
+    "quality_contract": "gt_INST20_pose_v2",
+    "schema_version": "suction20.instance_inst20.v2",
+    "physics_sha256": "0bd2c30552eeea3ac39c37f736016b833dbba826d1927c974f0f5b82fb518a64",
+    "teacher_source_sha256": "2256801d5f990cd8290613869ad7c1b4cb2b3ff6aa5b7b3bb64b6891417999bf",
+    "seal_source_sha256": "6cef42e1a03defa77261bc5baf92a7291565cb84433fa9716a0d640d97ed3ad0",
+    "producer_source_sha256": "29ba276a5ed028b19e2973bcd5f30db738f72f46f1e40028faadfe5191227cd0"
+  },
+  "shared_object_assets": {
+    "0": {
+      "dense_sha256": "805253730683419328e5845889b764487d8044c83a045a8e6bd06c7b59370071",
+      "seal_candidates_sha256": "344a43ca66b658b31a1a0c46695ae46043e5e88e1ae72efcc387e94a04f7f708"
+    }
+  },
+  "inference_raw_equals_cache": true,
+  "inference_without_teacher_files": true,
+  "inference_pose_count": 5,
+  "se3_rotations_valid": true,
+  "source_task_probabilities_absent": true,
+  "evaluation_record_count": 1,
+  "last_is_not_test_selected": true,
+  "cli_invocations": 7,
+  "all_cli_returncodes_zero": true,
+  "reproducible_one_update_test": "python -m pytest -q tests/test_instance_route_b_integration.py",
+  "scope": "Engineering integration only; no real-data accuracy, calibration, production latency, or full-split training claim."
+}

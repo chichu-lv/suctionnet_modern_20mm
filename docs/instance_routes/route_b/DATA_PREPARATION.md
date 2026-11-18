@@ -1,20 +1,20 @@
 # B 数据准备：共同实例清单与同姿态标签
 
-本页将[共同数据合同](../DATA_AND_LABELS.md)落实为 B 分支的数据交付顺序。其产物供[预处理](PREPROCESSING.md)、[训练](TRAINING_PLAN.md)和[评价](EXPERIMENT_PLAN.md)使用。当前实例 builder 与 teacher 拆分是待实现接口；已存在的参考检查只核验数学、字段和清单关系。
+本页将[共同数据合同](../DATA_AND_LABELS.md)落实为 B 分支的数据交付顺序。其产物供[预处理](PREPROCESSING.md)、[训练](TRAINING_PLAN.md)和[评价](EXPERIMENT_PLAN.md)使用。实例 builder、RGB-D 数据集读取与拆分 teacher 已分别实现在 `scripts/build_instance_dataset.py`、`suction20/instance_data.py`、`suction20/instance_teacher.py`；已通过合成资产接线检查，真实完整数据重算尚未运行。
 
-## 1. native 输入资产和冻结划分
+## 1. 输入资产和本轮划分
 
 源域准备 SuctionNet 的配准 RGB-D、实例掩码、K、场景/相机/对象变换、完整对象 `dense_point_clouds`、既有 R20 Seal 候选和冻结物理配置。完整对象只用于离线 teacher 和评价；网络读取可见 RGB-D。目标域准备既有双目/深度、RGB、目标 mask、标定、原规划接触姿态和人工结果。
 
-本节保留 native 实例物理研究及产线适配的既有划分；第7节另定义公共论文比较的 `public20` 数据 profile，两者不共用训练清单身份。先按 scene 或既有 group 固定 split，再展开 frame/实例/动作；不得先裁图后随机分样本。
+按本轮决定，源域直接使用全部100个训练场景，从头训练；不再设置90/10开发划分或第二轮final refit。源域test用于选best，结果身份为 `test_selected`，不能作为独立盲测成绩。先按scene或既有group固定split，再展开frame/实例/动作；不得先裁图后随机分样本。
 
 | 源域集合 | 固定范围 |
 |---|---|
-| train | scene 0–99 中 `scene_id % 10 != 9` 的90场景；frame 0–255 |
-| val | scene 9、19、…、99；frame 0、8、…、248，共32视角/场景 |
-| test seen / similar / novel | scene 100–129 / 130–159 / 160–189；各256视角/场景 |
+| train | scene 0–99全部100场景；frame 0–255 |
+| test / best选择集 | scene 100–189全部90场景；每场景frame 0–255，总23040帧 |
+| test子集 | seen 100–129、similar 130–159、novel 160–189 |
 
-manifest 的 `split` 只填 `train/val/test`；测试子类写入 `test_subset=seen|similar|novel`。同帧实例同 split；该划分不是 CAD 身份互斥。
+源manifest的 `split` 为 `train/test`；测试子类写入 `test_subset=seen|similar|novel`。源test标签仅用于评价/选模，不参与梯度更新；选择行为本身仍使用了test信息。同帧实例同split；该划分不是CAD身份互斥。目标域继续保留下面的train/val/test：
 
 | 目标集合 | 动作总数 | 成功 / 失败 |
 |---|---:|---:|
@@ -26,7 +26,7 @@ manifest 的 `split` 只填 `train/val/test`；测试子类写入 `test_subset=s
 
 ## 2. 逐阶段数据产物
 
-以下为数据根目录内的逻辑产物，实际路径写入 manifest；这些不是新的 CLI 已实现承诺。
+以下产物由已实现的builder生成，路径相对于其manifest根目录解析。缓存保存数组与独立JSON元数据，使用 `allow_pickle=False` 读取，并核验实际文件SHA-256。
 
 | 产物 | 必须包含 | 交给谁 |
 |---|---|---|
@@ -37,7 +37,7 @@ manifest 的 `split` 只填 `train/val/test`；测试子类写入 `test_subset=s
 | target attempt 表 | 一行一次原始规划动作及结果、支持与排除原因 | 目标 BCE 与同动作评价 |
 | 准备报告 | split/group/hash 统计、支持/法向/候选有效率、排除原因、teacher 成本和校验结果 | 训练准入与实验追溯 |
 
-实例字段至少为 `schema_version=instance_observation_v2`、`sample_id`、`instance_uid`、`capture_uid`、`group_id`、`split`、`observation_sha256`、`observation_npz`、`mask_id`、`source_kind`、`calibration_sha256`、`normal_spec_sha256`、`sampler_spec_sha256`、`query_cache`、`label_cache`。目标实例没有物理标签时 `label_cache=null`，不伪造空物理分。所有真实 hash 必须为规范字节生成的合法 SHA-256。
+源manifest固定 `schema_version=instance_observation_v2`、`manifest_version=suction20.instance_manifest.v3`；保存sample/instance/capture/group身份、scene/frame/instance_row/camera、split/test_subset、观测路径和SHA-256、query_identity、label路径/身份/hash、normal/sampler/precision规范、源资产与标定hash、support/query数量及trainable/status。完整候选数组存于观测NPZ，标签NPZ只包含本次实际求值前缀。`--without-labels` 时 `label_cache=null`，数据读取器不能将其当作有监督训练缓存。
 
 ## 3. 实例、观测与 query 对齐
 
@@ -85,44 +85,46 @@ attempt 表保存 `attempt_id/sample_id/group_id`、`point_cam_m/normal_out_cam`
 
 缓存身份绑定观测/实例、完整对象资产、冻结物理配置、teacher commit、v3 normal/sampler、精确 p/n 字节、split 清单、质量合同与单位。光度增强不改物理标签；改变法向、候选、p/n、物理规则或精度合同须更新身份。旧 S/W 仅在原精确姿态和对应身份不变时可复用。
 
-按固定采样计划对真正不同的实例/query 按需建缓存，重复 instance draw 复用，不要求先重算90场景所有帧的256查询。先在64–128个覆盖尺寸和 dense 点数的真实实例测加载、Seal 秒/query、包络时间、秒/instance、缓存大小/命中率，再估算总成本。
+builder按scene/frame清单生成缓存，已有同身份缓存可复用；训练重复instance draw不重复调用teacher。源train默认只重算前128个query，test必须覆盖完整最多256池。先用显式分片在64–128个覆盖尺寸和dense点数的真实实例测加载、Seal秒/query、包络时间、秒/instance、缓存大小/命中率，再运行完整100-train/90-test构建。分片只是成本和接线检查，不冒充完整选模集。
 
 目前可运行：`geometry_contract.py check-manifest` 与 `revision_contract.py check-labels`；用法见[共同复现命令](../TRAIN_EVAL_REPRODUCE.md)。前者不读取原始资产字节，后者不重新执行真实 teacher。进入训练前仍须完成真实 p/n 回读、S/W 与冻结 evaluator 对齐、两个 self 分项对齐、`C_old_total=C_self OR C_external` 的独立兼容检查、split 泄漏核验及全部排除统计。
 
-## 7. 公共论文比较的数据 profile：public20
+## 7. 可执行的源数据构建
 
-`public20` 用于本方法分别与既有方法的论文报告值比较。共同测试集、六项AP、半径例外及外部评价合同统一引用[公共方法比较协议](../PUBLIC_METHOD_COMPARISON.md)，不以本页 native 实例指标替代。该 profile 保留本路线模型和 `gt_INST20_pose_v2` teacher 定义；变化的是正式训练场景范围、选模阶段和测试实例来源。
+先将变量改为真实资产目录；`DATASET` 下须有官方 `scenes/` RGB、depth、label、meta、`camera_poses.npy`、`cam0_wrt_table.npy` 和完整 `dense_point_clouds`。MAT元数据必须含factor_depth、相机内参、对象身份与姿态；`R20_LABELS` 须含 `config_frozen.json`、`seal_r20/poisson/`。缺完整dense资产时明确失败，不用mesh或可见点云替代teacher的完整目标。
 
-| 阶段 | 数据范围与使用方式 | 独立身份 |
-|---|---|---|
-| 源域开发 | 沿用第1节90个train场景与10个dev场景；仅用于确定源域配置和冻结推理规则 | development manifest、抽样计划、teacher release、运行目录 |
-| 正式源域重训 | RealSense scene 0–99全部100场景，每场景frame 0–255均在可抽样集合；从头训练，不继承开发或产线权重 | final-train manifest、100场景抽样计划、teacher release、checkpoint |
-| 正式公开测试 | RealSense Seen 100–129、Similar 130–159、Novel 160–189；每场景256帧，总计23040帧 | 固定frame manifest、前端mask release、预测文件及完整评价结果 |
+```bash
+DATASET=/data/SuctionNet
+R20_LABELS=/data/suction20_r20
+CACHE=/data/instance_v3
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train" --split train --camera realsense
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/test" --split test --camera realsense
+```
 
-全部256视角进入训练可抽样集合不代表逐帧跑完一个epoch：正式预算仍是140000个成功受监督实例暴露，按[训练方案](TRAINING_PLAN.md)执行。100场景训练包含原dev场景，因此原10场景不再是其独立验证集。正式测试不得抽帧、筛选成功分割帧或把错误/漏检帧删除后缩小分母。
+默认train=scene 0–99、test=100–189，均包含frame 0–255。默认深度范围沿用0.2–1.2m，可显式传 `--depth-min-m` / `--depth-max-m`；修改后会进入观测身份，必须对train与selection保持一致。可选 `--camera kinect` 使用对应相机资产，不能把两个相机的结果混成一项。若场景同类对象重复，提供 `--instance-mask-root` 中按instance row标记的真实掩码；类别ID不能充当重复实例的唯一身份。
 
-### 7.1 预测实例前端与输入权限
+产物为 `train/manifest_train.jsonl`、`train/manifest_train.summary.json` 和test对应文件；每个根目录下有 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`。summary记录实际scene/frame覆盖、空GT帧、实例状态和 `complete_requested_split`；不能通过改文件名把分片升级为完整数据。
 
-源域训练可使用GT实例裁剪及离线teacher所需完整目标几何。公开测试按配对对象固定以下推理profile；三者共用同一份source-only B评分权重，不重训评分网络，但必须分别推理、保存预测文件及SHA-256。
+小规模构建可加入 `--scenes 0-1 --frames 0,8`，test分片则使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或完整选模。
 
-| 推理profile | 本方法配对对象 | 实例前端与工作区 |
-|---|---|---|
-| `uois_no_gt_workspace`（默认） | S1B、Diffusion-Suction、MultiGraspNet | 冻结UOIS；完整图像与有效depth输入，无GT工作区；其他过滤使用预先冻结的本方法规则 |
-| `uois_uisn_gt_aabb20` | UOIS-Net + UISN | 冻结UOIS；复用UISN的GT联合前景3D AABB工作区，outlier=0.02m |
-| `uoais_uisn_gt_aabb20` | UOAIS-Net + UISN | 冻结UOAIS；复用同一UISN工作区规则，outlier=0.02m |
+Teacher的可调用接口为：
 
-S1B官方推理不使用GT工作区，不能把UISN工作区扩展为所有方法的“共同官方工作区”。上表的默认规则是本方法侧合同；Diffusion-Suction原论文未公开或尚未核实的工作区字段保持`unverified`，不能据此断言其历史实现与本方法完全相同。各对照的证据状态以公共页为准。
+```python
+from suction20.instance_teacher import InstanceTeacher
+teacher = InstanceTeacher(dataset_root, label_root, camera="realsense")
+labels = teacher.evaluate(scene_id, frame_id, instance_row, points, normals, query_ids)
+```
 
-仅两个UISN配对profile允许读取GT前景工作区：先将标签坍成`seg > 0`，按UISN原`get_workspace_mask(cloud, gt_seg, trans, outlier=0.02)`等价规则求所有前景联合3D AABB，不按GT id拆物体。**该工作区会改变合法支持和候选池**，必须在输入权限及候选身份中如实记录；完成工作区筛选后，GT前景、对象身份/类别、位姿和完整几何不得继续成为实例分组或模型特征，也不得用GT补漏检、删误检或对预测实例做匹配过滤。实际实例仍完全来自UOIS/UOAIS预测mask。外部评测端正常使用GT，不与模型输入权限混淆。
+上面Python示例中的路径、scene/frame/instance_row和p/n须由真实观测提供；p/n必须来自对应观测的精确query；它不是将任意同位置旧标签挂接到新轴的快捷入口。
 
-与S1B、Diffusion-Suction或MultiGraspNet比较时，本方法是“冻结实例分割前端 + B评分网络”的完整系统，不读取GT前景来裁工作区，也不读取GT实例来分组或过滤。UISN配对优先核验并使用作者发布的对应mask资产；如需重新生成，固定前端代码、checkpoint和预处理，并说明是否已验证与作者缓存一致，不能仅凭同名模型认定输入相同。
+## 8. 目标域RGB-D资产接线
 
-分割漏检、无合法候选和`no_pose`均保留对应原始frame；全部23040帧进入公开评价，不能从分母移除。native的GT实例评价及产线目标mask流程继续按原合同执行，不冒充该公开预测实例协议。
+`InstanceAttemptDataset` 直接读取既有 `schema_version=suction20.target.v1`、`label_kind=attempt_success` JSONL。其 `observation` 必须是RGB-D来源，含真实 `rgb_path`、`depth_path`、`instance_mask_path`、`depth_scale_m`、`intrinsics`、`g_cam`，以及原动作姿态、标签和split/group。相对路径以manifest目录为根解析，数据集绑定实际资产字节。
 
-### 7.2 可追溯资产与信息披露
+旧pointcloud-only记录不具备B原生像素读取所需的信息，会明确报错；需补回该次观测的原RGB-D和mask，不能反向渲染点云伪造原相机纹理。当前未新增一个自动补齐缺失资产的目标builder，也未改动1676/399/87划分。可用历史 `planned_pipeline_contact` 直接评分，不能以最近canonical query替代动作。
 
-每个公开前端release保存：前端名称/代码commit/配置、checkpoint真实SHA-256、权重原始来源及额外训练数据说明、原始RGB-D/标定身份、每帧mask文件SHA-256、完整frame覆盖账本、生成成功/失败/空mask状态、实例/有效支持统计与错误原因。另按推理profile保存工作区规则/代码及参数hash、逐帧工作区mask hash、裁剪后的支持/query身份和预测SHA-256；UISN profile同时记录GT联合前景输入及变换的hash，默认profile明确`uses_gt_workspace=false`。复用预测必须同时满足前端与工作区身份一致，不能将同一UOIS前端的有GT工作区预测复用于无GT工作区比较。使用发布缓存时同时保存下载来源、归档hash及解包后的逐帧hash；任何缺帧或处理错误均须显式处置并保留日志，不静默跳过。coverage须区分“文件覆盖完整”与“预测检出完整”，后者不能由前者推断。
+## 9. 公开方法比较的数据协议：待定
 
-90场景开发与100场景正式训练的manifest、teacher release和checkpoint具有独立身份，至少绑定`profile`、`phase`、scene/frame清单hash、训练抽样计划hash和teacher合同/代码hash。teacher数学定义保持不变；即使底层相同精确姿态标签可去重存储，也必须经过身份核验，并由各自release manifest引用，禁止将90场景缓存直接改名冒充100场景完成清单。
+公开评价“只参数化吸盘半径”的方案当前 **deferred**；不生成名为已匹配公开协议的release，不把R10等价门禁或分割前端下载作为本轮开训条件。论文基线数值与来源继续保存在[实验方案](EXPERIMENT_PLAN.md)和[公共比较参考](../PUBLIC_METHOD_COMPARISON.md)，B的对应值保持待测。
 
-公共吸取评分网络只使用源域监督，不混入1676/399/87条产线动作或其微调权重。冻结分割前端可能使用额外训练数据，必须单独披露；因此不能把整个系统的训练信息写成“除吸盘半径外完全相同”。对原论文未公开的历史依赖、权重或训练细节记录`unreported`，不以本次推测补齐。以上profile字段及公开缓存builder属于待实现接口，本页不提供伪装为现有功能的数据生成命令。
+现有GT实例source test评价是 `test_selected` 实例物理评价，不能冒充全景预测实例AP。未来若恢复公开对比，仍需逐方法确认同一测试集、相机、指标、前端/工作区权限、完整帧分母和半径差异，并显式披露本次test选模行为；不能仅因scene范围相同就宣称除吸盘外完全一致。UISN的GT联合前景工作区不能自动扩展为S1B或Diffusion的权限，预测实例漏检、误检与无姿态也不能从完整测试分母删除。

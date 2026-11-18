@@ -1,5 +1,18 @@
 # 模型验证与当前训练状态
 
+## 2026-11-18 A/B代码实现与当前执行政策
+
+本轮已实现共同数据/teacher、A和B网络、预训练/两阶段目标微调、严格checkpoint恢复、原始RGB-D/无标签推理与native评价。实际运行入口见[IMPLEMENTATION.md](instance_routes/IMPLEMENTATION.md)。source直接训练scene0000–0099，完整scene0100–0189 test选择best并保存test_selected身份；last另保留。目标1676/399/87划分不变。公开仅半径评价deferred，不是开训门禁。下方较早的90/10→refit方案是修订历史，不覆盖当前规则。
+
+本地环境Python3.12.14、PyTorch2.5.1+cpu、NumPy2.3.5。新测试覆盖真实teacher合成资产、v3法向/嵌套回填、A CPU注入backbone与完整梯度、B实际GN18网络和投影门控、未知标签损失、阶段BN冻结、优化器/采样/RNG恢复、checkpoint和动作来源身份、NMS及精确SE(3)。A没有在本环境执行真实SpConv/CUDA。全部测试用合成或内存数据，不宣称取得真实数据准确率或机器人成功率。
+
+B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照；每步8个train查询、test完整256候选、RGB增强开启。模型126个张量、优化器、采样器、Python/NumPy/Torch及增强RNG逐项完全相同；7条build后训练/推理/评价CLI成功。无标签缓存与原始RGB-D的Top5输出逐字段相同，SE(3)合法。best停在step1，last在step2，报告清楚区分test_selected与budget_endpoint_or_progress。小汇总在[B分支验证记录](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/CPU_INTEGRATION.json)；脚本级复现也由 `tests/test_instance_route_b_integration.py`覆盖。
+
+本地联合快照回归为 **481 passed / 21 skipped / 1 deselected**（38.99s）；命令排除 `tests/test_prefetch.py`，并跳过 `test_prefetched_trainer_preserves_ordinary_sequence_and_resume`，这些多进程预取路径交由实际GitHub checkout中的完整CI验证。真实release/GPU等条件项仍按测试自身条件skip。原地初次快照缺Git元数据造成的旧测试失败已通过建立本地测试快照解决，不修改旧训练器。本地新代码测试与远端分支CI状态分别登记，不把旧129项NumPy参考或历史E5测试计数冒充新模型运行。完整真实source/target训练、A GPU稀疏骨干、部署时延与TensorRT导出均未执行。运行checkpoint记录完整源码/数据/teacher身份，FT额外保存初始化源checkpoint SHA及其test选择来源。
+
+## 较早修订记录
+
+
 ## 2026-11-18 A/B 公开方法成对比较方案
 
 两分支新增[公共对照合同](instance_routes/PUBLIC_METHOD_COMPARISON.md)和[论文数值目录](instance_routes/reference/paper_baselines.json)，各实验页提供本路线分别与S1B、Diffusion-Suction、UISN UOIS/UOAIS、MultiGraspNet vacuum/joint的六组成对表。本方法各格保持待测；MultiGraspNet未报告的Top1保持缺失，其评价物理语义未核实，暂作论文参考。没有新增第三方重训、参考方法互比或虚构A/B成绩。

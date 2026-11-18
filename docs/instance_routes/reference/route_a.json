@@ -1,7 +1,7 @@
 {
   "schema_version": "suction20.instance_routes.design.v3",
   "artifact_kind": "design_spec",
-  "trainer_implemented": false,
+  "trainer_implemented": true,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
   "quality_contract": "gt_INST20_pose_v2",
   "coordinate_contract": {
@@ -219,7 +219,22 @@
     "schedule": "linear_warmup_then_cosine",
     "validation_every_updates": 875,
     "selection_metric": "scene_macro_InstTop1_INST20_at_0.4",
-    "queries_per_instance_max": 128
+    "queries_per_instance_max": 128,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "selection_split": "test",
+    "selection_scene_range": [
+      100,
+      189
+    ],
+    "selection_views_per_scene": 256,
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "from_scratch": true,
+    "keep_last": true,
+    "final_refit": false
   },
   "finetune": {
     "successful_updates": 1000,
@@ -252,7 +267,13 @@
       "parameters_are_measured_execution_noise": false,
       "source_pose_labels_reused_after_jitter": false,
       "one_supervised_bce_per_attempt": true
-    }
+    },
+    "train_attempts": 1676,
+    "selection_split": "val",
+    "validation_attempts": 399,
+    "test_attempts": 87,
+    "batchnorm_affine_frozen": true,
+    "batchnorm_running_stats_frozen": true
   },
   "inference": {
     "ranking_source": "q_inst",
@@ -269,7 +290,7 @@
   "route": "a",
   "model": {
     "class": "InstanceSuction3D",
-    "backbone": "SpConvResUNet14_new_12_channel_wrapper",
+    "backbone": "SpConvResUNet14_explicit_in_channels_12",
     "backbone_points": 2048,
     "voxel_size_m": 0.002,
     "input_channels": 12,
@@ -326,7 +347,20 @@
         1
       ]
     },
-    "additional_summary_first_layer_weights": 1920
+    "additional_summary_first_layer_weights": 1920,
+    "implementation_file": "models/instance_route_a.py",
+    "geometry_file": "models/instance_route_a_geometry.py",
+    "implementation_status": "implemented_cpu_test_backbone_verified",
+    "legacy_wrapper_default_input_channels": 8,
+    "query_chunk_size": 32,
+    "singleton_bn_policy": "running_stats",
+    "singleton_bn_contract": {
+      "trigger": "training_and_input_values_per_channel_le_1",
+      "fallback": "existing_running_mean_and_variance_without_stats_update",
+      "normal_source_training_path": "ordinary_batchnorm",
+      "track_running_stats_required": true,
+      "finetune_all_bn_stats_and_affine_frozen": true
+    }
   },
   "quality": {
     "q_target": "seal*wrench*(1-collision_self)",
@@ -338,7 +372,8 @@
     "external_scene_collision_in_target": false,
     "diagnostic_q_sw": "seal*wrench",
     "joint_label_mask": "label_valid",
-    "teacher_implemented": false
+    "teacher_implemented": true,
+    "real_full_dataset_recompute_completed": false
   },
   "feature_association": {
     "neighbors_max": 3,
@@ -371,5 +406,20 @@
     "network_feature_dtype": "float32",
     "float32_XYZ_upcast_restores_precision": false,
     "historical_query": "read_recorded_p_and_n_in_float64_preserve_pose_do_not_reconstruct_from_depth"
+  },
+  "runtime_config": "configs/instance_a.yaml",
+  "implementation_validation": {
+    "route_a_cpu_test_count": 13,
+    "cpu_model_tests_backbone": "explicit_test_injection",
+    "wrapper_channel_test": "external_loader_mock",
+    "real_spconv_forward_backward_verified": false,
+    "real_full_training_completed": false,
+    "gpu_latency_measured": false
+  },
+  "public_evaluation": {
+    "status": "deferred",
+    "radius_only_protocol": null,
+    "required_for_training": false,
+    "paper_comparison_ready": false
   }
 }

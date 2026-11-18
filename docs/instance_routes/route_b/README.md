@@ -2,13 +2,15 @@
 
 本目录是 **`route-b-2d-projected-rings`** 分支的开发入口，将 B 的数据准备、预处理、模型设计、后处理、训练和实验拆为六份可逐项落实的说明。共同起点为 [a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71)，其中已包含 v3 方案和 A/B 方法架构图。
 
-**当前交付状态：工程设计、实施步骤和可运行 NumPy 数学参考。** B 生产模型、实例 teacher 接线、新训练器和部署引擎尚待实现；文档中的“验收”表示后续必须取得的证据，不表示已经训练或测速。新路线仍使用物理质量 `gt_INST20_pose_v2`，观测法向、候选和模型设计为 v3。[原始 B 规格](../ROUTE_B.md)与[设计 JSON](../reference/route_b.json)是本卷宗的参数依据。
+**当前交付状态：B生产模型、共同RGB-D实例builder/teacher、新训练器与本地推理评价代码已实现。** B真实网络CPU前向/反向与12项边界测试已通过，完整真实数据重算、正式训练、GPU性能和部署引擎尚未运行；验收范围与未完成证据分别列出。新路线仍使用物理质量 `gt_INST20_pose_v2`，观测法向、候选和模型设计为 v3。[原始 B 规格](../ROUTE_B.md)与[设计 JSON](../reference/route_b.json)是本卷宗的参数依据。
 
 ![Route B v3 architecture](../../figures/instance-route-b-architecture.svg)
 
 完整[架构图说明、双语图注和维度表](../METHOD_ARCHITECTURE_B.md)；下载 [SVG](../../figures/instance-route-b-architecture.svg)、[PDF](../../figures/instance-route-b-architecture.pdf)、[PNG](../../figures/instance-route-b-architecture.png)。
 
-公开验证入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [统一公开协议](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。使用独立public20评分权重和三种匹配的前端/工作区推理身份；论文数值已填，本方法结果待测。
+本轮直接使用source scene 0–99全部100场景训练，完整source test 100–189选best，结果明确为 **test_selected，非独立测试估计**；保留固定预算last。目标1676/399/87不变。公开评价“只参数化吸盘半径”暂定为deferred，不作为开训门槛。
+
+公开比较入口：[本方法逐一对照现有方法](EXPERIMENT_PLAN.md) · [公开协议状态](../PUBLIC_METHOD_COMPARISON.md) · [论文数值与来源](../reference/paper_baselines.json)。论文数值保留，B公开结果待测，现有实例test指标不替代全景AP。
 
 ## 1. 六部分阅读顺序
 
@@ -42,24 +44,28 @@
 
 B 的工程目标是共享二维编码和向量化查询。相机投影、深度反投影和姿态几何仍是必要计算；不恢复逐 query 的局部二维栅格/CNN，也不恢复全量三维球邻域 PCA。有限投影环不能证明隐藏部位或完整工具接近体积无碰撞。[结构与边界依据](../ROUTE_B.md)
 
-## 3. 按依赖交付，而非同时开始所有模块
+## 3. 实现位置和证据边界
 
-以下文件名是**待实现接口的计划**，当前不能作为已存在的训练命令运行。
-
-| 阶段 | 计划实现 | 进入下一阶段前的证据 |
+| 模块 | 实际实现 | 已验证与待完成 |
 |---|---|---|
-| B1 共用实例资产 | `instance_data.py`、`build_instance_data.py` | split/group/hash 无泄漏；原始 p/n、像素身份和标定一致；两图回读一致 |
-| B2 同姿态标签 | `instance_labels.py`、`label_instance_queries.py` | 真实精确 query 的 S/W、两个 self 分项与冻结 evaluator 一致；缓存身份可拒绝旧数据 |
-| B3 模型与查询 | `models/instance_b.py`，类 `InstanceSuction2DFastV3` | Fq 位置采样、支持门控、原始高度旁路、空 mask、330维及任意有向轴查询通过 |
-| B4 训练接线 | `instance_training.py`、`train_instance.py` | 少量真实更新确实反向；成功步预算、阶段冻结、保存恢复保持同一数据/学习率轨迹 |
-| B5 推理评价 | `evaluate_instance.py`、`infer_instance.py` | 排序及 NMS 可复核；输出 p/n 与评分输入相同；主指标含无输出分母 |
-| B6 导出计时 | `export_instance_b.py` | 导出子图和组合输出通过真实数值对照；固定动态尺寸/精度合同后完成端到端计时 |
+| 共用实例资产 | `suction20/instance_geometry.py`、`suction20/instance_data.py`、`scripts/build_instance_dataset.py` | 合成RGB-D/资产格式接线；真实完整缓存尚待构建 |
+| 同姿态标签 | `suction20/instance_teacher.py` | 冻结Seal/Wrench/target-self接线与合成检查；真实完整dense数据一致性/成本待测 |
+| B模型 | `models/instance_route_b.py`，`InstanceSuction2DFastV3` | 12项CPU模型/几何测试通过；真实学习效果和GPU性能待测 |
+| 训练 | `suction20/instance_training.py`、`scripts/train_instance.py`、`configs/instance_b.yaml` | 支持源训练、目标微调、成功步预算与严格恢复；完整正式训练未运行 |
+| 原生推理评价 | `suction20/instance_inference.py`、`scripts/infer_instance.py`、`scripts/evaluate_instance.py` | 同姿态输出和实例/动作评价；不包含公开半径评价器 |
+| 部署导出 | `scripts/export_instance_b.py` 尚未实现 | ONNX/TensorRT、动态ROI、精度对齐和端到端计时待完成 |
 
-实施阶段和文件路径来源于[共同实施顺序](../TRAIN_EVAL_REPRODUCE.md)。共享 builder/teacher 应复用共同合同；A/B 网络不能因为都输出五个头而互换 checkpoint。
+最短运行顺序为[构建train/test缓存](DATA_PREPARATION.md#7-可执行的源数据构建) → [直接100场景训练](TRAINING_PLAN.md#7-可执行命令与运行产物) → [同姿态推理和实例评价](POSTPROCESSING.md)。数据不足时使用显式分片/partial身份检查链路，不把它记录成正式全test结果。A/B网络不能因为都输出五个头而互换checkpoint。
 
 ## 4. 现在即可运行的检查
 
-在本分支仓库根目录、已安装 NumPy 的参考环境执行：
+在仓库根目录、已安装PyTorch和pytest的环境，先运行B实际模型测试：
+
+```bash
+python -m pytest -q tests/test_instance_route_b.py
+```
+
+当前12项通过，覆盖网络前后向、query位置梯度、掩码环编码、视差/缺口、chunk和相位、无支持/非有限输入。共同prepare_instance到B网络已做合成RGB-D接线；不是实物吸取成功验证。NumPy数学参考仍可独立运行：
 
 ```bash
 python docs/instance_routes/reference/geometry_contract.py selftest
@@ -70,4 +76,4 @@ python docs/instance_routes/reference/contact_boundary_contract.py self-test
 
 它们分别覆盖29、26、26、48项，共129项合成合同检查。旧栅格和旧法向检查保留作历史数学回归，不是 B v3 默认实现。参考环境为 Python 3.12.14 / NumPy 2.3.5，完整环境、demo 与结果边界见[复现说明](../TRAIN_EVAL_REPRODUCE.md)和[既有验证记录](../reference/VALIDATION.json)。
 
-`reference/route_b.json` 的 `artifact_kind=design_spec`，不能直接交给现有 E5 训练脚本；后续运行配置必须显式校验本地资产和版本。真实数据、完整标签与 checkpoint 存放在外部数据/运行目录，仓库保留配置、实现、清单身份和必要汇总。
+`reference/route_b.json` 的 `artifact_kind=design_spec`；真正运行配置是 `configs/instance_b.yaml`，由新实例CLI校验本地资产与版本，不能直接交给旧E5脚本。真实数据、完整标签与 checkpoint 存放在外部数据/运行目录，仓库保留配置、实现、清单身份和必要汇总。

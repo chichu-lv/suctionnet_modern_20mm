@@ -2,7 +2,7 @@
 
 本规范定义单物体 RGB-D 吸取的两条实现路线：A复用稀疏3D骨干与物理接触分组；B采用共享2D图像编码、逐查询语义特征及投影环带读取。两者对明确的接触中心和有向轴预测Seal、Wrench、保留目标自碰的实例质量及历史规划动作成败。
 
-**当前交付是经审查修订的工程设计与可运行NumPy数学/schema参考。A/B新模型、实例teacher、训练器及部署引擎尚未实现；没有新模型精度或延迟实测。** 设计JSON不能直接传入旧E5训练入口。
+**A/B的实例数据、teacher、网络、预训练/微调、checkpoint恢复和native推理/评价已实现。** 直接100场景训练，完整source test选best并标记 `test_selected`；公开仅半径评价待定。运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。当前完成CPU和合成资产链路验证，尚无新模型完整真实数据精度、GPU时延或TensorRT结果。
 
 生产代码审查基线为 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。初稿保留在 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)；v2修订保留在 [`8e63e92`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/8e63e925bc54c442e8b5df6422ed51a69ce73fc1)；本页及子文档以v3为准。[逐项复核与修正](REVIEW_AND_CORRECTIONS.md)说明初稿缺陷和v2决策；[v3几何边界复核](BOUNDARY_REVIEW.md)说明本次四项修订、数值反例与限制。
 
@@ -23,7 +23,8 @@
 | [共同数据与标签](DATA_AND_LABELS.md) | 固定split、快速法向、共同候选、精确动作、自碰分项与标签缓存 |
 | [路线A](ROUTE_A.md) | 12维稀疏输入、原始支持、覆盖诊断、无人工切向坐标的接触编码 |
 | [路线B](ROUTE_B.md) | 删除U-Net/逐候选栅格CNN，Fq、共享原生纹理、批量投影环与循环池化 |
-| [与公开方法成对比较](PUBLIC_METHOD_COMPARISON.md) | 原论文数值、完整场景AP、仅半径例外、100场景public20及预测前端/工作区；[机器可读来源](reference/paper_baselines.json) |
+| [与公开方法成对比较](PUBLIC_METHOD_COMPARISON.md) | 保留原论文值与逐方法成对表；公开仅半径协议待定；[机器可读来源](reference/paper_baselines.json) |
+| [代码运行说明](IMPLEMENTATION.md) | 实际builder/train/resume/finetune/infer/evaluate命令、输入字段和checkpoint输出 |
 | [训练评价和复现](TRAIN_EVAL_REPRODUCE.md) | 128-query训练、损失、200+800微调、可选姿态一致性及真实可运行命令 |
 | [v3法向/采样参考](reference/sampling_contract.py) | 26项检查：同实例平滑、宽差分、位反转顺序及格内回填 |
 | [v3接触边界参考](reference/contact_boundary_contract.py) | 48项检查：谐波、门控、覆盖、原始高度与逐角归一化 |
@@ -84,12 +85,12 @@ v3进一步处理：水平吸取时的显式局部角向信息不足；理想环
 
 ## 6. 复用与实施顺序
 
-现有`observation.py`、`eval_r20.py`、`full_data.py`、`target_dataset.py`和精确姿态评分思想可复用。当前骨干仍固定8通道，旧loss/finetune限制gt_A/gt_B，构造器固定E0–E5；新A/B要用独立模型、质量身份和训练接线。保留[checkpoint政策](../CHECKPOINT_POLICY.md)，不恢复已退役的迁移兼容。
+现有`observation.py`、`eval_r20.py`、`full_data.py`、`target_dataset.py`和精确姿态评分思想可复用。旧骨干默认8通道保留，A显式指定12通道；新A/B使用独立模型、质量身份和训练入口，旧E5配置不变。保留[checkpoint政策](../CHECKPOINT_POLICY.md)，不恢复已退役的迁移兼容。
 
 1. 固定实例/动作清单和同实例organized法向、二维候选，核对投反影和历史点/轴。
 2. 拆分并核验target-only teacher；保留原Seal扫描、自碰和Wrench定义，先测少量真实实例的离线成本，再按需生成训练缓存。
 3. 接通A的覆盖、raw RGB与任意姿态评分；接通B的Fq、共享纹理和投影环读取。
-4. 验证同姿态、mask、参数冻结、存取恢复与无输出行为，再按共同预算训练和开发选模。
-5. 报告native INST及SW分解、历史动作分类、候选覆盖和端到端成本；公开比较独立执行[public20及官方半径协议](PUBLIC_METHOD_COMPARISON.md)，不把INST或旧项目R20当作论文AP。
+4. 已接通同姿态、mask、参数冻结、存取恢复与无输出路径；完整数据训练按100场景和test选best规则执行。
+5. 报告native INST、历史动作分类、候选覆盖及端到端成本；[公开仅半径协议待定](PUBLIC_METHOD_COMPARISON.md)，不把native结果填成论文AP。
 
-本轮完成v3设计纠正和129项合成数学/schema检查（原29+v2 26+v3 26+48）；真实teacher、神经模型、训练效果及部署速度保持待实现/待测状态。
+v3设计参考共129项数学/schema检查保留；新代码测试和B实际CNN合成资产链路见[验证说明](../MODEL_VALIDATION.md)。完整真实数据重算/训练和GPU性能仍待执行。

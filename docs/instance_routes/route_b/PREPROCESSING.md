@@ -70,4 +70,6 @@ $$
 
 必须通过：原始投反影；上下文边界/ROI原点回读；大小物体完整性；fx≠fy；不同深度层不混合；法向断层/空洞拒绝且原点不变；稀疏mask回填、无重复、64/128前缀；空实例/全invalid无NaN。法向宽stencil和纹理不足的真实比例另报，不能只凭合成参考通过即宣告预处理成本和质量达标。
 
-可立即运行 `sampling_contract.py selftest`、`contact_boundary_contract.py self-test` 等[共同参考命令](../TRAIN_EVAL_REPRODUCE.md)。真正的图像 builder、PyTorch 输入变换与 source pixel 读取组合仍须实现后在真实观测上核验。
+共同几何/法向/候选已由 `suction20/instance_geometry.py::prepare_instance` 实现；B图像构建、仿射与原生source pixel读取位于 `models/instance_route_b.py::prepare_shared_images` 和模型查询方法。`python -m pytest -q tests/test_instance_route_b.py` 验证上下文/ROI尺寸与原点、完整mask bbox、fx≠fy、深度分层回退、非有限坐标和真实网络接线；数学参考仍可运行[共同参考命令](../TRAIN_EVAL_REPRODUCE.md)。真实相机全数据的支持率、带宽与耗时仍待测。
+
+实现把无效RGB显式保存为 `rgb_valid=false`，数值清零；原 `instance_mask` 包含缺深度位置，`mask` 为同实例且有效深度，不得混用两者计算bbox。张量网络前转换到FP32，几何保留float64。历史无支撑姿态以及投影巨大有限坐标在进入FP32采样/MLP前使用有限占位值，输出仍保留原p并标invalid，避免仅在最终mask时发生 `NaN*0` 或反向梯度污染。
