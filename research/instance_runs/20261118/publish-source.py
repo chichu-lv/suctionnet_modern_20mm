@@ -30,7 +30,13 @@ def main():
     cache.mkdir(parents=True, exist_ok=True)
     split = 'train' if phase == 'train' else 'test'
     scenes = range(100) if phase == 'train' else range(100, 190)
-    frame_args = ['--frames','0,32,64,96,128,160,192,224'] if phase == 'selection' else []
+    selection_frames = range(0, 256, 32)
+    frames = {
+        'train': list(range(256)),
+        'selection': list(selection_frames),
+        'test': [f for f in range(256) if f not in selection_frames],
+    }[phase]
+    frame_args = [] if phase == 'train' else ['--frames', ','.join(map(str,frames))]
     workers = {'train':25, 'selection':6, 'test':15}[phase]
     environ = dict(os.environ, OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1',
                    MKL_NUM_THREADS='1', PYTHONPATH=str(repo))
@@ -51,12 +57,15 @@ def main():
         text = result.stdout.decode()
         info = json.loads(text)
         assert info['scene_ids'] == [start,start+1]
-        assert info['frame_count'] == (16 if phase == 'selection' else 512)
+        assert info['frame_count'] == 2*len(frames)
         publish(receipt, text)
         return info['manifest']
     started = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         paths = list(pool.map(build, scenes[::2]))
+    if phase == 'test':
+        selection_receipt = json.loads((log / 'selection.json').read_text())
+        paths.append(selection_receipt['manifest'])
     target = log / f'{phase}.json'
     cmd = [sys.executable, '-u', 'scripts/merge_instance_manifests.py', '--output', str(cache/'published'),
            '--split',split, '--manifests', *paths]

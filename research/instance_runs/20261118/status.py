@@ -36,3 +36,6 @@ for route in ('A','B'):
     for file in sorted((root/route/'logs').glob('*status*')):
         if file.is_file(): print(route, file.name, tail(file))
 subprocess.run(['nvidia-smi','-i','0,1','--query-gpu=index,name,utilization.gpu,memory.used','--format=csv'])
+for file in [root/'A/logs/default-state.json', root/'B/run/status.txt']:
+    if file.is_file():
+        print(file.relative_to(root), file.read_text().strip())
