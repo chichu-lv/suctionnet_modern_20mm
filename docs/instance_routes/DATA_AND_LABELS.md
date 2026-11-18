@@ -1,8 +1,13 @@
-# 单实例数据、法向与同姿态物理标签（v2）
+# 单实例数据、法向与同姿态物理标签（v3 几何修订）
 
-本页定义 A/B 共用的数据、查询姿态、离线 teacher 和目标动作监督。**v2 默认综合质量保留目标自身碰撞，去掉其他物体与桌面的碰撞项**：`quality_contract=gt_INST20_pose_v2`，参考标签 schema 为 `suction20.instance_inst20.v2`。纯 `q_sw=S20*W20` 继续保存，供物理诊断和与上一版比较；不能把旧 `gt_SW20_pose_v1` 文件改名后当作 v2。
+本页定义 A/B 共用的数据、查询姿态、离线 teacher 和目标动作监督。**当前综合质量保留目标自身碰撞，去掉其他物体与桌面的碰撞项**：`quality_contract=gt_INST20_pose_v2`，参考标签 schema 为 `suction20.instance_inst20.v2`。纯 `q_sw=S20*W20` 继续保存，供物理诊断和与上一版比较；不能把旧 `gt_SW20_pose_v1` 文件改名后当作 v2。
+
+本次 v3 更新法向与候选构建，物理 teacher 的 S/W/self 定义未变，因此质量身份仍为 `gt_INST20_pose_v2`、标签 schema 仍为 `suction20.instance_inst20.v2`。normal-spec 与 sampler-spec 改为 v3，必须重建或逐精确姿态核验缓存，不能把旧姿态标签直接改名复用。
 
 本页是新路线的实现合同。现有源码提供 organized normals、Seal/Wrench 和原混合碰撞评价器，尚未提供完整 v2 数据构建或训练入口。新增实例 teacher、候选 sampler、缓存身份和训练适配必须按本页实现，不能把下面的伪代码写成已有命令。模型只接收当前观测，完整对象几何只用于离线标签与评价。
+
+
+数值基线：v3参考及首版几何正确性验收从原始深度值/内参以float64构造XYZ、canonical query和理想环，在转为网络FP32特征前完成接触边界判定。历史p/n从原记录以float64读取并保持原姿态，不从深度重建或覆盖。已存为FP32的XYZ升精度不能恢复原值；FP32部署几何须另记precision-contract并核验。参考1e-12m仅处理float64边界舍入，不是像素/深度误差容限。[边界与精度说明](BOUNDARY_REVIEW.md)
 
 ## 1. 原始资产与固定划分
 
@@ -62,23 +67,48 @@
 
 A 的 2048 主干点、法向估计支持、接触几何支持是不同预算。用于降低索引成本的 2 mm 体素不能替代保存细节的原始唇口 RGB/深度；体素化也不保证任何大小对象都有同样点数。
 
-### 3.2 v2 默认：同实例 organized finite differences
+### 3.2 v3 默认：带掩码平滑与宽基线 organized 法向
 
-默认 normal spec 为 `organized_instance_fd_v2`，按已有 [observation.py](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/observation.py) 的 `organized_normals(point_map, keep)` 数值语义执行。**每个目标传入自己的 `keep = target_instance_mask & valid_depth`**，使中心、上下左右五点必须都属于同一实例。不能用全景 depth-valid mask 后再仅裁中心。
+默认 normal-spec 改为 `organized_masked3x3_span3_v3`。旧 [observation.py](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/observation.py) 的 ±1 差分作为原实现和噪声对照，不再作为新路线默认。新算法仍只需要固定图像偏移、掩码求和与叉乘，不引入三维球查询或 PCA。
 
-对非边界像素，固定一像素中心差分：
+**仅供法向计算的平滑，不修改接触点或原始支持。** 设原始相机系 XYZ 图为 P、原始轴向深度为 Z、`keep=target_instance_mask & valid_depth`。对每个原始中心像素 c：
+
+1. 中心必须 keep 为真。取3×3窗口中的原始像素 q，仅当 q 与 c 同实例、keep 为真且 `abs(Z[q]-Z[c])<0.010 m` 时计入均值；比较严格小于，不是小于等于。
+2. 窗口中至少5个合格像素（包括中心）才令 `smooth_valid[c]=true`。以合格原始 XYZ 的算术均值生成 `P_smooth[c]`，不独立混合某一位置的XY和另一位置的Z。图外、非有限或无效数据不参与求和；禁止用 `NaN*0` 实现mask。
+3. 无效平滑位置置零并保留mask，不补洞、不生成新的有效深度像素。
+
+然后使用固定 ±3 像素中心差分：
 
 ```text
-dx = P[v, u+1] - P[v, u-1]
-dy = P[v+1, u] - P[v-1, u]
+dx = P_smooth[v, u+3] - P_smooth[v, u-3]
+dy = P_smooth[v+3, u] - P_smooth[v-3, u]
 raw = cross(dx, dy)
 ```
 
-有效条件同时满足：五点 keep 为真、`norm(raw)>1e-8`、`abs(dx.z)<0.010 m`、`abs(dy.z)<0.010 m`。归一化后仅对自动观测法向按 `dot(n,-p)>=0` 定号；图像边界及不满足条件的位置 `normal_valid=false`，存储值为零。这些位置仍提供有效 RGB/深度上下文，但不生成默认法向候选。
+一个新法向有效，当且仅当以下条件均成立：
 
-默认没有 Gaussian smoothing、全量 15 mm 球查询或 PCA；一次向量化差分处理所有像素。多实例实现可每帧只计算一次XYZ/dx/dy/raw，再用中心与四邻居的实例ID相同且大于0施加mask，数值须与逐实例keep调用一致，避免每物体重复扫描整帧。像素 stencil 不是恒定 15 mm 物理支持，深度噪声和曲率误差仍须在真实资产上核验。若增加平滑、换 stencil、修改跳变阈值或用其他法向估计器，必须更新 normal-spec 和姿态标签缓存，不得把变化隐蔽在预处理内部。
+- 中心以及水平/竖直±3端点的 `smooth_valid` 为真；中心原始 keep 也为真。
+- 横向 `u-3...u+3` 和纵向 `v-3...v+3` 的全部原始像素均在图内、keep 为真且属于同一实例。不能越过掩码空洞只连接两端。
+- 沿两条原始7像素路径，每一对相邻像素均满足 `abs(Z_next-Z_prev)<0.010 m`。不再要求两端总深度差小于10mm，否则扩大基线会额外排除正常倾斜平面。
+- raw 有限且 `norm(raw)>1e-8 m²`。
 
-### 3.3 可选 PCA 精度配置，不进入 B 默认路径
+归一化后，仅对自动观测法向按原始中心 p 执行 `dot(n,-p)>=0` 定号。不满足条件时 `normal_valid=false`、法向值为零，**没有隐式退回±1差分的路径**。这些像素仍可提供原始 RGB/深度支持，只是不提供 canonical 候选轴。
+
+原始 `depth_m`、`P_support`、`mu_vis`、query 的 `p_cam_m`、RGB及 teacher 的接触中心全部保持不变；P_smooth只用于估计 n。历史动作继续使用记录的有向轴，不被平滑法向替换。
+
+固定±3像素并不保证恒定毫米支持。在 Z=0.6m、fx=600px 的正对平面上，两端跨度约6mm；更远、更近和倾斜表面均不同。3×3窗口的深度门控还可能在斜面或边缘造成非对称权重；“邻点深度差小于10mm”也不能隔离所有小于10mm的真实台阶。宽stencil在细长物体、孔洞附近会降低法向有效率。必须报告法向误差、有效率和候选覆盖，不能只报告平滑后的均值角误差。
+
+normal-spec包含窗口3×3、最少5点、span=3、严格10mm深度门槛、逐相邻路径门控、叉积阈值、计算精度和无回退策略。任何变化都需要新normal身份与查询缓存。多实例优化可一次处理原图并比较相邻实例ID，但必须与上述逐实例定义一致；没有真实测速前不承诺“毫秒级”或固定3–5倍降噪。
+
+### 3.3 噪声与 teacher 条件必须分清
+
+用户给出的 `atan(0.5mm/2mm)≈14.04°` 是一种端点深度差情形，不是已测传感器总体噪声。若两端独立且各自噪声标准差为 sigma_z，则差值标准差为 `sqrt(2)*sigma_z`，局部斜率误差约为该差值除以差分物理基线；匹配波纹的空间相关性、量化和真实曲率会改变这一估计。扩大基线与平均只在明确噪声假设下具有可推导收益，真实改善必须测量。
+
+按错误候选轴重评后，teacher给低分往往是**该轴条件下正确的物理评价**；问题是法向噪声制造了差的候选姿态，并降低训练标签的重复性，不能把所有低分直接称为伪负例。平面上14°偏差在固定20mm表面半径的轴向投影约4.84mm；原self按query横向rho<20mm限域，对无限平面对应的最高h约为 `20mm*tan(14°)=4.99mm`，仍低于5mm。约 `atan(5/20)=14.04°` 才跨此理想边界；上述界限假定query中心恰在真实平面上，中心深度误差会额外平移h；有限对象、离散采样和工具包络另有影响。因此不能声称14°必触发5mm自碰或Seal一定变成0。
+
+新法向用于候选构建后，仍在同一个精确 `(p,n)` 上生成S/W/self。对比噪声方案应分别测量法向稳定性、候选质量覆盖、标签分布和同姿态teacher一致性；不能通过给差轴强行赋高分来“净化标签”。
+
+### 3.4 可选 PCA 精度配置，不进入 B 默认路径
 
 若 A 后续确需 PCA，采用独立配置：先在同实例 2 mm 体素代表点上建立一次空间索引，仅对已配置主干预算（默认最多2048）及最多256个查询点拟合 15 mm 邻域，禁止在全量原始支持上逐点拟合。保持原始支持供局部细节读取；normal-invalid、法向回填和候选改变都要明示。
 
@@ -86,19 +116,47 @@ PCA 参数、体素代表规则、最少独立邻点数及退化判断进入独�
 
 ## 4. 共同候选与精确动作查询
 
-### 4.1 图像分层候选：不用 3D FPS
+### 4.1 图像分层候选与无重复回填
 
-共同 sampler 固定为 `image_stratified_16x16_bit_reversed_morton_v2`，两路线从同一 RGB-D/实例观测生成相同 canonical 查询：
+共同 sampler 改为 `image_stratified_morton_refill_v3`。v2已经使用反转Morton顺序，行优先截取不是现有参考代码的错误；本次新增的是稀疏占空比下的回填。两路线始终读取同一份完整候选序列。
 
-1. 在原图目标实例 mask 上计算完整包围框，包含 mask 内无深度位置。像素中心为整数坐标，框边界为 `(u_min-0.5, v_min-0.5)` 到 `(u_max+0.5, v_max+0.5)`。
-2. 将该框均分为 16×16 个半开网格，最外边界闭合以处理浮点舍入。候选资格为同实例、有效深度、`normal_valid=true`。
-3. 每格至多取一个合格原始像素：到该格中心的原图二维像素平方距离最小，距离并列取最小 `source_point_id`。不将深度空洞补成候选，不将重复像素计为新候选。
-4. 格坐标 `cx,cy` 都为 0…15。Morton 编号将 cx 的 4 个 bit 放在偶数位、cy 放在奇数位：`m=sum(((cx>>b)&1)<<(2*b) | ((cy>>b)&1)<<(2*b+1) for b in range(4))`。将 m 的 8 bit 反转后按升序排列格，空格省略。该固定顺序使较短前缀分散在框内；它不保证物理表面积均匀或覆盖所有可吸区域。
-5. 从选中像素读取精确 `p=depth*K^{-1}[u,v,1]` 与对应 `n_obs`，保存原像素、格号、查询顺序及 p/n identity。空间统计仍使用真实米制坐标。
+1. 在原图目标实例mask上计算完整包围框，包含mask内无深度位置。整数像素中心的框外边界为 `(u_min-0.5,v_min-0.5)` 到 `(u_max+0.5,v_max+0.5)`，均分为16×16半开网格，最外边界闭合。
+2. eligible像素满足同实例、原始有效深度及v3 `normal_valid=true`。保存唯一原图 `source_point_id=v*W+u`，一个原像素仅属于一个格，不复制、不补洞。
+3. 固定格顺序与v2相同：cx、cy各为0…15，`m=sum(((cx>>b)&1)<<(2*b) | ((cy>>b)&1)<<(2*b+1) for b in range(4))`，将m的8个bit反转后升序排列。空格跳过。第一轮每个非空格最多取一个点：到本格中心的原图二维像素平方距离最小，并列取最小source ID。
+4. 第一轮不足256时，以**相同格顺序逐轮回填**。每轮每个尚有剩余eligible像素的格最多取一个。第2个及后续格内点用二维像素最远点规则：对每个剩余像素，计算其到本格已选像素集合的最小平方距离，选该值最大的点；并列取最小source ID。只需维护每个格的剩余点及最小距离，不建立三维空间树。已耗尽的格跳过。
+5. 达到256个候选或所有eligible像素耗尽即停止。先确定这份最多256的序列，训练128和轻量64都只取它的前缀；不能依据请求K改变网格数、格内规则、排序或随机种子。第一轮若已填满256则不执行回填。
+6. 每个候选从其原始像素读取精确p与对应v3观测法向n；不使用P_smooth作为接触位置。保存source ID、格号、轮次、查询顺序及p/n身份，距离和NMS仍用真实米制坐标。
 
-**训练与源域回放默认取前 128 个；64 个是单独命名的轻量配置。验证、测试和推理取最多 256 个。** 少于预算时不复制，padding 只加 mask。训练 query 数与开发/评价候选预算分别保存，不能把 128-query 训练耗时和 256-query 推理耗时混为一谈。64/128 是否足够收敛属于待验证结果。
+对应逻辑为：
 
-A 的 2 mm 代表点池与主干 FPS 是另一独立步骤，不改变共同 query；B 默认不运行 3D FPS。采样布局、排序、预处理或法向变化都会改变候选身份，需要新缓存。
+```text
+buckets = eligible pixels grouped by the fixed 16x16 cells
+cell_order = occupied cells sorted by bit-reversed Morton code
+selected = []
+for round_index = 0, 1, ...:
+    added = 0
+    for cell in cell_order:
+        if cell exhausted: continue
+        if cell has no selected pixel: choose nearest to cell center
+        else: choose farthest from this cell's already selected pixels
+        break ties by smallest original source ID
+        append pixel once; update that cell's remaining distances
+        added += 1
+        if len(selected) == 256: stop
+    if added == 0: stop
+train128 = selected[:128]
+train64 = selected[:64]
+```
+
+只要eligible像素足够，回填会达到256；否则输出所有可用唯一像素。显式记录 `eligible_pixel_count`、`nonempty_cell_count`、`first_pass_count`、`refill_count`、`refill_rounds`、最终query数及不足预算原因。数组padding只补mask，不计为候选。
+
+例如128×128的斜条掩码 `abs(u-v)<=4` 有1132个eligible像素，v2一格一点仅产生46个候选；v3应产生256个互不重复的候选，且64/128序列与完整池前缀一致。这个例子仅验证sampler，eligible资格在真实数据中仍由深度和法向共同决定。
+
+反转Morton与格内最远点会使前缀更分散，但**不保证对任意稀疏形状都均匀覆盖物理表面积**；多轮回填也可能增加相近候选，须同时报告有效像素分布、米制最近邻间距、NMS前后覆盖与实际query数。掩码面积占空比不严格等于含有效像素的格占比，不能用“40%面积”直接推断恰好多少格有候选。
+
+训练与源域回放默认前128，64是独立命名配置；验证、测试和推理最多256。64/128是否足够收敛仍需测量。A的2mm代表点池和主干FPS独立于共同query；B默认不运行3D FPS。
+
+新normal、回填和格内取点会改变精确p/n清单，因此缓存身份绑定v3 sampler；不能在相同数据名下静默用旧46点缓存当作新256点缓存。重复instance draw仍复用相同query缓存。
 
 ### 4.2 历史动作不受候选预算限制
 
@@ -196,8 +254,8 @@ q_inst = q_sw*(NOT C_self)
   "mask_id": 3,
   "source_kind": "target_stereo",
   "calibration_sha256": "标定文件SHA256",
-  "normal_spec_sha256": "organized_instance_fd_v2及参数的SHA256",
-  "sampler_spec_sha256": "图像分层候选配置的SHA256",
+  "normal_spec_sha256": "organized_masked3x3_span3_v3及参数的SHA256",
+  "sampler_spec_sha256": "image_stratified_morton_refill_v3及参数的SHA256",
   "query_cache": "queries/example_capture_instance_003.npz",
   "label_cache": null
 }
@@ -209,8 +267,8 @@ v2 参考标签 NPZ 的共同监督字段如下，文件内另保存 `schema_ver
 
 | 字段 | shape / 类型 | `label_valid=true` 的约束 |
 |---|---|---|
-| `points` | [K,3] 数值，建议 float64 | 相机系米制查询点，全部 finite |
-| `normal_out` | [K,3] 数值，建议 float64 | 外向单位轴，全部 finite，`abs(norm-1)<=1e-4` |
+| `points` | [K,3] 数值，默认 float64 | 相机系米制查询点，全部 finite |
+| `normal_out` | [K,3] 数值，默认 float64 | 外向单位轴，全部 finite，`abs(norm-1)<=1e-4` |
 | `seal`, `wrench` | 各 [K] 数值 | finite 且位于 [0,1] |
 | `q_sw` | [K] 数值 | 与 `seal*wrench` 一致 |
 | `collision_self_seal` | [K] bool | 完整 dense 的原 Seal 自碰 |
@@ -248,8 +306,8 @@ B 默认只在共同的明确 query 姿态上计算源域 loss，不要求把稀
 优先完成直接影响合同的核验：
 
 - 原始投反影、单位、实例行号、轴向符号与工具变换一致。
-- organized normal 严格拒绝跨实例 stencil、无效深度和指定跳变；历史动作没有翻轴或吸附。
-- 图像网格候选排序、tie-break、128 前缀与 256 完整序列确定；A/B 使用相同 query 与 label identity。
+- v3法向只平滑normal输入，原始p/support不变；3×3至少5支持及±3路径严格拒绝跨实例、空洞和指定相邻跳变，缺少支持不回退±1；历史动作没有翻轴或吸附。
+- 图像网格、回填轮次、格内二维最远点与tie-break确定；稀疏格有足够eligible时填满256且不重复，64/128仍是完整序列前缀；A/B使用相同query与label identity。
 - 固定真实 query 的 S/W 与冻结原 evaluator 一致，self 分项与原碰撞函数目标部分一致；独立外部项与 self 合并后复原旧总 C。
 - 修改点、轴、normal/sampler/teacher 配置后旧缓存身份被拒绝。
 - 标签未知、padding、重复点和空实例不产生伪监督，未观测区域不能补成已确认无碰撞。

@@ -1,5 +1,5 @@
 {
-  "schema_version": "suction20.instance_routes.design.v2",
+  "schema_version": "suction20.instance_routes.design.v3",
   "artifact_kind": "design_spec",
   "trainer_implemented": false,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
@@ -17,16 +17,42 @@
     "min_source_training_points": 100,
     "position_scale_m": 0.1,
     "normal": {
-      "method": "organized_instance_fd_v2",
+      "method": "organized_masked3x3_span3_v3",
       "same_instance_required": true,
-      "finite_difference_pixel_offset": 1,
+      "raw_validity": "finite_XYZ_positive_Z_and_upstream_depth_bounds",
+      "smoothing": {
+        "input": "raw_XYZ",
+        "window_pixels": [
+          3,
+          3
+        ],
+        "operation": "masked_equal_weight_mean",
+        "center_raw_valid_required": true,
+        "minimum_valid_neighbors_including_center": 5,
+        "neighbor_center_raw_depth_abs_max_m": 0.01,
+        "depth_comparison": "strict_less_than",
+        "invalid_neighbor_arithmetic": "select_before_sum_not_NaN_times_zero",
+        "changes_query_center_or_raw_support": false
+      },
+      "finite_difference_pixel_offset": 3,
+      "difference_input": "smoothed_XYZ",
+      "center_and_four_endpoints_smooth_valid_required": true,
+      "all_intermediate_raw_path_pixels_valid_same_instance_required": true,
+      "adjacent_raw_path_depth_jump_abs_max_m": 0.01,
+      "adjacent_depth_jump_comparison": "strict_less_than",
+      "opposite_endpoint_total_depth_gate": false,
       "cross_norm_min": 1e-08,
-      "opposite_depth_jump_abs_max_m": 0.01,
-      "opposite_depth_jump_comparison": "strict_less_than",
-      "proposal_orientation": "dot(n,-p)>=0",
+      "cross_norm_units": "m^2",
+      "cross_norm_comparison": "strict_greater_than",
+      "proposal_orientation": "dot(n,-raw_p)>=0",
       "historical_query_orientation": "preserve_supplied_sign",
+      "invalid_normal": "zero_with_false_normal_valid",
+      "fallback_to_span1": false,
       "full_support_pca": false,
-      "optional_pca_requires_distinct_config_and_cache": true
+      "optional_pca_requires_distinct_config_and_cache": true,
+      "reference_arithmetic": "float64",
+      "physical_support_is_constant": false,
+      "measured_real_sensor_noise_reduction": false
     },
     "gravity_components": 3
   },
@@ -34,7 +60,7 @@
     "max_candidates": 256,
     "train_candidate_prefix": 128,
     "optional_train_candidate_prefix": 64,
-    "method": "image_stratified_16x16_bit_reversed_morton_v2",
+    "method": "image_stratified_morton_refill_v3",
     "grid_cells_xy": [
       16,
       16
@@ -46,7 +72,27 @@
     "empty_cells": "omit",
     "direct_historical_pose": true,
     "historical_support_anchor_max_distance_m": 0.005,
-    "historical_anchor_moves_query_center": false
+    "historical_anchor_moves_query_center": false,
+    "build_full_max_candidate_sequence_before_prefix": true,
+    "refill": {
+      "enabled": true,
+      "round_order": "same_bit_reversed_morton_nonexhausted_cells",
+      "per_cell_per_round": 1,
+      "within_cell_selection": "maximize_min_squared_pixel_distance_to_selected_in_same_cell",
+      "tie_break": "minimum_source_point_id",
+      "replacement": false,
+      "stop": "max_candidates_or_all_eligible_pixels_exhausted"
+    },
+    "diagnostics": [
+      "eligible_pixel_count",
+      "nonempty_cell_count",
+      "first_pass_count",
+      "refill_count",
+      "refill_rounds",
+      "candidate_count",
+      "stop_reason"
+    ],
+    "uniform_3d_surface_area_guaranteed": false
   },
   "contact": {
     "core_radius_m": [
@@ -172,7 +218,7 @@
   },
   "route": "b",
   "model": {
-    "class": "InstanceSuction2DFastV2",
+    "class": "InstanceSuction2DFastV3",
     "implementation_status": "design_only",
     "global_backbone": "ResNet18_encoder_only_GN8",
     "weights": null,
@@ -268,6 +314,30 @@
     "training_ring_phase": "uniform_0_2pi_seeded_per_sample_query_update",
     "evaluation_ring_phase": 0,
     "unique_ring_samples_per_query_max": 577,
+    "ring_support_gate": {
+      "observation_validity": "finite_original_depth_same_target_instance",
+      "observed_normal_required": false,
+      "positive_radius": {
+        "actual_radius_in_nominal_region_required": true,
+        "absolute_radial_error_max_m": 0.003,
+        "absolute_tangential_offset_max_m": 0.003,
+        "distance_comparison": "less_than_or_equal",
+        "radial_projection_min_m": 0.0,
+        "radial_projection_comparison": "strict_greater_than"
+      },
+      "zero_radius": {
+        "actual_radius_max_m": 0.003,
+        "actual_radius_in_core_required": true,
+        "phase_dependent_tangential_gate": false,
+        "read_once_broadcast_observation_and_contact_validity": true
+      },
+      "thresholds_are_measured_sensor_noise": false,
+      "height_hard_gate": false,
+      "full_token_zero_when_contact_invalid": true,
+      "finite_values_before_mask_multiplication": true,
+      "rejected_observations_retained_in_raw_height_summary": true,
+      "contact_rejection_is_teacher_failure_label": false
+    },
     "ring_token_dim": 25,
     "ring_geometry_tokens": [
       "height",
@@ -299,18 +369,62 @@
     "ring_encoder_padding": "circular_for_kernel3",
     "ring_encoder_conv_bias": false,
     "ring_encoder_normalization": {
-      "type": "GroupNorm",
-      "groups": 8,
+      "type": "LayerNorm",
+      "normalized_shape": 16,
+      "input_layout_during_normalization": "Q_angle_channel",
+      "statistic_axes": [
+        "channel"
+      ],
       "eps": 1e-05,
-      "affine": true
+      "elementwise_affine": true,
+      "bias": true
     },
     "ring_encoders_share_architecture_not_weights": true,
-    "ring_pool": "mean_max_all_72_positions",
+    "ring_angle_mask": "any_of_three_radius_contact_valid_at_original_angle",
+    "ring_mask_before_each_convolution": true,
+    "ring_mask_after_each_normalization_and_relu": true,
+    "ring_mask_dilation": false,
+    "ring_compress_valid_angles": false,
+    "ring_partial_convolution_rescaling": false,
+    "ring_pool": "masked_mean_max_over_original_angle_support",
+    "ring_pool_empty_result": "all_zero_features",
     "ring_feature_dim": 96,
+    "ring_support_summary": {
+      "dimension": 18,
+      "order": "core_inner_lip_then_listed_radius_then_fields",
+      "fields": [
+        "contact_fraction",
+        "maximum_invalid_cyclic_gap_fraction"
+      ],
+      "denominator": 72,
+      "all_valid_gap": 0.0,
+      "all_invalid_gap": 1.0,
+      "zero_radius_is_center_support_not_circumference_coverage": true
+    },
+    "ring_raw_observation_summary": {
+      "dimension": 12,
+      "order": "core_inner_lip_then_fields",
+      "grouping": "nominal_template_radius_region_before_contact_gate",
+      "fields": [
+        "observed_fraction",
+        "contact_rejection_fraction_of_observed",
+        "max_positive_height",
+        "max_negative_height"
+      ],
+      "observed_fraction_denominator": 216,
+      "contact_rejection_denominator": "observed_count",
+      "height_scale_m": 0.04,
+      "height_summary_clipped": false,
+      "height_extrema_floor_m": 0.0,
+      "empty_result": "all_four_values_zero",
+      "center_broadcast_counts_as_one_radius_weight": true,
+      "observed_extrema_are_collision_certification": false
+    },
+    "ring_summary_dim": 30,
     "query_descriptor_dim": 12,
-    "query_input_dim": 300,
+    "query_input_dim": 330,
     "query_mlp": [
-      300,
+      330,
       128,
       128
     ],
@@ -329,7 +443,14 @@
     },
     "export_roi_profiles": "dynamic_profiles_preserve_actual_contract_padded_dimensions",
     "entire_pipeline_export_verified": false,
-    "variant": "b_v2_projected_rings",
+    "variant": "b_v3_supported_projected_rings",
+    "sampling_diagnostics_outside_fusion": [
+      "unique_original_source_pixels_per_radius",
+      "radial_gate_rejection_fraction",
+      "tangential_gate_rejection_fraction",
+      "opposite_angle_gate_rejection_fraction",
+      "native_resolution_underresolved_fraction"
+    ],
     "texture_padding": "right_bottom_to_minimum_multiple_of_32",
     "feature_chart_names": [
       "negative_z",
@@ -347,5 +468,16 @@
     "diagnostic_q_sw": "seal*wrench",
     "joint_label_mask": "label_valid",
     "teacher_implemented": false
+  },
+  "reference_numeric_contract": {
+    "contact_geometry_arithmetic": "float64",
+    "radial_boundary_roundoff_m": 1e-12,
+    "scope": "float64_reference_roundoff_not_sensor_noise_allowance",
+    "production_dtype_requires_boundary_parity_validation": true,
+    "input_construction": "raw_depth_and_intrinsics_to_XYZ_canonical_query_and_rings_in_float64",
+    "correctness_baseline_geometry": "float64_before_network_feature_cast",
+    "network_feature_dtype": "float32",
+    "float32_XYZ_upcast_restores_precision": false,
+    "historical_query": "read_recorded_p_and_n_in_float64_preserve_pose_do_not_reconstruct_from_depth"
   }
 }

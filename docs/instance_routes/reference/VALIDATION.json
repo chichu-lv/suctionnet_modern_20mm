@@ -1,11 +1,11 @@
 {
-  "schema_version": "suction20.instance_routes.geometry_reference_validation.v2",
+  "schema_version": "suction20.instance_routes.geometry_reference_validation.v3",
   "as_of": "2026-11-18",
   "synthetic_only": true,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
   "source_file": "geometry_contract.py",
   "source_sha256": "ba23e0d872ddcb22e7f065ee4b7552628a8424e8805f3043e36abe7e48eb987c",
-  "scope": "Geometry identities and declared data contracts only. No A/B network training, real-data physical evaluation, accuracy result or timing benchmark.",
+  "scope": "Synthetic geometry, numerical boundary, observation/sampling and declared label contracts only. No A/B model, real teacher validation, training, export or latency benchmark.",
   "commands": [
     {
       "command": "python docs/instance_routes/reference/geometry_contract.py selftest",
@@ -133,7 +133,12 @@
     "Zero observed normals retain finite RGB/geometry support with zero normal channels; query axes must still be valid nonzero directed unit vectors.",
     "The original tangent-raster utility is not part of the v2 B default; the new reference demonstrates projected ring coordinates only.",
     "v2 checks cover declared target-self collision components and Q_inst products, not the real-data collision/Seal teacher.",
-    "26 v2 checks plus 29 unchanged baseline geometry/schema checks passed; no model, export engine, real-world latency or new training result was measured."
+    "29 baseline + 26 retained v2 + 26 v3 normal/sampler + 48 v3 contact-boundary checks passed (129 total).",
+    "v2 organized normals and one-per-cell queries are retained as regression fixtures, not v3 defaults. Fixed chart, ideal ring geometry and the v2 quality label validator remain shared.",
+    "New references construct and evaluate contact geometry in float64. A 1e-12 m roundoff guard is not a sensor-noise allowance or a guarantee for already quantized float32 XYZ.",
+    "Harmonic magnitudes k=1,2,3 are incomplete shape summaries; reference tests include high-order and relative-phase counterexamples.",
+    "The Gaussian depth-noise example is a fixed synthetic fixture, not a RealSense/stereo measurement or a general noise-reduction factor.",
+    "<v3-demo-dir> is a fresh temporary output directory; the demo files were separately read back after generation to verify shapes, valid counts, unique IDs and prefixes."
   ],
   "source_files": [
     {
@@ -143,9 +148,17 @@
     {
       "path": "revision_contract.py",
       "sha256": "70227fbe7f227277dbdbf3d854a7f8b243d9d34f1f3376020b13d81a8d1db0ac"
+    },
+    {
+      "path": "sampling_contract.py",
+      "sha256": "d5da0794bd897c05651481b621b63232f57cb8dca6738f1461fbbb707fcb8fdb"
+    },
+    {
+      "path": "contact_boundary_contract.py",
+      "sha256": "555b97f48e1b21482eec5b6d183d3e634a098644be34f41751655185cea228fb"
     }
   ],
-  "total_synthetic_checks": 55,
+  "total_synthetic_checks": 129,
   "revision_commands": [
     {
       "command": "python docs/instance_routes/reference/revision_contract.py selftest",
@@ -231,5 +244,248 @@
         "scope": "declared_v2_labels_only_not_geometry_teacher_validation"
       }
     }
-  ]
+  ],
+  "boundary_commands": [
+    {
+      "command": "python docs/instance_routes/reference/sampling_contract.py selftest",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "checks_passed": 26,
+        "checks": [
+          "front_plane_camera_facing_unit_normals",
+          "span3_boundary_is_explicit",
+          "raw_XYZ_and_keep_are_unchanged",
+          "NaN_Inf_nonpositive_depth_do_not_propagate",
+          "span3_paths_never_jump_over_holes",
+          "normal_stencil_does_not_cross_instance_boundary",
+          "smoothing_requires_five_of_nine_support_points",
+          "adjacent_depth_discontinuity_rejects_crossing_paths",
+          "wide_total_depth_span_over_10mm_can_remain_valid",
+          "zero_area_surface_is_invalid_without_NaN",
+          "narrow_support_does_not_silently_fallback_to_span1",
+          "fixed_iid_noise_fixture_observed_angle_improves",
+          "thin_fixture_has_1132_pixels_but_only_46_v2_cells",
+          "thin_fixture_refills_to_256_unique_source_pixels",
+          "refill_first_pass_matches_v2_cell_order",
+          "refill_diagnostics_account_for_all_candidates",
+          "caps64_128_are_identical_prefixes_of_cap256",
+          "refill_is_deterministic_including_metadata",
+          "full_grid_keeps_bit_reversed_Morton_quadrant_prefix",
+          "Morton_prefix64_128_cover_every_2x2_cell_block",
+          "full_grid_first_pass_needs_no_refill",
+          "eligible_below_budget_is_exhausted_without_duplicates",
+          "empty_instance_returns_empty_with_reason",
+          "nonempty_instance_without_eligible_pixels_is_explicit",
+          "eligible_outside_instance_is_rejected",
+          "caps_above_fixed_256_are_rejected"
+        ],
+        "normal_spec": "organized_masked3x3_span3_v3",
+        "sampler_spec": "image_stratified_morton_refill_v3",
+        "noise_observation": {
+          "fixture": "65x65_front_plane_Z0.6_fx_fy600_iid_axial_Gaussian_sigma0.0005_seed20261118",
+          "common_valid_pixels": 3481,
+          "v2_mean_angle_deg": 22.994325722035484,
+          "v3_mean_angle_deg": 2.8472238374874763,
+          "v2_p95_angle_deg": 41.127005917110026,
+          "v3_p95_angle_deg": 5.511396927016008,
+          "scope": "one_synthetic_noise_fixture_not_sensor_measurement_or_general_noise_reduction_guarantee"
+        },
+        "thin_fixture": {
+          "sampler_spec": "image_stratified_morton_refill_v3",
+          "max_candidates": 256,
+          "eligible_pixel_count": 1132,
+          "nonempty_cell_count": 46,
+          "first_pass_count": 46,
+          "refill_count": 210,
+          "refill_rounds": 5,
+          "candidate_count": 256,
+          "stop_reason": "budget_reached",
+          "metric_uniformity_guaranteed": false
+        },
+        "python": "3.12.14",
+        "numpy": "2.3.5",
+        "scope": "synthetic_normal_and_sampling_contracts_only_no_teacher_model_or_latency_benchmark"
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/contact_boundary_contract.py self-test",
+      "exit_code": 0,
+      "result": {
+        "schema_version": "suction20.contact_boundary.v3",
+        "quality_contract": "gt_INST20_pose_v2",
+        "scope": "synthetic_contact_algebra_not_model_teacher_export_or_performance_validation",
+        "passed": true,
+        "check_count": 48,
+        "checks": [
+          "a_summary_has_fixed_eight_dimensions",
+          "a_full_ring_has_72_independent_supports",
+          "a_arbitrary_tangent_basis_rotation_preserves_summary",
+          "a_gauge_invariance_also_holds_with_uneven_partial_support",
+          "a_duplicate_source_ids_do_not_increase_weight_or_count",
+          "a_conflicting_duplicate_source_position_is_rejected",
+          "a_raw_lip_filter_excludes_wrong_radius_height_nonfinite_and_unsupported",
+          "a_constant_height_partial_arc_has_zero_centred_rms_and_harmonics",
+          "a_validity_is_not_a_full_coverage_guarantee",
+          "a_fewer_than_seven_angles_zero_amplitudes_but_retain_rms",
+          "a_seven_distinct_angles_meet_minimum_sampling_condition",
+          "a_many_points_on_one_angle_do_not_fake_seven_supports",
+          "a_angular_merge_tolerance_wraps_across_zero",
+          "a_empty_support_summary_is_all_zero",
+          "a_single_support_has_full_gap_and_zero_rms",
+          "a_centred_descriptor_ignores_common_height_offset",
+          "a_source_order_does_not_change_summary",
+          "a_three_examples_have_identical_height_multisets_and_rms",
+          "a_harmonics_distinguish_the_three_specific_equal_multisets",
+          "a_k4_energy_is_missing_from_first_three_amplitudes_but_present_in_rms",
+          "a_same_amplitudes_and_rms_do_not_recover_relative_harmonic_phase",
+          "b_ideal_ring_interface_and_all_metric_boundaries_are_supported",
+          "b_summary_has_30_dimensions_with_full_coverage_and_zero_raw_heights",
+          "b_parallax_example_points_lie_on_the_same_camera_rays",
+          "b_45deg_minus6mm_moves_nominal18mm_to_24p254558_or_12p254558mm",
+          "b_both_parallax_cross_zone_samples_are_rejected",
+          "b_rejected_parallax_retains_raw_negative_height",
+          "b_centre_support_is_broadcast_and_independent_of_angular_phase",
+          "b_centre_support_rejects_radial_offset_beyond_three_mm",
+          "b_nonbroadcast_centre_observation_is_rejected",
+          "b_opposite_180deg_slot_fails_positive_radial_gate_despite_matching_rho",
+          "b_tangential_mismatch_is_rejected_even_with_correct_radius",
+          "b_half_open_zone_edges_reject_core10mm_and_inner18mm",
+          "b_three_mm_gate_is_inclusive_with_roundoff_only",
+          "b_empty_observations_have_zero_coverage_full_gaps_and_zero_raw_summary",
+          "b_nan_position_cannot_be_declared_observed_valid",
+          "b_contact_support_cannot_exist_without_observation",
+          "b_half_circle_gap_includes_wraparound_at_zero",
+          "b_equal_missing_fraction_can_have_different_contiguous_gaps",
+          "b_coverage_and_raw_summaries_are_cyclic_shift_invariant",
+          "b_rejected_raw_protrusions_and_depressions_are_retained_without_height_clip",
+          "b_invalid_nan_tokens_do_not_change_valid_per_angle_channel_layernorm",
+          "b_affine_bias_cannot_create_valid_features_in_missing_angles",
+          "b_layernorm_does_not_mix_other_angles_or_other_queries",
+          "b_invalid_tokens_do_not_change_masked_mean_or_max",
+          "b_empty_masked_pool_returns_finite_zero_mean_and_max",
+          "b_invalid_zero_padding_does_not_bias_max_of_negative_valid_values",
+          "b_masked_pool_alone_cannot_replace_explicit_missing_coverage"
+        ],
+        "python": "3.12.14",
+        "numpy": "2.3.5",
+        "measurements": {
+          "maximum_basis_rotation_summary_error": 1.4224732503009818e-16,
+          "same_multiset_harmonic_amplitudes_mm": [
+            [
+              1.910465468837792,
+              1.3395174007489028e-16,
+              0.638441464628377
+            ],
+            [
+              5.403572890077166e-15,
+              1.9122855409449888,
+              6.508932337320859e-15
+            ],
+            [
+              5.148389959291311e-15,
+              5.01133649911701e-16,
+              6.375551107189451e-15
+            ]
+          ],
+          "parallax_rho_mm": [
+            24.254558441227193,
+            12.254558441227156
+          ]
+        },
+        "limits": [
+          "Three harmonic magnitudes do not recover relative phase or higher modes.",
+          "Seven angular supports do not establish complete coverage or good conditioning.",
+          "Observed-sample descriptors remain sensitive to density, holes and depth error.",
+          "Ring gates preserve raw observations but neither infer hidden surfaces nor compute teacher collisions.",
+          "No model training, real-data quality, depth-image sampler, export or timing was tested."
+        ]
+      }
+    },
+    {
+      "command": "python docs/instance_routes/reference/sampling_contract.py demo --output-dir <v3-demo-dir>",
+      "exit_code": 0,
+      "result": {
+        "ok": true,
+        "synthetic_only": true,
+        "normal_diagnostics": {
+          "normal_spec": "organized_masked3x3_span3_v3",
+          "reference_dtype": "float64",
+          "image_shape": [
+            65,
+            65
+          ],
+          "requested_instance_pixels": 4225,
+          "raw_valid_pixels": 4225,
+          "invalid_or_nonpositive_requested_pixels": 0,
+          "smooth_valid_pixels": 4221,
+          "normal_valid_pixels": 3481,
+          "raw_valid_without_normal_pixels": 744,
+          "border_raw_valid_pixels": 744,
+          "stencil_or_smoothing_reject_pixels": 0,
+          "adjacent_depth_path_reject_pixels": 0,
+          "degenerate_cross_reject_pixels": 0,
+          "smoothing_support_histogram_0_to_9": [
+            0,
+            0,
+            0,
+            0,
+            4,
+            0,
+            252,
+            0,
+            0,
+            3969
+          ],
+          "positions_modified": false,
+          "fallback_to_span1": false
+        },
+        "sampling_diagnostics": {
+          "sampler_spec": "image_stratified_morton_refill_v3",
+          "max_candidates": 256,
+          "eligible_pixel_count": 1132,
+          "nonempty_cell_count": 46,
+          "first_pass_count": 46,
+          "refill_count": 210,
+          "refill_rounds": 5,
+          "candidate_count": 256,
+          "stop_reason": "budget_reached",
+          "metric_uniformity_guaranteed": false
+        },
+        "noise_observation": {
+          "fixture": "65x65_front_plane_Z0.6_fx_fy600_iid_axial_Gaussian_sigma0.0005_seed20261118",
+          "common_valid_pixels": 3481,
+          "v2_mean_angle_deg": 22.994325722035484,
+          "v3_mean_angle_deg": 2.8472238374874763,
+          "v2_p95_angle_deg": 41.127005917110026,
+          "v3_p95_angle_deg": 5.511396927016008,
+          "scope": "one_synthetic_noise_fixture_not_sensor_measurement_or_general_noise_reduction_guarantee"
+        },
+        "files": [
+          "synthetic_normals_v3.npz",
+          "thin_queries_v3.npz",
+          "sampling_summary.json"
+        ],
+        "scope": "raw_query_positions_unchanged_no_sensor_data_model_teacher_or_timing"
+      }
+    }
+  ],
+  "current_design_schema": "suction20.instance_routes.design.v3",
+  "quality_contract": "gt_INST20_pose_v2",
+  "normal_spec": "organized_masked3x3_span3_v3",
+  "sampler_spec": "image_stratified_morton_refill_v3",
+  "artifact_readback": {
+    "ok": true,
+    "normal_shape": [
+      65,
+      65,
+      3
+    ],
+    "normal_valid_pixels": 3481,
+    "eligible_pixels": 1132,
+    "unique_candidates": 256,
+    "prefix64_matches": true,
+    "prefix128_matches": true
+  }
 }

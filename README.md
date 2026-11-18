@@ -10,7 +10,7 @@
 
 ## Done（已完成）
 
-- [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v2结构复核、保留目标自碰的同姿态标签、3D/共享2D网络及复现规范；参考工具共55项合成检查通过。A/B模型、teacher接线和训练入口仍待实现。
+- [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v3几何边界复核、保留目标自碰的同姿态标签、谐波/投影门控、稳健法向及候选回填规范；参考工具共129项合成检查通过。A/B模型、teacher接线和训练入口仍待实现。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
 - [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
 

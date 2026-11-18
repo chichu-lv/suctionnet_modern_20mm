@@ -1,5 +1,5 @@
 {
-  "schema_version": "suction20.instance_routes.design.v2",
+  "schema_version": "suction20.instance_routes.design.v3",
   "artifact_kind": "design_spec",
   "trainer_implemented": false,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
@@ -10,22 +10,49 @@
     "tool_plus_z": "negative_outward_normal",
     "roll": "stateless_cross_least_aligned_camera_axis_tie_xyz_output_only",
     "learned_contact_uses_tangent_basis": false,
-    "roll_continuity_guaranteed": false
+    "roll_continuity_guaranteed": false,
+    "summary_internal_basis_arbitrary_outputs_invariant": true
   },
   "observation": {
     "min_source_training_points": 100,
     "position_scale_m": 0.1,
     "normal": {
-      "method": "organized_instance_fd_v2",
+      "method": "organized_masked3x3_span3_v3",
       "same_instance_required": true,
-      "finite_difference_pixel_offset": 1,
+      "raw_validity": "finite_XYZ_positive_Z_and_upstream_depth_bounds",
+      "smoothing": {
+        "input": "raw_XYZ",
+        "window_pixels": [
+          3,
+          3
+        ],
+        "operation": "masked_equal_weight_mean",
+        "center_raw_valid_required": true,
+        "minimum_valid_neighbors_including_center": 5,
+        "neighbor_center_raw_depth_abs_max_m": 0.01,
+        "depth_comparison": "strict_less_than",
+        "invalid_neighbor_arithmetic": "select_before_sum_not_NaN_times_zero",
+        "changes_query_center_or_raw_support": false
+      },
+      "finite_difference_pixel_offset": 3,
+      "difference_input": "smoothed_XYZ",
+      "center_and_four_endpoints_smooth_valid_required": true,
+      "all_intermediate_raw_path_pixels_valid_same_instance_required": true,
+      "adjacent_raw_path_depth_jump_abs_max_m": 0.01,
+      "adjacent_depth_jump_comparison": "strict_less_than",
+      "opposite_endpoint_total_depth_gate": false,
       "cross_norm_min": 1e-08,
-      "opposite_depth_jump_abs_max_m": 0.01,
-      "opposite_depth_jump_comparison": "strict_less_than",
-      "proposal_orientation": "dot(n,-p)>=0",
+      "cross_norm_units": "m^2",
+      "cross_norm_comparison": "strict_greater_than",
+      "proposal_orientation": "dot(n,-raw_p)>=0",
       "historical_query_orientation": "preserve_supplied_sign",
+      "invalid_normal": "zero_with_false_normal_valid",
+      "fallback_to_span1": false,
       "full_support_pca": false,
-      "optional_pca_requires_distinct_config_and_cache": true
+      "optional_pca_requires_distinct_config_and_cache": true,
+      "reference_arithmetic": "float64",
+      "physical_support_is_constant": false,
+      "measured_real_sensor_noise_reduction": false
     },
     "gravity_components": 3,
     "component_connectivity": 4,
@@ -35,7 +62,7 @@
     "max_candidates": 256,
     "train_candidate_prefix": 128,
     "optional_train_candidate_prefix": 64,
-    "method": "image_stratified_16x16_bit_reversed_morton_v2",
+    "method": "image_stratified_morton_refill_v3",
     "grid_cells_xy": [
       16,
       16
@@ -47,7 +74,27 @@
     "empty_cells": "omit",
     "direct_historical_pose": true,
     "historical_support_anchor_max_distance_m": 0.005,
-    "historical_anchor_moves_query_center": false
+    "historical_anchor_moves_query_center": false,
+    "build_full_max_candidate_sequence_before_prefix": true,
+    "refill": {
+      "enabled": true,
+      "round_order": "same_bit_reversed_morton_nonexhausted_cells",
+      "per_cell_per_round": 1,
+      "within_cell_selection": "maximize_min_squared_pixel_distance_to_selected_in_same_cell",
+      "tie_break": "minimum_source_point_id",
+      "replacement": false,
+      "stop": "max_candidates_or_all_eligible_pixels_exhausted"
+    },
+    "diagnostics": [
+      "eligible_pixel_count",
+      "nonempty_cell_count",
+      "first_pass_count",
+      "refill_count",
+      "refill_rounds",
+      "candidate_count",
+      "stop_reason"
+    ],
+    "uniform_3d_surface_area_guaranteed": false
   },
   "contact": {
     "height_abs_max_m": 0.04,
@@ -92,10 +139,36 @@
     "lip_summary_fields": [
       "log1p_raw_lip_count",
       "maximum_circular_angle_gap_over_2pi",
-      "lip_nonempty"
+      "lip_nonempty",
+      "centered_height_rms_over_0.04m",
+      "centered_height_harmonic_1_over_0.04m",
+      "centered_height_harmonic_2_over_0.04m",
+      "centered_height_harmonic_3_over_0.04m",
+      "harmonic_valid"
     ],
     "ordered_sector_features_to_mlp": false,
-    "teacher_sector_count": 72
+    "teacher_sector_count": 72,
+    "height_harmonics": {
+      "orders": [
+        1,
+        2,
+        3
+      ],
+      "support": "raw_lip_before_zone_FPS_unique_source_id",
+      "weights": "equal_per_observed_point",
+      "center_height": true,
+      "height_scale_m": 0.04,
+      "angular_merge_tolerance_rad": 1e-06,
+      "minimum_distinct_angular_support": 7,
+      "distinct_angular_support_rule": "max(1,count(circular_sorted_angle_gaps>tolerance))_for_nonempty",
+      "invalid_harmonics": "zero_with_harmonic_valid_false",
+      "rms_valid_on_any_nonempty_support": true,
+      "empty_summary": "all_zero",
+      "maximum_gap_uses_unmerged_original_angles": true,
+      "learned_parameters_in_summary": 0,
+      "complete_angular_representation": false,
+      "density_and_missing_support_affect_values": true
+    }
   },
   "rgb": {
     "mean": [
@@ -209,7 +282,7 @@
       64
     ],
     "zone_output_dim": 64,
-    "query_input_dim": 526,
+    "query_input_dim": 531,
     "hidden_dim": 256,
     "optional_backbone_point_budgets": [
       4096,
@@ -219,10 +292,10 @@
     "voxel_origin": "mu_vis_cam_m",
     "backbone_sampler": "deterministic_fps_of_unique_2mm_voxel_representatives",
     "rgb_valid_side_channel": true,
-    "lip_summary_dim": 3,
+    "lip_summary_dim": 8,
     "query_feature_valid_dim": 1,
     "query_fusion": [
-      526,
+      531,
       256,
       256
     ],
@@ -233,7 +306,7 @@
         1
       ],
       "seal": [
-        195,
+        200,
         128,
         1
       ],
@@ -252,7 +325,8 @@
         128,
         1
       ]
-    }
+    },
+    "additional_summary_first_layer_weights": 1920
   },
   "quality": {
     "q_target": "seal*wrench*(1-collision_self)",
@@ -286,5 +360,16 @@
       "same_component_no_backbone_fraction",
       "same_component_fewer_than_three_neighbors_fraction"
     ]
+  },
+  "reference_numeric_contract": {
+    "contact_geometry_arithmetic": "float64",
+    "radial_boundary_roundoff_m": 1e-12,
+    "scope": "float64_reference_roundoff_not_sensor_noise_allowance",
+    "production_dtype_requires_boundary_parity_validation": true,
+    "input_construction": "raw_depth_and_intrinsics_to_XYZ_canonical_query_and_rings_in_float64",
+    "correctness_baseline_geometry": "float64_before_network_feature_cast",
+    "network_feature_dtype": "float32",
+    "float32_XYZ_upcast_restores_precision": false,
+    "historical_query": "read_recorded_p_and_n_in_float64_preserve_pose_do_not_reconstruct_from_depth"
   }
 }

@@ -1,5 +1,7 @@
 # 路线 A/B 结构复核与修订记录
 
+> 本页保留v1→v2结构复核；v3对谐波、投影门控/缺测、法向和候选回填的追加修订见 [BOUNDARY_REVIEW.md](BOUNDARY_REVIEW.md)。当前默认以A/B/共同数据页与v3 JSON为准。
+
 本次审查针对 PR #8 初稿 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)，对照生产代码基线 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。结论是：B 的两处结构冲突和定位偏移需要重做；目标自碰必须恢复；其余问题需分别修正表示、控制预算或澄清已有约束。当前修订仍是设计与可运行数学/schema参考，不是已实现模型或性能测量。
 
 ## 1. 逐项结论

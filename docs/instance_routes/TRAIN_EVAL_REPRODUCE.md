@@ -1,6 +1,6 @@
 # 训练评价与复现执行说明
 
-本页固定 v2 首版配方、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
+本页固定 v3 设计配方（物理质量仍为v2）、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
 
 ## 1 当前可执行范围
 
@@ -25,15 +25,19 @@ python -m pip install numpy==2.3.5
 
 python docs/instance_routes/reference/geometry_contract.py selftest
 python docs/instance_routes/reference/revision_contract.py selftest
+python docs/instance_routes/reference/sampling_contract.py selftest
+python docs/instance_routes/reference/contact_boundary_contract.py self-test
+python docs/instance_routes/reference/sampling_contract.py demo \
+  --output-dir /tmp/suction-instance-v3-sampling-demo
 python docs/instance_routes/reference/revision_contract.py demo \
   --output-dir /tmp/suction-instance-v2-demo
 python docs/instance_routes/reference/revision_contract.py check-labels \
   /tmp/suction-instance-v2-demo/synthetic_instance_labels.npz
 ```
 
-使用新的空输出目录，工具不会覆盖已存在的demo文件。旧参考的29项检查仍验证投反影、姿态、旧SW文件和切平面栅格数学；**旧栅格已不属于B默认网络路径**。新参考另有26项检查，覆盖坐标基反例、固定坐标图、投影环、旋转/循环位移、organized法向、候选前缀和保留自碰的v2标签。
+使用新的空输出目录，工具不会覆盖已存在的demo文件。旧参考的29项检查仍验证投反影、姿态、旧SW文件和切平面栅格数学；**旧栅格已不属于B默认网络路径**。v2参考26项检查保留，覆盖旧基反例、固定坐标图、理想投影环、旧organized法向/首轮采样与物理v2标签。默认v3法向和回填必须调用 `sampling_contract.py`（26项检查）；A谐波、B接触门控/缺测摘要和逐角归一化调用 `contact_boundary_contract.py`（48项检查）。四组共129项合成检查；旧法向/一格一点函数不再是生产默认。两份v3模块使用float64参考算术，不代表生产CNN已经实现。
 
-新demo生成 `[9,72,2]` 投影坐标；半径0可只读取一次，生产实现每query有577个不同采样槽位。它不执行神经网络或读取真实表面。标签示例3行，2行有效、1行masked NaN，其中一个有效点SW=0.72但存在self而Q_inst=0。
+v3采样demo生成固定噪声平面与细长掩码的NPZ、JSON；64/128前缀取自同一256池。v2 demo生成 `[9,72,2]` 投影坐标；半径0可只读取一次，生产实现每query有577个不同采样槽位。它不执行神经网络或读取真实表面。标签示例3行，2行有效、1行masked NaN，其中一个有效点SW=0.72但存在self而Q_inst=0。
 
 已有清单可继续运行 `python docs/instance_routes/reference/geometry_contract.py check-manifest <manifest.jsonl>`。manifest检查仅核对声明的hash/group关系，不读取原始字节，也不证明无相邻帧泄漏。新标签必须使用 `revision_contract.py check-labels`；旧SW检查不能验证self语义。完整结果与源码hash见[VALIDATION.json](reference/VALIDATION.json)。
 
@@ -88,7 +92,7 @@ $$
 | 成功optimizer更新 | 8750 |
 | optimizer | AdamW，betas=(0.9,0.999)，eps=1e-8，weight_decay=0.01 |
 | 学习率 | peak=3e-4，warmup438次成功更新，之后cosine至1e-5 |
-| 首版训练精度 | FP32；几何/坐标/法向和teacher均FP32或更高精度 |
+| 首版训练精度 | 网络FP32；新几何正确性基线从原始深度/内参以float64构造XYZ/法向/canonical query/理想环并判边界；冻结teacher保留原算术 |
 | 验证节点 | 875、1750、…、8750，共10次 |
 | 随机性 | Python/NumPy/Torch/CUDA和数据loader种子均固定并保存RNG |
 | 源域选模 | `InstTop1_INST20@0.4` 最大；再按mean selected Q_inst最大；仍并列则更早步 |
@@ -114,7 +118,7 @@ $$
 
 若逐条反向累积，两个target各权重0.5，两个source各权重0.25；之后不再整体除4。一个观测有多次历史动作，先取其有效动作平均，避免多动作观测因记录数量而额外加权。target按既有train的观测均匀采样，不做默认成功/失败1:1重采样；group用于划分约束与分组报告。
 
-每条target动作：`logit=score_at_pose(p_plan,n_plan).task_logit`，`BCEWithLogits(logit,outcome)`。使用logit版本的BCE，不能先sigmoid后又传入BCEWithLogits。Seal、Wrench真值不由产线成败反推。source回放读取A/B共同的v2同姿态物理缓存、默认128 query和同一source loss。
+每条target动作：`logit=score_at_pose(p_plan,n_plan).task_logit`，`BCEWithLogits(logit,outcome)`。使用logit版本的BCE，不能先sigmoid后又传入BCEWithLogits。Seal、Wrench真值不由产线成败反推。source回放读取A/B共同的物理v2标签缓存（由v3法向/采样构造的新精确p/n身份生成）、默认128 query和同一source loss。
 
 | 成功更新 | 可训练参数 | 学习率 |
 |---|---|---|
@@ -122,7 +126,7 @@ $$
 | 201–1000 | 上述头；A的decoder/接触模块，B的Fq投影/共享纹理stem/环向编码；两者query融合与对象池化投影 | heads 1e-4，其余1e-5 |
 | 全程 | encoder冻结；BatchNorm running stats与affine冻结 | — |
 
-阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。B v2全局encoder、共享纹理stem和环向模块采用GroupNorm(groups=8,eps=1e-5)，从新架构初始化；没有可静默复用的旧BN权重。GroupNorm/LayerNorm不是BatchNorm，affine参数按所在模块是否解冻处理。参数组名称与成员hash写入checkpoint；旧E5的组名不能不经检查直接套A/B。
+阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。B v3全局encoder与共享纹理stem采用GroupNorm(groups=8,eps=1e-5)；环向模块按 `[Q,72,16]` 的最后16通道做LayerNorm(16,eps=1e-5)，无效角在卷积前和归一化/激活后按原mask清零。从新架构初始化；没有可静默复用的旧BN权重。GroupNorm/LayerNorm不是BatchNorm，affine参数按所在模块是否解冻处理。参数组名称与成员hash写入checkpoint；旧E5的组名不能不经检查直接套A/B。
 
 ### 6.1 BN冻结是已有要求，执行时必须核验
 
@@ -222,7 +226,7 @@ contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。�
 | 层面 | 主指标 | 必须保留的解释字段 |
 |---|---|---|
 | 单实例含目标自碰质量 | `InstTop1_INST20@0.4` | 原始实例总数、无输出率、所选Q_inst均值；另报SW及self比例 |
-| 候选生成/选择 | `Coverage_INST20@256` 与有好候选时Top1选中率 | query数量、支持过滤前后、NMS前后；不以无输出率替代质量覆盖 |
+| 候选生成/选择 | `Coverage_INST20@256` 与有好候选时Top1选中率 | eligible像素、首轮/回填数、回填轮次、实际K、支持过滤前后、NMS前后；不以无输出率替代质量覆盖 |
 | 公共方法比较 | 既有官方R10与原项目R20六指标 | 重新使用各协议完整评价与后处理；不把新INST或SW填入原Q20 AP表 |
 | 历史动作成败 | AUROC、AP、BCE、Brier | 总动作数、有效数、正负数、逐动作分数；BCE/Brier只针对task概率 |
 | 部署成本 | model-only及instance端到端p50/p95 | 硬件、dtype、原始点数、候选数、拷贝、预处理和NMS范围 |
@@ -233,7 +237,7 @@ INST主指标固定为：每frame内对可见GT实例平均，再对同scene的�
 
 比较原E5与新路线时，应对其实际输出姿态按同一个v2 instance teacher重新评价，或同时列出各自原协议；不能用旧13.12%的含碰撞开发指标当新INST主指标基线。首轮不要求重训第三方模型。
 
-延迟每物体batch1，先50次预热，再至少200个固定验证实例，输出p50/p95与峰值显存；记录K实际有效数量。GPU模型时间用CUDA events并同步，端到端用墙钟同步边界。B必须计入organized法向、图像候选、共享纹理编码、投影采样、环向查询与数据拷贝；整帧多个实例另报真实汇总。上游相机和实例分割是否包含在计时内明确列出，不混称完整机器人FPS。15–30 ms与2–5 ms均不能在实现前标为测得结果。
+延迟每物体batch1，先50次预热，再至少200个固定验证实例，输出p50/p95与峰值显存；记录K实际有效数量。GPU模型时间用CUDA events并同步，端到端用墙钟同步边界。A/B必须计入3×3法向平滑、±3差分与路径门控、候选格内回填；A另计raw lip谐波，B另计共享纹理编码、投影门控/摘要与环向查询和数据拷贝；整帧多个实例另报真实汇总。上游相机和实例分割是否包含在计时内明确列出，不混称完整机器人FPS。15–30 ms与2–5 ms均不能在实现前标为测得结果。
 
 ## 9 既有基线的真实命令
 
@@ -270,20 +274,22 @@ python scripts/finetune.py \
 |---|---|---|---|
 | I1 实例构建 | `scripts/build_instance_data.py`；`suction20/instance_data.py` | 已有RGB-D/实例/动作清单 → instance manifest、normal/query缓存 | scene/group不泄漏；原点/轴/标定回读一致 |
 | I2 实例物理缓存 | `scripts/label_instance_queries.py`；`suction20/instance_labels.py` | 固定query、冻结teacher → S/W/self/SW/INST缓存与hash | S/W对齐现有evaluate_poses；self与原target-only碰撞对齐；不改变旧gt_B |
-| I3 双模型 | `models/instance_a.py`、`models/instance_b.py` | observation → `encode_instance`；query p,n → heads | A/B输入和mask shape、任意轴可查询、局部支持正确 |
+| I3 双模型 | `models/instance_a.py`、`models/instance_b.py` | observation → `encode_instance`；query p,n → heads | A531/Seal200、B330输入维数、mask与角槽不扩张、谐波及投影门控正确、任意轴可查询 |
 | I4 训练接线 | `scripts/train_instance.py`、`suction20/instance_training.py` | route配置与缓存 → checkpoints/训练和val日志 | 预训练和两段微调参数组、loss归约、成功样本预算正确 |
 | I5 评价推理 | `scripts/evaluate_instance.py`、`scripts/infer_instance.py` | checkpoint+固定清单 → 逐query/动作预测和汇总 | INST/SW与旧协议区分；输出SE(3)、身份和无输出原因 |
 | I6 B部署 | `scripts/export_instance_b.py` | 冻结B子图 → ONNX/engine与一致性报告 | 每个导出子图及组合结果与PyTorch比对，真实耗时有记录 |
 
 建议新训练器CLI固定 `--route a|b`、`--stage pretrain|finetune`、`--config`、`--manifest`、`--label-manifest`、`--run-dir`、`--device`；初始化与恢复互斥。首次实现时parser必须拒绝design_spec直接运行，或提供明确的设计配置→运行配置转换并校验所有本地路径。不要向旧入口加“随意放行”的开关。
 
-checkpoint最少保存架构/版本、A的12通道及B的13通道全局/5通道纹理合同、normal spec、query sampler、INST/self物理配置、输入归一化、ranking模式、模型/优化器/scaler、成功步与样本消费、参数组、loader/sampler/RNG、源/目标manifest hash及代码身份。跨路线、输入维度或质量目标变化不能resume。
+checkpoint最少保存架构/版本、A的12通道及B的13通道全局/5通道纹理合同、normal spec（v3）、query sampler（v3）、精确p/n列表hash、A谐波与B门控/归一化、INST/self物理配置、输入归一化、ranking模式、模型/优化器/scaler、成功步与样本消费、参数组、loader/sampler/RNG、源/目标manifest hash及代码身份。跨路线、输入维度或质量目标变化不能resume。
 
 最低真实链路验收是：一个真实实例的teacher与输入一致；少量更新确实反向并降低对应目标；保存恢复后下一个batch/query与学习率一致；历史动作评分对改变轴有响应；实际推理输出p/n与被评分的姿态完全一致。完成这些后按既定预算训练，只补解决本次具体风险的检查，不新增全套实验矩阵。实例teacher先做64–128个真实样本的成本剖析；全量预训练前完成缓存同姿态与self拆分核验。
 
 ## 11 本次验证与后续记录
 
-本次验证覆盖设计文档、几何/数据契约参考工具及文档导航。旧参考29项及v2参考26项合成检查与demo不构成 A/B 真实数据teacher、一轮训练、模型准确率或推理耗时证据。真实运行报告应依照上面的完成判据逐项记录，并链接其配置、输入清单与结果文件。
+本次验证覆盖设计文档、几何/数据契约参考工具及文档导航。旧参考29项、v2参考26项、v3法向/采样26项及接触边界48项，共129项合成检查与demo不构成 A/B 真实数据teacher、一轮训练、模型准确率或推理耗时证据。真实运行报告应依照上面的完成判据逐项记录，并链接其配置、输入清单与结果文件。
+
+v3真实数据验收还应报告：新旧法向在固定实例的有效率/角误差（有可靠参考时）、新候选池覆盖、B逐半径支持率与最大缺口、径向/切向/反向槽拒绝原因，以及被拒绝观测的原始正负高度。不能把 `contact_valid=false` 转成Seal=0，也不能把宽法向stencil失效的点偷偷换回旧法向。参考float64的1e-12m边界舍入保护只处理数值误差；必须在构造XYZ/canonical query/环时就保留float64，不能先量化FP32再升精度。生产FP32几何属于需固定precision-contract和边界验证的部署变体，不能将真实像素量化误差吞进容差。
 
 数据文件和checkpoint继续存于外部数据/运行目录；GitHub只提交代码、配置、必要的汇总与可复核来源。使用当前同身份恢复政策，不重新引入已退出的CD-009转换器或过渡期兼容代码。
 
