@@ -1,0 +1,87 @@
+# 单物体吸取路线 A/B 工程规范（v3）
+
+本规范定义单物体 RGB-D 吸取的两条实现路线：A复用稀疏3D骨干与物理接触分组；B采用共享2D图像编码、逐查询语义特征及投影环带读取。两者对明确的接触中心和有向轴预测Seal、Wrench、保留目标自碰的实例质量及历史规划动作成败。
+
+**当前交付是经审查修订的工程设计与可运行NumPy数学/schema参考。A/B新模型、实例teacher、训练器及部署引擎尚未实现；没有新模型精度或延迟实测。** 设计JSON不能直接传入旧E5训练入口。
+
+生产代码审查基线为 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。初稿保留在 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)；v2修订保留在 [`8e63e92`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/8e63e925bc54c442e8b5df6422ed51a69ce73fc1)；本页及子文档以v3为准。[逐项复核与修正](REVIEW_AND_CORRECTIONS.md)说明初稿缺陷和v2决策；[v3几何边界复核](BOUNDARY_REVIEW.md)说明本次四项修订、数值反例与限制。
+
+## 1. 阅读和执行顺序
+
+| 文档 | 内容 |
+|---|---|
+| [A 方法架构图](METHOD_ARCHITECTURE_A.md) / [B 方法架构图](METHOD_ARCHITECTURE_B.md) | 三面板总览、接触几何、两阶段训练；SVG/PDF/PNG、双语图注与关键维度 |
+| [v3几何边界复核](BOUNDARY_REVIEW.md) | 谐波摘要、投影视差/缺测门控、稳健法向与稀疏候选回填 |
+| [结构复核记录](REVIEW_AND_CORRECTIONS.md) | 对用户各项质疑的结论、坐标基反例与成本计算 |
+| [共同数据与标签](DATA_AND_LABELS.md) | 固定split、快速法向、共同候选、精确动作、自碰分项与标签缓存 |
+| [路线A](ROUTE_A.md) | 12维稀疏输入、原始支持、覆盖诊断、无人工切向坐标的接触编码 |
+| [路线B](ROUTE_B.md) | 删除U-Net/逐候选栅格CNN，Fq、共享原生纹理、批量投影环与循环池化 |
+| [训练评价和复现](TRAIN_EVAL_REPRODUCE.md) | 128-query训练、损失、200+800微调、可选姿态一致性及真实可运行命令 |
+| [v3法向/采样参考](reference/sampling_contract.py) | 26项检查：同实例平滑、宽差分、位反转顺序及格内回填 |
+| [v3接触边界参考](reference/contact_boundary_contract.py) | 48项检查：谐波、门控、覆盖、原始高度与逐角归一化 |
+| [v2参考程序](reference/revision_contract.py) | 26项保留检查；固定坐标图/理想环及物理v2标签校验仍复用；旧法向/采样仅作回归对照 |
+| [基础几何参考](reference/geometry_contract.py) | 29项既有检查、投反影/姿态/manifest；切平面栅格仅为基础数学示例 |
+| [A配置](reference/route_a.json) / [B配置](reference/route_b.json) | v3机器可读设计快照，不是现有训练器配置 |
+
+## 2. 共同任务与物理v2目标
+
+原总collision同时包含目标自身和外部环境。单物体输入不应失去目标自碰监督，故改为：
+
+$$
+C_{self}=C_{seal,self}\lor C_{target,envelope},\qquad
+Q_{inst20}=S_{20}W_{20}(1-C_{self}).
+$$
+
+`true`表示碰撞。质量身份为`gt_INST20_pose_v2`；纯`q_sw=S*W`另存诊断。Seal和Wrench辅助目标不因自碰而被人为改成零。外部物体/桌面不进入新质量，原R10/R20完整评价保持原协议。没有self真值的行不能补false假装无碰撞。
+
+默认法向使用 `organized_masked3x3_span3_v3`：同实例3×3原始XYZ带深度门控均值，至少5点；在平滑图上做±3像素中心差分，逐段核验原始路径的同实例支持与10mm跳变。只平滑法向输入，接触点和raw支持不动；不退回全量PCA或隐式±1。候选使用 `image_stratified_morton_refill_v3`：16×16分层、位反转Morton顺序，首轮每格一点，后续逐轮格内二维FPS回填至256或合法像素耗尽；训练/源回放取前128个，64为可选配置。历史动作仍按记录p/n直接评分。
+
+物理函数与质量schema仍为v2；观测法向、候选序列和模型结构已变为v3，必须重建相应query/label缓存身份，不能复用旧pose缓存冒充同姿态监督。
+
+## 3. 两路线的固定结构
+
+| 维度 | A：单实例稀疏3D | B：共享2D编码与投影环 |
+|---|---|---|
+| 全局输入 | 完整可见支持；2mm代表点后FPS最多2048，12维 | 全实例13×128²语义图；另保留原生ROI纹理 |
+| 主干 | 新12通道SpConv ResUNet14封装 | ResNet-18 encoder-only，GN8；没有U-Net |
+| 查询语义 | 主干Fq256及G64 | 中间层位置采样Fq64及G128 |
+| 精细接触证据 | raw支持的三区域共享点MLP，原始RGB旁路 | 一次stride1纹理stem，按姿态读取9半径×72角度 |
+| 区域 | core 0–10mm，inner 10–18mm，lip 18–22mm | 9个投影半径；按实际半径、切向偏移及正径向半平面门控，保留门控前观测高度 |
+| 局部方向处理 | rho/h等无任意切向基量，新增中心化高度RMS/前三阶谐波幅值与有效标记 | 固定±Z坐标图、每角跨通道LayerNorm、masked池化与显式覆盖/缺测摘要 |
+| Query融合 | 531→256→256 | 330→128→128 |
+| 学习输出 | q_inst、Seal、Wrench、Laplace log-scale、task logit | 同左 |
+| 特征缺失 | 最多3个10mm内同组件邻居，至少1个即可；保留RGB/几何 | 记录原生深度/纹理缺测、投影有效性，不补出平面 |
+| 默认在线几何 | organized法向、体素/FPS、局部3D分组 | organized法向、图像分层、向量化投影和读取；无空间树/逐query栅格 |
+| 延迟 | 15–30ms只是工程目标 | 2–5ms只是工程目标 |
+
+B每实例只计算一次全局和纹理编码。它仍使用相机投影、深度几何与任意姿态query，不能称为完全没有3D数学的无条件热力图。投影采样不等于完整3D接触积分，也不能认证隐藏自碰。B的价值由同硬件、同候选预算、同输入/输出边界的实测决定。
+
+## 4. 为什么修订
+
+初稿B恢复高分辨率特征后仅全局池化，缺少逐位置Fq；局部显式分区池化与64²→8²整图池化冲突；逐query栅格/CNN偏离快速图像路线。v2直接删除这些冗余路径，用共享中层Fq和原生纹理采样补足对应信息。
+
+`argmin(abs(n))`有离散参考轴切换，跳角不固定90°；新A不向模型输入该基的x/y，新B减少坐标图切换并对环向共享权重。原144×128=18432个角度槽位权重被移除，不能将这项结构修正声称为已实测降低过拟合。
+
+全量PCA与完整帧teacher的成本风险通过默认法向替换、128查询和按需缓存控制；Seal本身仍可能是离线主瓶颈。BN冻结原本已有规定，本次补执行验收，B全局/纹理保留GN，v3环分支改为仅跨通道LayerNorm。精确动作一次BCE仍是基线，轻微姿态一致性默认关闭且需开发集验证。
+
+v3进一步处理：水平吸取时的显式局部角向信息不足；理想环投影与真实深度的错槽；短差分轴噪声；稀疏掩码的一格一点预算枯竭。已有位反转Morton前缀未发现row-major错误。前三阶谐波并不完整，3mm门控是工程初值，平滑法向也需报告有效率与边缘偏差。[完整边界记录](BOUNDARY_REVIEW.md)
+
+## 5. 既有结果与新设计的边界
+
+[方法比较](../SUCTIONNET_METHOD_COMPARISON.md)中，R20每实例无候选率约Seen0.0377%、Similar0.0134%、Novel0.0218%；无候选不等于缺少优质候选，现有数据不支持“25%优质实例因背景稀释而漏掉”的因果结论。[诊断原始汇总](../experiments/COMPARISON-20261118/diagnostics.json)
+
+[目标数据汇总](../experiments/CD010-20261117/finetuning/data/summary.json)有1676/399/87条训练/验证/测试动作，关联的是`planned_pipeline_contact`、`actual_execution_verified=false`。旧E5验证AUROC改善不能填入A/B结果；新task输出首先解释为给定观测和规划命令的成败概率。
+
+14万实例暴露是新工程初值，不由旧E5的2880×48个场景观测直接证明最优。单实例、RGB、法向、self目标、候选和结构均改变，首轮是路线比较，不将全部增益归于某一模块。无需新增大矩阵，先完成共同合同和必要风险检查。
+
+## 6. 复用与实施顺序
+
+现有`observation.py`、`eval_r20.py`、`full_data.py`、`target_dataset.py`和精确姿态评分思想可复用。当前骨干仍固定8通道，旧loss/finetune限制gt_A/gt_B，构造器固定E0–E5；新A/B要用独立模型、质量身份和训练接线。保留[checkpoint政策](../CHECKPOINT_POLICY.md)，不恢复已退役的迁移兼容。
+
+1. 固定实例/动作清单和同实例organized法向、二维候选，核对投反影和历史点/轴。
+2. 拆分并核验target-only teacher；保留原Seal扫描、自碰和Wrench定义，先测少量真实实例的离线成本，再按需生成训练缓存。
+3. 接通A的覆盖、raw RGB与任意姿态评分；接通B的Fq、共享纹理和投影环读取。
+4. 验证同姿态、mask、参数冻结、存取恢复与无输出行为，再按共同预算训练和开发选模。
+5. 报告新INST及SW分解、历史动作分类、候选覆盖和端到端成本；官方比较另用原协议。
+
+本轮完成v3设计纠正和129项合成数学/schema检查（原29+v2 26+v3 26+48）；真实teacher、神经模型、训练效果及部署速度保持待实现/待测状态。

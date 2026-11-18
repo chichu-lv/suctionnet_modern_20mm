@@ -10,6 +10,8 @@
 
 ## Done（已完成）
 
+- [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v3几何边界复核、保留目标自碰的同姿态标签、谐波/投影门控、稳健法向及候选回填规范；参考工具共129项合成检查通过。A/B模型、teacher接线和训练入口仍待实现。
+- [x] 单物体 v3 方法架构图：[路线 A](docs/instance_routes/METHOD_ARCHITECTURE_A.md) · [路线 B](docs/instance_routes/METHOD_ARCHITECTURE_B.md)；沿用论文式三面板版式，提供可编辑 SVG、PDF、高清 PNG、双语图注及确定性绘图脚本。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
 - [x] [SuctionNet 方法对照与指标计算规范](docs/SUCTIONNET_COMPARISON_METRICS.md)：SuctionNet、UISN、Diffusion-Suction、MultiGraspNet 四项方法的 AP/Top-1、实机与效率指标；包含计算公式、官方输出接口，以及 R10/R20 和场景/实例 Top-1 的对应关系。
 
@@ -48,6 +50,7 @@
 
 ## TODO（待完成）
 
+- [ ] 按[单物体路线实施顺序](docs/instance_routes/TRAIN_EVAL_REPRODUCE.md)接通共用实例/查询数据、S/W/self/INST标签和A/B模型训练入口；先实现A，再在同一协议下验证B。
 - [ ] 在已有87条未参与选模的有标签test历史动作上，对冻结的E5预训练best与微调best完成一次同动作评分比较；开发验证和401帧新候选推理已完成。
 - [ ] 接入原定正常工况业务执行对比，以新动作的实际吸取和搬运结果判断部署收益。
 
@@ -62,7 +65,8 @@
 | 最新预训练、微调与推理结果 | [完整实验数据](docs/experiments/CD010-20261117/README.md) · [独立分析与选模](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md) |
 | 公开方法效果与UISN对比 | [完整结果、输入条件与差距分析](docs/SUCTIONNET_METHOD_COMPARISON.md) · [机器可读表与来源](docs/experiments/COMPARISON-20261118/README.md) |
 | 公开方法对照与指标算法 | [四项 SuctionNet 方法、官方 AP 计算与 R20 对应](docs/SUCTIONNET_COMPARISON_METRICS.md) |
-| 论文式方法架构图 | [三子图总览、双语图注与代码对应](docs/METHOD_ARCHITECTURE.md) · [矢量 PDF](docs/figures/paper-architecture.pdf) · [可编辑 SVG](docs/figures/paper-architecture.svg) |
+| 既有 E5 论文式方法架构图 | [三子图总览、双语图注与代码对应](docs/METHOD_ARCHITECTURE.md) · [矢量 PDF](docs/figures/paper-architecture.pdf) · [可编辑 SVG](docs/figures/paper-architecture.svg) |
+| 单物体 v3 方法架构图 | [A：稀疏 3D + RGB](docs/instance_routes/METHOD_ARCHITECTURE_A.md) · [B：共享二维编码与投影环带](docs/instance_routes/METHOD_ARCHITECTURE_B.md) · [共同绘图脚本](docs/figures/render_instance_route_architectures.py) |
 | 原设计如何逐步修正 | [设计演进与图示](docs/implementation/DESIGN_EVOLUTION.md) |
 | 输入、掩码、批数据 | [Data adapter](docs/implementation/DATA_ADAPTER.md) |
 | 模型结构、维度、分组与损失 | [模型规格](docs/implementation/MODEL.md) |
@@ -115,6 +119,7 @@ bash scripts/run_data_pipeline.sh
 - 不重新发布第三方原始标注脚本或数据；需要在本地拉取上游开源仓库。
 
 原始数据使用和科研结果均需遵守 SuctionNet/GraspNet 的相应许可证。
+
 
 
 

@@ -2,6 +2,8 @@
 
 更新：2026-11-17（北京时间）。本图按照 `cd010/from-scratch-performance` 在 `23a3f0284f23d635cefa1a77e42f070f322d42a7` 的模型与实验资料整理，以 **E5 完整结构 + attempt_success 目标适配** 为主体。
 
+单物体 v3 方案另有对应的方法图：[路线 A：稀疏 3D + RGB](instance_routes/METHOD_ARCHITECTURE_A.md) · [路线 B：共享二维编码与投影环带](instance_routes/METHOD_ARCHITECTURE_B.md)。两页均提供 SVG、PDF、高清 PNG、双语图注和关键维度表；本页继续描述既有 E5 结构。
+
 ![Suction20Net paper-style method overview](figures/paper-architecture.svg)
 
 图中只展示模型信息流、核心空间几何和学习关系。硬件配置、训练步数、逐层通道规格移到正文。点云及输出吸取姿态为**确定性生成的结构示意**，不是实验输入截图或实际预测结果。
