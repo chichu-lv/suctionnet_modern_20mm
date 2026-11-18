@@ -108,7 +108,7 @@ RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固
 
 140000 的预算仅计参与有效源监督且所在 optimizer 更新成功的实例暴露。没有任何有效源 query 的实例可以保留清单身份，但须记为 `has_supervision=false`，不充当有效 batch 的受监督实例，也不计入该预算；读取、过滤及跳过数量另存。累积单元按 16 个有监督实例组织，不能把无监督零损失或重复计数用于凑满成功更新。
 
-A支持点数的训练与评价门槛来自 `model.min_support_points`，默认100；B当前无该构造参数，helper仍使用默认100。`has_supervision` 只表示存在有效teacher标签，不替代可配置支持门槛。builder另保存 `--min-support-points` 和当时 `trainable/status` 作为准备诊断，修改模型阈值时不能继续硬编码100。目标动作5mm中心支持统一使用 `BOUNDARY_ROUNDOFF_M=1e-12 m` 的闭边界。
+A/B支持点数的训练与评价门槛均来自 `model.min_support_points`，默认100；B模型内部按实例内有限正深度原始像素计数并拒绝小碎片，直接评分和目标动作评价也受该门控约束。`has_supervision` 只表示存在有效teacher标签，不替代可配置支持门槛。builder另保存 `--min-support-points` 和当时 `trainable/status` 作为准备诊断，修改模型阈值时不能继续硬编码100。目标动作5mm中心支持统一使用 `BOUNDARY_ROUNDOFF_M=1e-12 m` 的闭边界。
 
 选择帧采用8位bit-reversal固定前缀排序，8帧为 `0,32,64,96,128,160,192,224`；16帧包含8帧集合，256恢复全量。每次覆盖同一90场景的约定帧，所选帧全部可见实例与每实例完整候选池保持。子集排序有抽样波动，不保证选出全test最优checkpoint。旧配置缺少 `selection_frames_per_scene` 时仍为256。正式选择允许只构建指定帧，但要求90场景所选帧覆盖齐全；GT-empty声明保留，无输出实例留在分母，未选帧不加载。
 
@@ -253,7 +253,7 @@ CLI还添加 `schema="instance_suction_inference_v1"` 的报告外层，包含ch
 | 历史动作成败 | AUROC、AP、BCE、Brier | 总动作数、有效数、正负数、逐动作分数；BCE/Brier只针对task概率 |
 | 部署成本 | model-only及instance端到端p50/p95 | 硬件、dtype、原始点数、候选数、拷贝、预处理和NMS范围 |
 
-INST主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。低于当前路线支持门槛（A读取min_support_points、默认100；B回退100）、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
+INST主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。低于当前路线支持门槛（A/B均读取min_support_points，默认100）、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
 
 **两分支首次实现统一细化次级选模口径：** “selected-Q 宏平均（no_pose=0）”对每个可见 GT 实例取被选姿态的有效 `Q_inst`，无输出实例取 0，再采用与主指标相同的 frame→scene→scene 三层等权聚合；空 GT 帧仍另计并排除。另报“仅有输出时的 Q 均值”为所有有效输出姿态的微平均，并附输出数量与无输出率，不用它替换次级选模统计。该细化只明确统计分母，不改变物理质量、标签 schema 或原有选模优先级。
 
@@ -308,6 +308,8 @@ python scripts/finetune.py \
 checkpoint保存完整 `config_definition`、显式 `runtime_contract`、route/stage、模型与优化器、成功预算、Python/NumPy/Torch/CUDA RNG、实际采样ID序列及RGB增强RNG，并保留manifest路径/数量和teacher的结构化定义。不生成或校验文件/数组校验和。source与selection的normal/sampler/precision/quality一致；双方physics都已知时直接比较，旧来源未知时写null而不伪称一致。
 
 `--resume`核对当前运行配置、路线/阶段、环境类型、可用数据定义与模型状态形状，恢复全部调度和优化器状态。旧checkpoint的校验和字段忽略，但仍检查可得的配置、样本数量、预处理、teacher_spec和已知physics；不会仅因缺少新字段强制重算teacher。旧调度器只有不透明身份而缺少实际语义序列时，不能证明同长度清单没有重排；新版保存真实ID序列并检查顺序。`--init-checkpoint`只允许同路线、同模型配置及兼容物理/预处理的source checkpoint启动新微调阶段，记录路径/大小、原step和选模角色；不会将旧E5或跨路线权重改键载入。
+
+B当前新运行使用 `feature_frame=two_fixed_z_charts_rodrigues_z05_v1`，并保存模型实际的 `min_support_points` 与 `identity.model_architecture`。历史配置未声明图版本时解释为旧 `two_fixed_z_charts_rodrigues_v2`，不会在读取权重时静默换图；其推理现在同样执行默认100点的模型门控。坐标图和支撑门槛均参与微调语义匹配，已有结构元数据也须一致；query_chunk仍只是执行参数。缺少新B结构身份的旧checkpoint不能精确resume，可按旧图推理，或显式指定旧图后初始化新的微调。此特征采样变更不改变p/n和teacher物理定义，不要求仅因此重新生成标签。
 
 ## 11 本次验证与后续记录
 

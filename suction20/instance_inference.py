@@ -106,6 +106,9 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None, query_ch
     model.eval()
     architecture = getattr(model, 'architecture_metadata', None)
     architecture = architecture() if callable(architecture) else architecture
+    if (route == 'b' and 'model_architecture' in identity and
+            clean_metadata(identity['model_architecture']) != architecture):
+        raise ValueError('Checkpoint model architecture differs from this runtime')
     metadata = {
         'schema': 'instance_loaded_checkpoint_v1',
         'checkpoint_file': file_record(path), 'route': route, 'stage': stage,

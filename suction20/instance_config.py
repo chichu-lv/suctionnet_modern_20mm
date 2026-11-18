@@ -13,10 +13,17 @@ from pathlib import Path
 from .metadata import without_legacy_checksums
 
 
+# Missing fields in historical saved configurations identify the original chart.
+# New run configurations explicitly materialize B_FEATURE_FRAME before saving.
+B_LEGACY_FEATURE_FRAME = 'two_fixed_z_charts_rodrigues_v2'
+B_FEATURE_FRAME = 'two_fixed_z_charts_rodrigues_z05_v1'
+
+
 _SEMANTIC_DEFAULTS = {
     'a': {'backbone_points': 2048, 'min_support_points': 100,
           'backbone_coordinate_fastpath': False, 'singleton_bn_policy': 'running_stats'},
-    'b': {'phase_seed': 42, 'training_phase': True},
+    'b': {'phase_seed': 42, 'training_phase': True, 'min_support_points': 100,
+          'feature_frame': B_LEGACY_FEATURE_FRAME},
 }
 _EXECUTION_DEFAULTS = {
     'a': {'backbone_root': None, 'query_chunk_size': 32},
@@ -35,9 +42,12 @@ def _options(route, options):
 def semantic_model_config(route, options):
     """Compare every setting except explicitly route-specific execution fields.
 
-    Known omitted constructor defaults have their actual values. Unknown keys
+    Omitted fields in saved configurations have their historical values, except
+    the corrected B minimum-support gate now defaults to 100. Unknown keys
     remain in the comparison rather than being silently classified as runtime.
     Geometry, singleton BN and B's phase settings are intentionally semantic.
+    New B run configs explicitly select the stable chart; missing feature_frame
+    identifies legacy weights and must not silently change their sampling grid.
     """
     values = _options(route, options)
     semantic = deepcopy(_SEMANTIC_DEFAULTS[route])
@@ -77,6 +87,9 @@ def apply_model_runtime_overrides(config, *, backbone_root=None, query_chunk_siz
     result = deepcopy(without_legacy_checksums(config))
     route = result.get('route')
     options = _options(route, result.get('model', {}))
+    if route == 'b':
+        options.setdefault('min_support_points', 100)
+        options.setdefault('feature_frame', B_LEGACY_FEATURE_FRAME)
     if backbone_root is not None:
         if route != 'a':
             raise ValueError('backbone_root override is only valid for route A')

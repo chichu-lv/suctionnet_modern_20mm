@@ -9,9 +9,13 @@
     "axis": "outward_normal_camera",
     "tool_plus_z": "negative_outward_normal",
     "roll": "stateless_cross_least_aligned_camera_axis_tie_xyz_output_only",
-    "feature_frame": "two_fixed_z_charts_rodrigues_v2",
-    "feature_frame_denominator_threshold": 0.0001,
-    "roll_continuity_guaranteed": false
+    "feature_frame": "two_fixed_z_charts_rodrigues_z05_v1",
+    "roll_continuity_guaranteed": false,
+    "feature_frame_positive_chart_if": "normal_z > 0.5",
+    "feature_frame_global_denominator_min": 0.5,
+    "feature_frame_seam_continuous": false,
+    "legacy_feature_frame": "two_fixed_z_charts_rodrigues_v2",
+    "missing_checkpoint_feature_frame": "two_fixed_z_charts_rodrigues_v2"
   },
   "observation": {
     "min_source_training_points": 100,
@@ -432,7 +436,8 @@
       "denominator": 72,
       "all_valid_gap": 0.0,
       "all_invalid_gap": 1.0,
-      "zero_radius_is_center_support_not_circumference_coverage": true
+      "zero_radius_is_center_support_not_circumference_coverage": true,
+      "zero_radius_pair": "[center_valid, 1-center_valid]"
     },
     "ring_raw_observation_summary": {
       "dimension": 12,
@@ -451,7 +456,8 @@
       "height_extrema_floor_m": 0.0,
       "empty_result": "all_four_values_zero",
       "center_broadcast_counts_as_one_radius_weight": true,
-      "observed_extrema_are_collision_certification": false
+      "observed_extrema_are_collision_certification": false,
+      "center_core_raw_coverage_weight": 0.3333333333333333
     },
     "ring_summary_dim": 30,
     "query_descriptor_dim": 12,
@@ -482,7 +488,9 @@
       "radial_gate_rejection_fraction",
       "tangential_gate_rejection_fraction",
       "opposite_angle_gate_rejection_fraction",
-      "native_resolution_underresolved_fraction"
+      "native_resolution_underresolved_fraction",
+      "support_count",
+      "support_sufficient"
     ],
     "texture_padding": "right_bottom_to_minimum_multiple_of_32",
     "feature_chart_names": [
@@ -490,7 +498,11 @@
       "positive_z"
     ],
     "implementation_file": "models/instance_route_b.py",
-    "training_phase_query_identity": "sample_uid_and_exact_pose_bytes_independent_of_query_order_or_chunk"
+    "training_phase_query_identity": "sample_uid_and_exact_pose_bytes_independent_of_query_order_or_chunk",
+    "min_support_points": 100,
+    "architecture_id": "instance_route_b_v3_support100_chart_policy_v1",
+    "architecture_metadata_implemented": true,
+    "support_count_semantics": "finite_positive_depth_instance_pixels_independent_of_normal_validity"
   },
   "quality": {
     "q_target": "seal*wrench*(1-collision_self)",
@@ -519,10 +531,10 @@
   "runtime_config": "configs/instance_b.yaml",
   "implementation_validation": {
     "model_cpu_forward_backward": "passed",
-    "route_b_test_count": 12,
     "real_full_training_completed": false,
     "gpu_latency_measured": false,
-    "deployment_engine_verified": false
+    "deployment_engine_verified": false,
+    "current_validation_record": "docs/MODEL_VALIDATION.md"
   },
   "public_evaluation": {
     "status": "deferred",
