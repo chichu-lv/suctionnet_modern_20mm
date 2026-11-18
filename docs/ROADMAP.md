@@ -38,15 +38,15 @@
 
 ## 单物体路线 A/B 设计与实施
 
-- [x] 固定[本方法逐一对照公开方法](instance_routes/PUBLIC_METHOD_COMPARISON.md)的论文来源、六指标成对表及前端/工作区边界；论文转录不记作本方法实测。
-- [ ] 实现sn-paper-radius-v1和全帧导出；先验收官方R10等价及独立空帧规则，再以R20主协议评价public20源域权重。正式训练100场景、测试90场景全部256视角；第三方用论文值，无需重训。
-- [x] 在 [A 分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) / [B 分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) 分别整理数据准备、预处理、模型、后处理、训练和实验六篇实施计划；从相同 v3 设计及架构图提交出发，共同协议同步维护。
-- [x] [完成工程实施规范](instance_routes/README.md)：物理v2同姿态含目标自碰标签、单动作监督，以及v3的A谐波摘要、B投影支持门控、稳健法向和稀疏候选回填；统一训练/指标/位姿合同。
-- [x] [几何与数据契约参考](instance_routes/TRAIN_EVAL_REPRODUCE.md)：v3新增74项、v2保留26项与基础29项合成检查通过，共129项，demo/标签命令通过，范围见[验证记录](instance_routes/reference/VALIDATION.json)。
-- [ ] 接通共同实例清单、v3 normal/query 缓存及 target-only S/W/self/INST teacher，完成精确姿态与真实标签核验。
-- [ ] 按 [A 实施顺序](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) 接通 12 维稀疏主干、原始接触支撑、531 维融合及 A 的训练/推理接口。
-- [ ] 按 [B 实施顺序](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 接通共享二维特征、可靠投影环带、330 维融合及 B 的训练/推理接口。
-- [ ] 完成各路线既定预训练、目标微调、公开方法成对对照、冻结测试与部署计时；B 导出按子图和组合结果核验。设计配置不是旧 E5 训练器的运行配置，计划文档不记作真实训练或速度结果。
+- [x] [A/B独立分支与六部分实施文档](instance_routes/README.md)，v3架构图、几何边界及物理v2目标自碰合同已整理。
+- [x] 共同 `instance_geometry/data/teacher`、官方格式builder、精确p/n标签、对象资产/缓存身份；CPU与合成官方格式验证。
+- [x] A的12通道SpConv包装、raw支持谐波/分组、531融合与精确姿态接口；CPU测试显式注入骨干，真实SpConv尚待GPU检查。
+- [x] B原生Torch GN18/Fq/共享纹理、577槽投影、环带缺测/门控与330融合；真实CNN CPU更新和推理已验证。
+- [x] 直接100场景source训练、完整test选择best并标记test_selected、保留last；两阶段目标微调及严格暂停恢复、native推理/评价已接通。[运行命令](instance_routes/IMPLEMENTATION.md)
+- [x] [公开方法逐一对比](instance_routes/PUBLIC_METHOD_COMPARISON.md)的论文值与成对表保留；仅半径协议设置deferred，不作为训练门禁。
+- [ ] 用完整真实资产执行缓存重算、既定8750步source预训练及1000步目标微调，记录teacher成本和候选覆盖；目标原划分不变。
+- [ ] A真实CUDA/SpConv链路、同硬件GPU端到端成本及B的ONNX/TensorRT导出。15–30ms、2–5ms仍是未验证目标。
+- [ ] 公开物理评价与权重规则待定后执行完整场景AP；当前native test选模成绩不称独立公开测试估计。
 
 ## 代码管理
 

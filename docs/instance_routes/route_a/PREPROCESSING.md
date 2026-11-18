@@ -2,6 +2,8 @@
 
 本流程消费[数据准备](DATA_PREPARATION.md)的已校验实例观测，产生 `encode_instance` 和 `score_at_pose` 所需的真实几何、主干输入及query。物理单位、normal/sampler身份固定为[共同 v3 合同](../DATA_AND_LABELS.md)，参数快照见 [route_a.json](../reference/route_a.json)。
 
+共同organized几何、法向和候选已实现在 `suction20/instance_geometry.py::prepare_instance`；A体素/FPS、组件邻居索引、分区与lip摘要实现在 `models/instance_route_a_geometry.py`。当前确定性几何使用CPU float64与SciPy cKDTree；这是正确性实现，不能由CPU测试或CUDA骨干存在推定完整预处理已达到15–30ms。
+
 ## 1. 三个集合与数值入口
 
 | 集合 | 构建方式 | 用途 |
@@ -75,3 +77,5 @@ python docs/instance_routes/reference/contact_boundary_contract.py self-test
 ```
 
 完整生产预处理验收还需：原支持未被平滑/抽样覆盖；法向跨孔洞/实例/跳变拒绝；候选前缀和回填稳定且不重复；体素代表与FPS破同分固定；1/2/3邻居插值正确；有raw支持但缺Fq的动作仍可评分；无合法支持有原因；dtype改变单独验证物理边界。分项计时包含法向、候选回填、体素/FPS、组件及关联，不能只报告网络前向。
+
+已实现的CPU单元测试 `tests/test_instance_route_a.py` 覆盖确定性体素/FPS、同组件邻居与并列、缺Fq仍用raw旁路、原始lip摘要顺序和空/非法支持；共同数据测试另覆盖organized法向/候选接线。模型测试用注入backbone，不能替代真实SpConv和真实相机资产验收。生产读入保留 `instance_mask`（含缺深度位置）与 `mask`（有效深度）及独立RGB/normal有效性，避免混淆bbox、原始支持和候选。

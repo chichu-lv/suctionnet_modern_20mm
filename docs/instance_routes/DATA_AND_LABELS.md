@@ -4,30 +4,29 @@
 
 本次 v3 更新法向与候选构建，物理 teacher 的 S/W/self 定义未变，因此质量身份仍为 `gt_INST20_pose_v2`、标签 schema 仍为 `suction20.instance_inst20.v2`。normal-spec 与 sampler-spec 改为 v3，必须重建或逐精确姿态核验缓存，不能把旧姿态标签直接改名复用。
 
-本页是新路线的实现合同。现有源码提供 organized normals、Seal/Wrench 和原混合碰撞评价器，尚未提供完整 v2 数据构建或训练入口。新增实例 teacher、候选 sampler、缓存身份和训练适配必须按本页实现，不能把下面的伪代码写成已有命令。模型只接收当前观测，完整对象几何只用于离线标签与评价。
+本页对应已实现的 `suction20/instance_geometry.py`、`instance_data.py`、`instance_teacher.py` 和 `scripts/build_instance_dataset.py`。真实命令见[代码运行说明](IMPLEMENTATION.md)。模型只接收当前观测，完整对象几何只用于离线标签与评价；下文公式和伪代码描述实现合同，不是额外 CLI。
 
 
 数值基线：v3参考及首版几何正确性验收从原始深度值/内参以float64构造XYZ、canonical query和理想环，在转为网络FP32特征前完成接触边界判定。历史p/n从原记录以float64读取并保持原姿态，不从深度重建或覆盖。已存为FP32的XYZ升精度不能恢复原值；FP32部署几何须另记precision-contract并核验。参考1e-12m仅处理float64边界舍入，不是像素/深度误差容限。[边界与精度说明](BOUNDARY_REVIEW.md)
 
-以下90/10划分和GT实例诊断属于native开发模式；[公开论文比较](PUBLIC_METHOD_COMPARISON.md)的最终评分模型另用100训练场景，测试按匹配的预测分割/工作区profile执行完整场景评价。teacher、normal及sampler数学合同不变，manifest/运行身份分开；INST标签不替代公开AP的官方物理评价。
+当前直接使用官方100个训练场景；原90/10开发划分停止用于新路线。源域完整test参与best选择，checkpoint标记 `test_selected`。以下为native INST20合同；[公开论文评价](PUBLIC_METHOD_COMPARISON.md)的仅半径参数化方案待定，不阻塞数据构建或训练。
 
 ## 1. 原始资产与固定划分
 
 源域需要已下载的 SuctionNet RGB-D、相机内参、实例掩码、场景与相机位姿、完整对象 `dense_point_clouds`、既有 R20 Seal 候选及冻结物理配置。GitHub 汇总不含这些完整训练资产。RGB、深度、分割必须在同一已校正相机网格，标定文件及深度单位随 manifest 固定。
 
-沿用当前 `suction20/datasets.py` 的划分，先划分 scene，再展开 frame 和实例：
+新入口使用 `suction20.instance_data` 的独立划分；旧E5 `datasets.py` 保留原实验定义。先划分scene，再展开frame和实例：
 
 | split | 场景 | 视角 |
 |---|---|---|
-| train | 0–99 且 `scene_id % 10 != 9`，90 场景 | 0–255，训练 sampler 固定 |
-| val | 9、19、…、99，10 场景 | 0、8、…、248，每场景 32 个固定视角 |
+| train | 0–99，全部100场景 | 0–255，训练 sampler 固定 |
 | test_seen | 100–129 | 每场景 256 视角 |
 | test_similar | 130–159 | 每场景 256 视角 |
 | test_novel | 160–189 | 每场景 256 视角 |
 
-同帧不同实例不跨 split；这不是 CAD 物体身份互斥的划分。验证按完整可见实例展开，预先保存固定 query 与顺序。
+同帧不同实例不跨 split；这不是CAD物体身份互斥划分。源域无单独val，test用于选模；test按完整可见实例展开、保存固定query与顺序，选模后的成绩不能称独立test估计。
 
-参考 manifest 的 `split` 只接受 `train/val/test`。上表测试子集写成 `split="test"`，另存 `test_subset="seen"|"similar"|"novel"`；不能把 `test_seen` 直接填进 split。train/val 省略 test_subset，评价适配器依据该字段恢复官方子集。
+生产source manifest只使用 `split="train"|"test"`，另存 `test_subset="seen"|"similar"|"novel"`；不将 `test_seen` 写入split。目标域保留train/val/test。
 
 目标域保留原有清单，不重新随机拆动作凑比例：
 
@@ -225,13 +224,13 @@ q_sw = S*W
 q_inst = q_sw*(NOT C_self)
 ```
 
-这里是待实现逻辑，不是可运行新 API。可用原 `collision_mask_for_instance` 对仅包含目标体素、所有 row 都为该目标的树建立参考；传入全 false 的初始 self 数组得到包络分量，再与 `seal_at_pose` 的 self 合并。实际重构需验证与冻结原函数的目标部分一致。
+该逻辑已在 `InstanceTeacher.evaluate` 实现：仅包含目标体素、所有row都为该目标的树复用冻结碰撞函数，传入全false初始self数组得到包络分量，再与 `seal_at_pose` 的self合并。合成官方格式资产的测试核对S/W及target-only结果；完整真实资产的重算与成本测量仍待执行。
 
 场景/对象变换可复用；每个对象的完整 dense 数组、原候选均值及目标包络索引尽量复用，不加载桌面或其他物体树。Wrench 批量向量化。Seal 仍是完整 dense 扫描，其 `chunk_points` 只限制临时内存，不减少参与点数；去掉外部碰撞并不证明整个 teacher 已经快。任何批量或索引优化必须保留数值合同，不可用有限球裁剪替代无高度上限的环柱。
 
 ## 6. 缓存预算与身份
 
-训练预算按真正需要的不同 `(instance_uid,p,n)` 生成，默认每实例 128 查询；重复的 instance draw 直接读缓存。先生成固定采样计划及其 hash，缓存可按需生成、校验后持久保存，不要求把 90 场景所有帧、所有实例的 256 查询一次性算完才能开始训练。验证/测试独立固定 256-query 清单，不受训练减量影响。
+当前builder按所选scene/frame范围构建固定 `(instance_uid,p,n)` 缓存，默认每训练实例128个标签；重复instance draw复用相同缓存，训练调度器的状态和顺序身份保存在checkpoint。按需异步生成缓存仍属于后续优化，不要求为100训练场景每实例计算256个标签；训练默认128，test固定256。当前builder按所请求的scene/frame范围完整生成缓存；正式trainer要求完整100场景清单。可分范围生成做成本试验，但只有显式 `--allow-partial-manifests` 才能用于链路验证，不冒充正式训练。
 
 首次真实资产接入时，先在约 64–128 个覆盖不同实例尺寸与 dense 点数的样本上测量：加载时间、Seal 秒/query、self-envelope 时间、秒/instance、缓存大小和命中率。然后按实际不同实例及查询数估计总成本。该数量是成本剖析样本，不是收敛证明或新的性能结果；不能直接许诺几小时重算或训练。
 
@@ -241,31 +240,33 @@ q_inst = q_sw*(NOT C_self)
 
 ## 7. 数据文件和 v2 标签字段
 
-原始数据、权重及整套标签留在数据根目录，不提交 GitHub。manifest 一行一个实例观测，动作表一行一次历史尝试。以下为新增合同字段，现有 TargetDataset 不能直接读取这个新格式。
+原始数据、权重和整套标签留在数据根目录，不提交GitHub。source manifest由 `scripts/build_instance_dataset.py` 自动生成，一行一个实例观测；目标动作JSONL沿用独立 `suction20.target.v1` schema，示例见[运行说明](IMPLEMENTATION.md)。不要手写解释性hash占位符作为生产清单。
 
-```json
-{
-  "schema_version": "instance_observation_v2",
-  "sample_id": "example_capture_instance_003",
-  "instance_uid": "example_capture_mask_v1_003",
-  "group_id": "example_session_01",
-  "split": "train",
-  "observation_sha256": "原始观测资产规范打包后的64位小写十六进制SHA256",
-  "capture_uid": "example_capture",
-  "observation_npz": "observations/example_capture.npz",
-  "mask_id": 3,
-  "source_kind": "target_stereo",
-  "calibration_sha256": "标定文件SHA256",
-  "normal_spec_sha256": "organized_masked3x3_span3_v3及参数的SHA256",
-  "sampler_spec_sha256": "image_stratified_morton_refill_v3及参数的SHA256",
-  "query_cache": "queries/example_capture_instance_003.npz",
-  "label_cache": null
-}
+| source manifest字段 | 实际内容 |
+|---|---|
+| `schema_version` / `manifest_version` | `instance_observation_v2` / `suction20.instance_manifest.v3` |
+| `sample_id/instance_uid/group_id/capture_uid` | 稳定实例、场景分组及帧身份 |
+| `scene_id/frame_id/instance_row/obj_id/camera` | 官方场景0–189、帧0–255、实例行/对象ID和相机 |
+| `split/test_subset/source_kind` | train或test；seen/similar/novel或null；`suctionnet_rgbd` |
+| `normal_spec/sampler_spec/precision_spec/quality_contract` | 代码导出的四项精确合同字符串 |
+| `observation_npz/observation_sha256/observation_identity` | 实例NPZ、实际文件字节hash、来源身份 |
+| `query_cache/query_identity` | query与观测在同一个NPZ，独立精确p/n/顺序身份 |
+| `label_cache/label_sha256/label_identity/labelled_queries` | 标签NPZ、文件hash、物理/代码/对象/视角身份、已标注前缀长度；无标签模式为null/0 |
+| `source_hashes/calibration_sha256` | 原始RGB/depth/mask与标定来源的hash |
+| `support_count/query_count/trainable/status` | 原始支持点数、实际K与样本状态 |
+
+原始观测包含RGB、米制XYZ图、实例mask、intrinsics/gravity及有效性标记。query字段实际为 `query_points[K,3]`、`query_normals[K,3]`、`query_valid[K]`、`query_uv[K,2]`、`query_source_ids[K]`、`query_ids[K]`、`query_components`、`query_cell_ids`和`query_rounds`。它们由 `prepare_instance` 生成并直接供两模型消费。
+
+生产NPZ把数组作为独立键、字符串和字典放在 `metadata_json`，`load_observation/load_labels`解包后返回统一字典。参考demo旧NPZ把schema字符串放顶层，两种序列化不能混用。生产数据可直接校验：
+
+```python
+from suction20.instance_data import InstanceDataset
+source = InstanceDataset('/data/instance-v3/train/manifest_train.jsonl',
+                         split='train', training_queries=128)
+item = source[0]  # 校验文件hash、精确query、label数值关系和身份
 ```
 
-示例 hash 文字是解释，真实文件必须使用合法的 64 位十六进制值。原始观测至少含 RGB、米制 depth、实例 mask、K、gravity 与各有效性标记。query 缓存保存 `point_cam_m[K,3]`、`normal_out_cam[K,3]`、`query_valid[K]`、原像素、`source_point_id[K]`、格号及 `query_id[K]`。
-
-v2 参考标签 NPZ 的共同监督字段如下，文件内另保存 `schema_version="suction20.instance_inst20.v2"` 与 `quality_contract="gt_INST20_pose_v2"`：
+v2标签解包后的共同监督字段如下；生产NPZ的metadata保存 `schema_version="suction20.instance_inst20.v2"` 与 `quality_contract="gt_INST20_pose_v2"`：
 
 | 字段 | shape / 类型 | `label_valid=true` 的约束 |
 |---|---|---|
@@ -281,19 +282,19 @@ v2 参考标签 NPZ 的共同监督字段如下，文件内另保存 `schema_ver
 
 q 的浮点乘积核对采用 `atol=1e-6, rtol=1e-5`；合法质量在 [0,1]。所有数值数组禁止 Inf，mask=false 行允许 NaN；布尔分项在无标签行只是占位，**不得把其 false 占位解释为已确认无自碰**。q_inst 的有效性需要 S、W、自碰分项共同已知，首版全部监督使用共同 label_valid。部分分量已知时可保留诊断，但不能在本合同里补零形成完整负例。
 
-空文件或全 false 可通过结构检查，但 `has_supervision=false`，不等于可用于训练。参考校验工具只能检查数值/schema 关系，不能重算真实 teacher、校验隐藏资产或证明 sidecar 身份真实。旧 SW 校验入口仅用于旧文件兼容核对；必须用 `revision_contract.py check-labels` 检查新质量，参见[复现说明](TRAIN_EVAL_REPRODUCE.md)及[v2参考程序](reference/revision_contract.py)。
+空文件或全 false 可通过结构检查，但 `has_supervision=false`，不等于可用于训练。参考校验工具只能检查数值/schema 关系，不能重算真实 teacher、校验隐藏资产或证明 sidecar 身份真实。生产文件通过 `load_labels` / `InstanceDataset` 调用 `validate_labels`校验。`revision_contract.py check-labels`只用于其自身的参考demo格式，不能直接读取生产metadata_json版NPZ。参见[复现说明](TRAIN_EVAL_REPRODUCE.md)。
 
-动作表另存：
+目标动作输入与运行输出字段分别为：
 
 | 字段 | 内容 |
 |---|---|
-| `attempt_id / sample_id / group_id` | 动作、实例、观测及 split 关联 |
+| 输入 `sample_id / group_id / split / success_definition` | 动作、分组和唯一非空成功定义 |
 | `point_cam_m / normal_out_cam` | 原规划接触点和有向轴 |
-| `outcome / label_valid` | 0/1 与标注有效性；未记录不补零 |
+| 输入 `attempt.success / attempt.label_valid` | 0/1与标注有效性；输出行使用outcome |
 | `pose_source` | `planned_pipeline_contact` |
 | `actual_execution_verified` | 现有数据为 false |
-| `pose_support_valid / exclusion_reason` | 观测支持及排除原因，与成败标签分开 |
-| `pose_transform_sha256` | 原动作系到相机系的标定和适配代码身份 |
+| 输出 `pose_valid / pose_support_valid / supported` | 数值有效、观测支持及最终可评价状态，与成败标签分开 |
+| checkpoint数据身份 | manifest和原始RGB/depth/mask字节hash；相机系p/n由原清单提供，禁止静默替换 |
 
 ## 8. B 的监督与投影
 

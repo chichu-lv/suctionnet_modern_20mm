@@ -8,7 +8,7 @@
 
 路线 A 保留稀疏 3D 骨干，在目标物体的可见 RGB-D 上预测指定接触姿态的 Seal、Wrench、含目标自碰约束的实例质量，以及历史规划动作成败。它不输入其它物体或场景背景。共同数据、法向、查询和 teacher 定义见 [DATA_AND_LABELS.md](DATA_AND_LABELS.md)，训练与评价见 [TRAIN_EVAL_REPRODUCE.md](TRAIN_EVAL_REPRODUCE.md)。
 
-既有生产代码基线仍为 [`87f29d29`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。本文及 [route_a.json](reference/route_a.json) 是**待实现的 v3 设计合同**，不是已经训练、部署或计时的新模型。新增模型建议命名 `InstanceSuction3D`；旧 E5 的输入、损失和配置校验不能通过改几个字段直接变成这一模型。
+既有生产代码基线为 [`87f29d29`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。A分支的v3模型 `InstanceSuction3D` 已实现在 `models/instance_route_a.py`，确定性几何、共同实例builder/teacher、新训练及原生推理评价也已接线；运行配置为 `configs/instance_a.yaml`，详见[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md)。**13项CPU模型/几何测试使用显式注入的测试backbone；真实SpConv/GPU、完整真实训练和时延尚未验证。** [route_a.json](reference/route_a.json) 继续作为设计合同；旧E5输入与checkpoint不能直接恢复为新模型。
 
 v2已经保留目标自碰、移除全量逐点PCA及任意切向坐标输入，并增加覆盖诊断和原始RGB旁路。v3进一步为水平吸取的局部无序集合补充中心化高度圆谐波摘要；共同法向与候选回填遵循新的v3规范。物理目标定义未变，仍使用 `gt_INST20_pose_v2`，而输入/法向/查询身份需要更新。
 
@@ -82,9 +82,9 @@ A/B共用 `image_stratified_morton_refill_v3` 查询池：完整实例像素bbox
 
 teacher 始终对实际参与监督的同一 `(p_cam_m,n_out_cam)` 计算 S、W和目标自碰。所需资产为完整对象密集几何、原R20候选、冻结物理配置、场景和相机位姿；完整对象几何不得输入网络。
 
-**v2生成器必须把目标和外部场景碰撞拆开**：保留目标密封腔与目标包络检查，删除仅对其它实例/环境做的检查，再生成 `q_inst=S*W*(1-C_self)`。Seal和Wrench复用 `seal_at_pose`、`wrench_scores_dual` 的冻结定义。生成器与缓存schema为待实现模块，执行合同见 [DATA_AND_LABELS.md](DATA_AND_LABELS.md)。
+**v2生成器把目标和外部场景碰撞拆开**：保留目标密封腔与目标包络检查，删除仅对其它实例/环境做的检查，再生成 `q_inst=S*W*(1-C_self)`。Seal和Wrench复用 `seal_at_pose`、`wrench_scores_dual` 的冻结定义。生成器已实现在 `suction20/instance_teacher.py`，缓存schema与执行合同见 [DATA_AND_LABELS.md](DATA_AND_LABELS.md)；真实完整资产重算尚未运行。
 
-旧 `evaluate_poses` 是核对同姿态 S/W及原完整协议的参考路径，仍会计算外部碰撞，不能充当“已优化的 v2生成器”。原 v1中仅丢弃C、生成SW的示例不再作为本路线生产标签命令。本页不提供尚不存在的可执行生成命令。[既有任意姿态评价器](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/eval_r20.py)
+旧 `evaluate_poses` 是核对同姿态S/W及原完整协议的参考路径，仍会计算外部碰撞；原v1中仅丢弃C、生成SW的示例不再作为生产标签命令。现有 `scripts/build_instance_dataset.py` 直接接新teacher，完整命令见[数据准备](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/DATA_PREPARATION.md)。[既有任意姿态评价器](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/eval_r20.py)
 
 先用固定少量真实场景/帧比较新旧 S/W一致性、目标碰撞组成和每查询耗时，再按128查询训练清单生成缓存。缓存按观测/查询身份去重复用并允许断点续建；不预先重算所有训练帧的256查询。改变法向、点位置、工具几何或容差必须改变缓存身份。旧参考工具的SW校验只覆盖其明确声明的schema，不能冒充已验证的自碰teacher。
 
@@ -92,7 +92,9 @@ teacher 始终对实际参与监督的同一 `(p_cam_m,n_out_cam)` 计算 S、W�
 
 ### 6.1 主干和全物体上下文
 
-新增12通道 ResUNet14 wrapper，保留512维骨干输出和512→256投影，每个真实主干点得到 `F[N,256]`。已有wrapper输入硬编码8通道，须新增正确入口，不编辑受blob校验约束的外部源码。
+ResUNet14 wrapper已增加 `in_channels` 可选参数，默认8保持旧E5调用行为，A显式传12；保留512维骨干输出和512→256投影，每个真实主干点得到 `F[N,256]`。不编辑受blob校验约束的外部源码，旧8通道权重不伪装成12通道恢复。
+
+A默认 `singleton_bn_policy=running_stats`：只在训练时某BN每通道输入值数≤1的退化情形使用已有running统计，不更新该次统计/计数；其他源训练输入保持普通BN路径。微调期所有BN统计和affine冻结，策略进入架构身份。CPU测试验证该退化保护，真实稀疏骨干仍待GPU验收。
 
 真实主干点的masked mean/max拼成512维，经 MLP `512→128→64` 得到对象上下文 `G[64]`。它表达可见形状上下文，不调用旧 `instance_fusion`，也不等同完整质量分布。
 
@@ -197,7 +199,7 @@ $$
 
 ell是Laplace log-scale，不是log-variance。当前首版全部物理项使用共同label_valid，要求S、W及两个目标自碰分项均已求值；部分分量仅保留诊断，不补零形成监督。源实例/目标观测归约和预算依共同训练规范，不以无效标签乘零处理NaN。
 
-待实现接口保持：
+已实现接口保持：
 
 ```python
 encoded = model.encode_instance(observation)
@@ -205,6 +207,8 @@ scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index)
 ```
 
 历史动作默认以原 `planned_pipeline_contact` 的一个task logit计算一次BCEWithLogits，源回放系数0.5。`actual_execution_verified=false`意味着输出应解释为给定规划命令及观测的成败概率，不是已知真实执行落点的成功概率。只有完全缺少合法几何关联的动作才跳过并报告原因；不能仅因 `Fq` 缺失就删除历史样本。
+
+本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每875步在完整test scene 100–189、每场景256帧选best，明确 `test_selected`、非独立测试估计，同时保留预算终点last。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
 
 轻度位姿微扰是可选正则，按共同训练规范启用，默认关闭；不能复制S/W标签到新姿态，也不把一个动作拆成多个独立成败样本。前200步和后800步的参数组必须覆盖本模型的实际新增层，不照搬旧E5组名。
 
@@ -220,7 +224,7 @@ NMS采用真实3D距离10 mm、有向轴夹角15°，按query ID稳定破同分�
 
 ## 9. 实施与验收
 
-新增实例builder、12通道wrapper、三区域编码、原始RGB旁路、姿态评分、实例质量teacher与loss、参数分组和训练入口。保持独立架构/schema/checkpoint，不复活已经退役的旧迁移兼容路径。
+实例builder、12通道wrapper入口、三区域编码、原始RGB旁路、姿态评分、teacher与loss、参数分组和训练入口均已实现。保持独立架构/schema/checkpoint，不恢复已退役的旧迁移兼容路径。13项CPU测试覆盖几何/接触/头部前后向与singleton BN；其backbone为显式测试注入，wrapper通道检查mock外部加载，未执行真实SpConv/GPU。
 
 最低检查包括：同姿态S/W/目标自碰对齐；候选前128/256固定且可复现；跨任意切平面换基时局部标量、最大角间隙及Ak在容差内不变；水平吸取下同高度multiset不同角向排列的合成反例可区分；常数高度缺测支持的Ak为0、低于7独立角支撑时harmonic_valid=false、k≥4不能被误称已完整编码；1/2/3个有效主干邻居均正确插值；无Fq但有原始几何/RGB的动作仍有有效评分；完全缺少5 mm内几何锚点时有明确原因；所有输出中心/轴与被评分姿态一致。
 

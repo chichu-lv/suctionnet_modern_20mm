@@ -28,81 +28,11 @@
     ]
   },
   "our_protocol": {
-    "id": "sn-paper-radius-v1",
-    "implementation_status": "planned_not_implemented",
-    "ours_api_base_commit": "0dac9f7e5b2f7ea801cddf9655cb82a259681976",
-    "adapter_patch_sha": null,
-    "r10_equivalence_status": "not_run",
-    "primary_radius_m": 0.02,
-    "optional_same_prediction_radius_m": 0.01,
-    "ring_half_width_m": 0.001,
-    "seal_angular_bins": 72,
-    "target_self_height_threshold_m": 0.005,
-    "external_collision_axial_range_m": [
-      0.01,
-      0.1
-    ],
-    "official_nms_translation_m": 0.02,
-    "official_nms_angle_degrees": 181,
-    "model_association_voxel_m": 0.005,
-    "max_candidates_per_gt_object": 10,
-    "precision_shape_per_frame": [
-      50,
-      4
-    ],
-    "quality_thresholds": [
-      0.2,
-      0.4,
-      0.6,
-      0.8
-    ],
-    "quality_comparison": ">=",
-    "missing_candidate_denominator": "k",
-    "ranking_score": "source_only_q_inst",
-    "prediction_columns": [
-      "score",
-      "nx_out",
-      "ny_out",
-      "nz_out",
-      "px_m",
-      "py_m",
-      "pz_m"
-    ],
-    "prediction_npz_key": "arr_0",
-    "empty_frame": "explicit (0,7) -> 50x4 zero precision; retain frame denominator",
-    "missing_prediction_file": "incomplete, not an empty prediction",
-    "test_scenes": {
-      "seen": [
-        100,
-        129
-      ],
-      "similar": [
-        130,
-        159
-      ],
-      "novel": [
-        160,
-        189
-      ]
-    },
-    "views_per_scene": 256,
-    "test_frames_per_split": 7680,
-    "test_frames_total": 23040,
-    "train_scene_range": [
-      0,
-      99
-    ],
-    "train_successful_instance_exposures": 140000,
-    "train_successful_updates": 8750,
-    "checkpoint_selection": "fixed_budget_last_after_90_10_development",
-    "target_domain_data_allowed": false,
-    "test_oracle_instances_allowed": false,
-    "prediction_relative_path": "<test_seen|test_similar|test_novel>/scene_XXXX/realsense/suction/YYYY.npz",
-    "r10_equivalence_scope": "upstream-defined nonempty cases; separate zero extension for empty frames",
-    "nonfinite_official_quality": "match upstream nonfinite masks and >= threshold misses; retain ranking slot; JSON null plus status",
-    "empty_frame_adapter_sha": null,
-    "prediction_dtype": "float32",
-    "prediction_root_scope": "one inference profile per API dump_folder"
+    "id": null,
+    "implementation_status": "deferred",
+    "radius_only_protocol": null,
+    "training_prerequisite": false,
+    "paper_comparison_ready": false
   },
   "baselines": [
     {
@@ -442,7 +372,7 @@
     {
       "id": "route_a_public20_uois_no_gt_workspace",
       "route": "route_a",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uois_no_gt_workspace",
       "frontend": "uois",
       "frontend_assets_sha": null,
@@ -453,9 +383,9 @@
       "workspace_outlier_m": null,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -483,12 +413,14 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     },
     {
       "id": "route_a_public20_uois_uisn_gt_aabb20",
       "route": "route_a",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uois_uisn_gt_aabb20",
       "frontend": "uois",
       "frontend_assets_sha": null,
@@ -499,9 +431,9 @@
       "workspace_outlier_m": 0.02,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -529,12 +461,14 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     },
     {
       "id": "route_a_public20_uoais_uisn_gt_aabb20",
       "route": "route_a",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uoais_uisn_gt_aabb20",
       "frontend": "uoais",
       "frontend_assets_sha": null,
@@ -545,9 +479,9 @@
       "workspace_outlier_m": 0.02,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -575,12 +509,14 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     },
     {
       "id": "route_b_public20_uois_no_gt_workspace",
       "route": "route_b",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uois_no_gt_workspace",
       "frontend": "uois",
       "frontend_assets_sha": null,
@@ -591,9 +527,9 @@
       "workspace_outlier_m": null,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -621,12 +557,14 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     },
     {
       "id": "route_b_public20_uois_uisn_gt_aabb20",
       "route": "route_b",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uois_uisn_gt_aabb20",
       "frontend": "uois",
       "frontend_assets_sha": null,
@@ -637,9 +575,9 @@
       "workspace_outlier_m": 0.02,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -667,12 +605,14 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     },
     {
       "id": "route_b_public20_uoais_uisn_gt_aabb20",
       "route": "route_b",
-      "training_profile": "public20",
+      "training_profile": "native_inst20_direct100",
       "inference_profile": "uoais_uisn_gt_aabb20",
       "frontend": "uoais",
       "frontend_assets_sha": null,
@@ -683,9 +623,9 @@
       "workspace_outlier_m": 0.02,
       "scoring_checkpoint_sha": null,
       "result_kind": "planned_not_measured",
-      "status": "not_run",
+      "status": "deferred_public_protocol",
       "camera": "realsense",
-      "evaluator_family": "sn-paper-radius-v1",
+      "evaluator_family": null,
       "radius_m": 0.02,
       "metrics_by_split": {
         "seen": {
@@ -713,7 +653,9 @@
           "AP08_top1": null
         }
       },
-      "complete_test_frame_count": null
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
     }
   ],
   "pair_templates": [
@@ -723,7 +665,7 @@
         "route_a": "route_a_public20_uois_no_gt_workspace",
         "route_b": "route_b_public20_uois_no_gt_workspace"
       },
-      "comparison_status": "planned_pending_own_run_and_protocol_audit",
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
       "delta_unit": "percentage_points",
       "delta_direction": "ours_minus_this_reference_only",
       "delta_values": null,
@@ -735,7 +677,7 @@
         "route_a": "route_a_public20_uois_no_gt_workspace",
         "route_b": "route_b_public20_uois_no_gt_workspace"
       },
-      "comparison_status": "planned_pending_own_run_and_protocol_audit",
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
       "delta_unit": "percentage_points",
       "delta_direction": "ours_minus_this_reference_only",
       "delta_values": null,
@@ -747,7 +689,7 @@
         "route_a": "route_a_public20_uois_uisn_gt_aabb20",
         "route_b": "route_b_public20_uois_uisn_gt_aabb20"
       },
-      "comparison_status": "planned_pending_own_run_and_protocol_audit",
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
       "delta_unit": "percentage_points",
       "delta_direction": "ours_minus_this_reference_only",
       "delta_values": null,
@@ -759,7 +701,7 @@
         "route_a": "route_a_public20_uoais_uisn_gt_aabb20",
         "route_b": "route_b_public20_uoais_uisn_gt_aabb20"
       },
-      "comparison_status": "planned_pending_own_run_and_protocol_audit",
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
       "delta_unit": "percentage_points",
       "delta_direction": "ours_minus_this_reference_only",
       "delta_values": null,
@@ -789,5 +731,107 @@
       "delta_values": null,
       "delta_allowed_now": false
     }
-  ]
+  ],
+  "deferred_radius_proposal": {
+    "id": "sn-paper-radius-v1",
+    "implementation_status": "deferred_not_implemented",
+    "ours_api_base_commit": "0dac9f7e5b2f7ea801cddf9655cb82a259681976",
+    "adapter_patch_sha": null,
+    "r10_equivalence_status": "not_run",
+    "primary_radius_m": 0.02,
+    "optional_same_prediction_radius_m": 0.01,
+    "ring_half_width_m": 0.001,
+    "seal_angular_bins": 72,
+    "target_self_height_threshold_m": 0.005,
+    "external_collision_axial_range_m": [
+      0.01,
+      0.1
+    ],
+    "official_nms_translation_m": 0.02,
+    "official_nms_angle_degrees": 181,
+    "model_association_voxel_m": 0.005,
+    "max_candidates_per_gt_object": 10,
+    "precision_shape_per_frame": [
+      50,
+      4
+    ],
+    "quality_thresholds": [
+      0.2,
+      0.4,
+      0.6,
+      0.8
+    ],
+    "quality_comparison": ">=",
+    "missing_candidate_denominator": "k",
+    "ranking_score": "source_only_q_inst",
+    "prediction_columns": [
+      "score",
+      "nx_out",
+      "ny_out",
+      "nz_out",
+      "px_m",
+      "py_m",
+      "pz_m"
+    ],
+    "prediction_npz_key": "arr_0",
+    "empty_frame": "explicit (0,7) -> 50x4 zero precision; retain frame denominator",
+    "missing_prediction_file": "incomplete, not an empty prediction",
+    "test_scenes": {
+      "seen": [
+        100,
+        129
+      ],
+      "similar": [
+        130,
+        159
+      ],
+      "novel": [
+        160,
+        189
+      ]
+    },
+    "views_per_scene": 256,
+    "test_frames_per_split": 7680,
+    "test_frames_total": 23040,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "train_successful_instance_exposures": 140000,
+    "train_successful_updates": 8750,
+    "checkpoint_selection": "superseded_by_direct_100_train_test_selected_policy",
+    "target_domain_data_allowed": false,
+    "test_oracle_instances_allowed": false,
+    "prediction_relative_path": "<test_seen|test_similar|test_novel>/scene_XXXX/realsense/suction/YYYY.npz",
+    "r10_equivalence_scope": "upstream-defined nonempty cases; separate zero extension for empty frames",
+    "nonfinite_official_quality": "match upstream nonfinite masks and >= threshold misses; retain ranking slot; JSON null plus status",
+    "empty_frame_adapter_sha": null,
+    "prediction_dtype": "float32",
+    "prediction_root_scope": "one inference profile per API dump_folder",
+    "binding_for_current_training": false
+  },
+  "source_training_policy": {
+    "profile": "native_inst20_direct100",
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "views_per_scene": 256,
+    "selection_split": "test",
+    "selection_scene_range": [
+      100,
+      189
+    ],
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "last_retained": true,
+    "successful_instance_exposures": 140000,
+    "successful_updates": 8750,
+    "target_split_unchanged": [
+      1676,
+      399,
+      87
+    ]
+  },
+  "verification_note": "Paper values preserved from the preceding documented source audit; this implementation revision does not claim a new paper re-verification."
 }

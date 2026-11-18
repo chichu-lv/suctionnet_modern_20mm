@@ -1,7 +1,7 @@
 {
   "schema_version": "suction20.instance_routes.design.v3",
   "artifact_kind": "design_spec",
-  "trainer_implemented": false,
+  "trainer_implemented": true,
   "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
   "quality_contract": "gt_INST20_pose_v2",
   "coordinate_contract": {
@@ -160,7 +160,22 @@
     "schedule": "linear_warmup_then_cosine",
     "validation_every_updates": 875,
     "selection_metric": "scene_macro_InstTop1_INST20_at_0.4",
-    "queries_per_instance_max": 128
+    "queries_per_instance_max": 128,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "selection_split": "test",
+    "selection_scene_range": [
+      100,
+      189
+    ],
+    "selection_views_per_scene": 256,
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "from_scratch": true,
+    "keep_last": true,
+    "final_refit": false
   },
   "finetune": {
     "successful_updates": 1000,
@@ -202,7 +217,11 @@
       "source_pose_labels_reused_after_jitter": false,
       "one_supervised_bce_per_attempt": true
     },
-    "task_estimand": "success_given_planned_command_and_observation"
+    "task_estimand": "success_given_planned_command_and_observation",
+    "train_attempts": 1676,
+    "selection_split": "val",
+    "validation_attempts": 399,
+    "test_attempts": 87
   },
   "inference": {
     "ranking_source": "q_inst",
@@ -219,7 +238,7 @@
   "route": "b",
   "model": {
     "class": "InstanceSuction2DFastV3",
-    "implementation_status": "design_only",
+    "implementation_status": "implemented_cpu_verified",
     "global_backbone": "ResNet18_encoder_only_GN8",
     "weights": null,
     "global_input_shape": [
@@ -455,7 +474,9 @@
     "feature_chart_names": [
       "negative_z",
       "positive_z"
-    ]
+    ],
+    "implementation_file": "models/instance_route_b.py",
+    "training_phase_query_identity": "sample_uid_and_exact_pose_bytes_independent_of_query_order_or_chunk"
   },
   "quality": {
     "q_target": "seal*wrench*(1-collision_self)",
@@ -467,7 +488,8 @@
     "external_scene_collision_in_target": false,
     "diagnostic_q_sw": "seal*wrench",
     "joint_label_mask": "label_valid",
-    "teacher_implemented": false
+    "teacher_implemented": true,
+    "real_full_dataset_recompute_completed": false
   },
   "reference_numeric_contract": {
     "contact_geometry_arithmetic": "float64",
@@ -479,5 +501,19 @@
     "network_feature_dtype": "float32",
     "float32_XYZ_upcast_restores_precision": false,
     "historical_query": "read_recorded_p_and_n_in_float64_preserve_pose_do_not_reconstruct_from_depth"
+  },
+  "runtime_config": "configs/instance_b.yaml",
+  "implementation_validation": {
+    "model_cpu_forward_backward": "passed",
+    "route_b_test_count": 12,
+    "real_full_training_completed": false,
+    "gpu_latency_measured": false,
+    "deployment_engine_verified": false
+  },
+  "public_evaluation": {
+    "status": "deferred",
+    "radius_only_protocol": null,
+    "required_for_training": false,
+    "paper_comparison_ready": false
   }
 }

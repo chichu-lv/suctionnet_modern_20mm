@@ -1,27 +1,34 @@
 # A 模型设计：InstanceSuction3D
 
-模型输入为单个目标实例的可见RGB-D，输出指定接触中心p和外向轴n的物理及任务分数。完整定义来源为 [ROUTE_A.md](../ROUTE_A.md)、[机器可读设计](../reference/route_a.json)和[方法架构图](../METHOD_ARCHITECTURE_A.md)。本页是生产实现规格，现有E5网络不是本模型的实现。
+模型输入为单个目标实例的可见RGB-D，输出指定接触中心p和外向轴n的物理及任务分数。完整定义来源为 [ROUTE_A.md](../ROUTE_A.md)、[机器可读设计](../reference/route_a.json)和[方法架构图](../METHOD_ARCHITECTURE_A.md)。实现位于 `models/instance_route_a.py`，确定性几何位于 `models/instance_route_a_geometry.py`。13项CPU测试通过，其中模型前后向使用显式注入的测试backbone；真实SpConv/GPU运行、完整训练和时延尚未验证。
 
 ## 1. 模块接口与边界
 
-待实现接口保持：
+已实现单实例接口：
 
 ```python
+from models.instance_route_a import InstanceSuction3D
+
+model = InstanceSuction3D(backbone_root="/data/backbones/graspness_modern")
 encoded = model.encode_instance(observation)
-scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index)
+scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index=None)
 ```
 
 `encode_instance`每个实例计算一次稀疏特征与对象上下文，并保留raw支持及必要索引。`score_at_pose`接收任意合法的精确p/n，返回逐query的q_inst、seal、wrench、ell、task_logit、几何/主干支持状态与query身份。query可分块，但分块不应改变支持定义和评分结果。
+
+默认 `query_chunk_size=32`；单实例 `query_batch_index` 省略或全0，其他值报错。返回 `points` 为原始中心，`normal_out` 为保留方向符号的单位轴；`valid/pose_geometry_valid` 与 `query_feature_valid` 独立。`log_scale` 同义于ell，`log_variance=log(2)+2*ell`，invalid行只是数值占位。真实构造必须有已校验 `backbone_root`；测试注入backbone是显式调用选择，CLI不会自动换成CPU替代网络。
 
 canonical使用共同候选的p/n；历史规划动作直接调用相同接口。几何锚点只关联组件及支持，不移动记录中心或替换有向轴。网络不读取完整CAD、teacher中心或物理真值，不调用旧instance_fusion、q0或学习轴头。
 
 ## 2. 共享稀疏编码
 
-消费[预处理](PREPROCESSING.md)输出的最多2048主干点、2mm体素坐标和12维特征，新增12通道SpConv ResUNet14 wrapper。保留骨干512维输出及512→256投影，恢复每个真实主干点 `F[N,256]`；现有8通道wrapper不能用改键或补零方式冒充新架构。
+消费[预处理](PREPROCESSING.md)输出的最多2048主干点、2mm体素坐标和12维特征。`models/backbones/spconv_resunet14.py` 已增加可选 `in_channels`，默认仍为8以保留旧E5行为；A显式传12。保留骨干512维输出及512→256投影，恢复每个真实主干点 `F[N,256]`；旧8通道checkpoint不能用改键或补零方式冒充新架构。
 
 真实主干点做masked mean/max，拼成512维，再经 `512→128→64` 得到 `G[64]`。padding不参与池化。F通过同组件最多3邻居、10mm门槛关联到query和raw支持；缺失保留mask及原始RGB/几何，详见预处理。
 
-MLP隐藏层使用带bias线性层和ReLU，不用dropout。新增 wrapper应遵守既有骨干依赖与外部源码校验方式；不修改受blob校验约束的外部源码绕过身份检查。
+新A接触、池化、融合和头部MLP隐藏层使用带bias线性层和ReLU，不用dropout；保留的backbone 512→256投影沿用原wrapper中的LayerNorm/ReLU。外部 `resnet.py` / `backbone_resunet14.py` 仍按固定blob校验，不改其源码绕过身份检查。
+
+默认 `singleton_bn_policy=running_stats`：仅在训练模式某一BatchNorm1d输入每通道值数≤1时，改用该层已有running mean/variance，避免单活动体素的BN异常；不更新这次的running统计或batch计数。其余输入沿用普通BN前向及统计更新，不把源预训练全部BN冻结。策略写入架构身份，`error`可作为显式替代配置。微调期按训练器规定冻结全部BN running stats及affine，和这个退化输入保护是两件事；单例保护不证明真实SpConv已验证。
 
 ## 3. 精确姿态下的三区域
 
@@ -114,4 +121,6 @@ q_inst不是预测Seal和Wrench的乘积；没有独立碰撞分类头或q_sw头
 
 模型级验收包括：所有维数与JSON一致；五头读取正确输入；同一encoded下改变轴会重建接触条件；raw-lip摘要在FPS前；换基幅值/最大间隙在数值容差内不变；恒高缺测支持的Ak为零；低于7方向支撑valid=false；padding/缺特征不会污染池化；空区域和极端点数输出有限；同查询分块前后结果一致。
 
-新增架构、输入、摘要与质量身份写入checkpoint；跨A/B、旧8通道E5或物理目标变化不能resume。当前的合成谐波参考见 `contact_boundary_contract.py self-test`，并不验证尚未接线的SpConv网络。实际模型验收须保存输入身份、逐头输出和参数组报告。[阶段计划](README.md)
+`parameter_groups()` 导出互斥且覆盖全部参数的encoder/decoder/contact/heads：encoder/decoder继承稀疏wrapper分组，G投影属于decoder；局部特征投影、逐点MLP、区域投影和融合属于contact；五个输出头属于heads。架构、输入、摘要、singleton BN和质量身份进入checkpoint，跨A/B或旧8通道E5不能resume。
+
+`python -m pytest -q tests/test_instance_route_a.py` 当前通过13项CPU测试，覆盖体素/FPS并列、1/2/3邻居和组件边界、分区/谐波、531/200/329/260维、真实A接触/头部反向、任意轴/chunk、缺Fq旁路、raw-lip在FPS前、空/非有限输入及singleton BN。网络测试显式注入测试backbone；wrapper通道测试mock外部加载，验证默认8与A传12，不代表真正执行SpConv。真实稀疏骨干/GPU、同姿态真实teacher和完整训练仍须验收。[阶段计划](README.md)

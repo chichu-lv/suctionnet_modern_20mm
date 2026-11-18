@@ -85,10 +85,13 @@ def _load_external(root):
 
 
 class SpconvResUNet14(nn.Module):
-    def __init__(self, backbone_root, *, backbone_coordinate_fastpath=False):
+    def __init__(self, backbone_root, *, backbone_coordinate_fastpath=False, in_channels=8):
         super().__init__()
+        if isinstance(in_channels, bool) or not isinstance(in_channels, int) or in_channels < 1:
+            raise ValueError('in_channels must be a positive integer')
+        self.in_channels = in_channels
         self.backbone_coordinate_fastpath = bool(backbone_coordinate_fastpath)
-        self.network = _load_external(backbone_root)(8, 512)
+        self.network = _load_external(backbone_root)(in_channels, 512)
         self.projection = mlp((512, 256))
 
     def forward(self, inputs):
