@@ -1,5 +1,7 @@
 # CD-009 P2：基于 P1 实测的第二轮训练提速方案
 
+> **归档提示（2026-11-18）**：本报告中的 CD-009 checkpoint 迁移命令与 supervisor 例外流程仅为历史证据。当前分支已移除迁移工具；不要据此在最新代码上恢复旧运行。请参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
+
 **2026-11-13 状态更新：后续真实 checkpoint 已确认 P3 的实际来源为 P2 `e73d62e`。H20/E5 的 64k 组合，以及 L20/E0、E1、E3 的 16k 组合，均已迁移接续并记录各自首 25 次正常更新。** L20 的原 64k 候选未通过梯度门槛，当前保留 16k。详细时序见 [性能优化完整回顾](PERFORMANCE_HISTORY.md)，最新配置、配对与窗口证据见 [P3 实际结果](performance/P3_INTEGRATED_RESULTS.md) 和 [P3 说明](PERFORMANCE_PHASE3.md)。本文保留 P2 阶段的设计、原测量数字与试验范围，不以历史窗口代表当前进度。
 
 **实现与测试：三项产品路径与迁移接线已实现，历史 CPU 测试为316 passed / 1 skipped；真实 AMP 对照发现 voxel heads 梯度差异，因此候选配置关闭该项，grid 与坐标快路径已有相同四帧的原容差通过记录。** 本文原设计审阅 `cd009/full-pretraining` 的 [`1e28a2f`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/1e28a2faa9991478d706e4d188081aa1a482ff9b)，日期为 **2026-11-12（北京时间）**，当时迁移来源为 P1 `996421c`。第12节是随后上传的历史实施报告；当前应用状态以上方说明为准。

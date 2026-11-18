@@ -1,5 +1,7 @@
 # CD-009 P3：整合优化与正常续训
 
+> **归档提示（2026-11-18）**：本报告中的 CD-009 checkpoint 迁移命令与 supervisor 例外流程仅为历史证据。当前分支已移除迁移工具；不要据此在最新代码上恢复旧运行。请参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
+
 2026-11-13 更新。依据 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 及随后完成的[真实 checkpoint 配对与续训结果](performance/P3_INTEGRATED_RESULTS.md)调整方案。**H20/E5 的 64k + split + native 与 L20/E3 的 16k + split + native 已通过四帧配对；H20/E5 及 L20/E0、E1、E3 均已完成迁移并取得首 25 次正常更新窗口。** L20 原 64k 组合未通过原梯度门槛，现予延后，原失败报告保留。
 
 优化全过程、版本取舍和当前状态见 [性能优化全程总览](PERFORMANCE_HISTORY.md)。这些正常窗口的训练代码固定为 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`；后续 GitHub 发布与独立 `control_repo` 的 supervisor 身份不替换训练运行身份。

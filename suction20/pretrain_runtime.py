@@ -69,60 +69,6 @@ def read_json(path):
 
 
 
-def verify_performance_migration(run_dir, reference, identity, *, _visited=None):
-    """Verify the immutable receipt and archived inputs without loading tensors."""
-    root = Path(run_dir).resolve()
-    relative = Path(reference['path'])
-    if relative.is_absolute() or len(relative.parts) != 3 or relative.parts[0] != 'migrations' or relative.name != 'receipt.json':
-        raise ValueError('Invalid performance migration receipt path')
-    receipt_path = (root / relative).resolve()
-    visited = set() if _visited is None else _visited
-    if receipt_path in visited:
-        raise ValueError('Cyclic performance migration archive')
-    visited.add(receipt_path)
-    if root not in receipt_path.parents or file_digest(receipt_path) != reference['sha256']:
-        raise ValueError('Performance migration receipt checksum/path mismatch')
-    receipt = read_json(receipt_path)
-    if receipt.get('schema_version') != 'suction20.performance-migration.v1' or receipt.get('target_identity') != identity:
-        raise ValueError('Performance migration target identity mismatch')
-    from .performance import (approved_migration_source, load_performance_config,
-                              validate_migration_target)
-    source = receipt['source_identity']
-    source_kind = approved_migration_source(source)
-    changed = sorted(key for key in set(source) | set(identity) if source.get(key) != identity.get(key))
-    if changed != receipt.get('allowed_changes') or set(changed) - {'code_revision', 'worktree_sha256', 'performance'} or 'performance' not in changed or not identity.get('performance'):
-        raise ValueError('Performance migration changed scientific/environment identity')
-    required = {'source.pt', 'source-manifest.json', 'performance-config.json'}
-    if set(receipt.get('files', {})) != required:
-        raise ValueError('Incomplete performance migration archive')
-    for name, item in receipt['files'].items():
-        path = receipt_path.parent / name
-        if path.resolve().parent != receipt_path.parent or path.stat().st_size != item['size_bytes'] or file_digest(path) != item['sha256']:
-            raise ValueError('Performance migration archive checksum mismatch')
-    if receipt['files']['performance-config.json']['sha256'] != identity['performance']['config_sha256']:
-        raise ValueError('Performance migration sidecar identity mismatch')
-    settings = load_performance_config(receipt_path.parent / 'performance-config.json')
-    if settings['schema_version'] != identity['performance']['schema_version']:
-        raise ValueError('Performance migration sidecar schema mismatch')
-    validate_migration_target(source_kind, settings['schema_version'])
-    manifest = read_json(receipt_path.parent / 'source-manifest.json')
-    current = manifest['current']
-    if (current['sha256'] != receipt['files']['source.pt']['sha256'] or
-            current['global_step'] != receipt['global_step'] or current['attempt_id'] != receipt['source_attempt_id'] or
-            current.get('pending_validation') is not None or current.get('analysis', {}).get('identity') != source):
-        raise ValueError('Performance migration source manifest mismatch')
-    previous = current.get('analysis', {}).get('performance_migration')
-    if source_kind in ('p1', 'p2'):
-        if source_kind == 'p1' and not previous:
-            raise ValueError('P1 source requires its prior performance migration receipt')
-        # Fresh P2 runs terminate the archive chain here; migrated runs keep it.
-        if previous:
-            verify_performance_migration(root, previous, source, _visited=visited)
-    elif previous:
-        raise ValueError('Original performance source must not already have a migration')
-    return receipt
-
-
 class RunLock:
     """Local defense in depth; the coordinator owns cross-host exclusion."""
     def __init__(self, run_dir):

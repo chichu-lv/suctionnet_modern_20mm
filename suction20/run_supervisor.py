@@ -425,21 +425,8 @@ def verify_assignment_performance(config, assignment):
     selected = selected_performance(config, assignment["experiment"], assignment["host"])
     keys = ("performance_config_path", "performance_config_sha256", "performance_settings")
     if any(assignment.get(key) != selected.get(key) for key in keys):
-        raise Refused("assignment performance sidecar changed; explicit migrated resume required")
+        raise Refused("assignment performance sidecar changed; restore the original assignment or start a new run")
     return selected
-
-
-def verify_performance_transition(config, assignment):
-    desired = selected_performance(config, assignment["experiment"], assignment["host"])
-    if all(assignment.get(key) == desired.get(key) for key in
-           ("performance_config_path", "performance_config_sha256", "performance_settings")):
-        return
-    view = assignment.get("view", {})
-    performance = (view.get("committed_checkpoint") or {}).get("analysis", {}).get("identity", {}).get("performance", {})
-    if (assignment.get("performance_config_sha256") != view.get("performance_migration_source_config_sha256") or not desired or
-            performance.get("config_sha256") != desired["performance_config_sha256"] or
-            not view.get("performance_migration_verified") or not view.get("performance_source_backup_verified")):
-        raise Refused("performance transition requires verified explicit migration of paused source")
 
 
 def verify_assignment_profile(config, assignment):
@@ -452,6 +439,8 @@ def verify_assignment_profile(config, assignment):
 
 
 def verify_checkpoint_contract(assignment, checkpoint, *, complete=False):
+    if (checkpoint.get("analysis") or {}).get("performance_migration"):
+        raise Refused("Historical migrated checkpoint requires the archived CD-009 code")
     budget = assignment_budget(assignment)
     if budget["contract_version"] != CONTRACT_VERSION:
         return
@@ -585,18 +574,11 @@ class Coordinator:
             raise Refused("old host must prove worker/trainer exit and local locks free")
         if not view.get("checkpoint_verified"):
             raise Refused("verify published checkpoint before releasing owner")
-        verification_assignment = assignment
         if evidence.get("command") == "resume":
             if view.get("worker", {}).get("exit_code") != 75:
                 raise Refused("automatic retry disabled; only normal boundary pause may resume")
-            # Migration changes the checkpoint identity before the old owner is
-            # released. Recheck its proof using this inspection, and validate
-            # against the selected target without rewriting historical ownership.
-            verification_assignment = dict(assignment, view=view)
-            verify_performance_transition(self.config, verification_assignment)
-            verification_assignment.update(selected_performance(
-                self.config, assignment["experiment"], assignment["host"]))
-        verify_checkpoint_contract(verification_assignment, view.get("committed_checkpoint") or {})
+            verify_assignment_performance(self.config, assignment)
+        verify_checkpoint_contract(assignment, view.get("committed_checkpoint") or {})
         if any(self.state[k] and self.state[k]["token"] == assignment["token"]
                for k in ("validation", "backup")):
             raise Refused("reconcile outstanding validation/backup before release")
@@ -838,18 +820,8 @@ def inspect_worker(config, assignment):
     for kind in ("validation", "backup"):
         for suffix in ("request", "done"):
             result[kind + "_" + suffix] = read_json(control / f"{kind}.{suffix}.json")
-    result["performance_migration_verified"] = False
-    result["performance_source_backup_verified"] = False
-    result["performance_migration_source_config_sha256"] = None
-    analysis = (committed or {}).get("analysis", {})
-    if analysis.get("performance_migration"):
-        from suction20.pretrain_runtime import verify_performance_migration
-        receipt = verify_performance_migration(run, analysis["performance_migration"], analysis["identity"])
-        result["performance_migration_verified"] = True
-        result["performance_migration_source_config_sha256"] = (receipt["source_identity"].get("performance") or {}).get("config_sha256")
-        source_manifest = read_json(run / Path(analysis["performance_migration"]["path"]).parent / "source-manifest.json")
-        result["performance_source_backup_verified"] = final_backup_verified(
-            config, assignment, source_manifest["current"], result.get("backup_done"))
+    if (committed or {}).get("analysis", {}).get("performance_migration"):
+        raise Refused("Historical migrated checkpoint inspection requires the archived CD-009 code")
     result["final_backup_verified"] = final_backup_verified(config, assignment, committed, result.get("backup_done")) if state == "exited" else False
     return result
 
@@ -917,36 +889,19 @@ def _backup_snapshot(config, assignment, request, manifest, pins):
         raise Refused("backup free-space/budget gate")
     entries = [manifest[k] for k in ("current", "predecessor", "best") if manifest.get(k)]
     entries.extend(manifest.get("nodes", {}).values())
+    if any((entry.get("analysis") or {}).get("performance_migration") for entry in entries):
+        raise Refused("Historical migrated checkpoint backup requires the archived CD-009 code")
     files = {entry["path"]: entry for entry in entries}
     pin_root = control / "backup-pins" / request["request_id"]
     # Logs may be ahead of checkpoint; canonical ledger cursor stays in checkpoint.
     for pattern in ("*.json", "*.jsonl", "attempts/**/*.json", "attempts/**/*.jsonl",
-                    "validations/*.json", "migrations/*/receipt.json"):
+                    "validations/*.json"):
         for path in run.glob(pattern):
             if path.name != "checkpoint-manifest.json" and path.is_file():
                 relative = str(path.relative_to(run))
                 if relative not in files:
                     pins[relative], size = pin_file(path, pin_root)
                     files[relative] = {"size_bytes": size}
-    verified_receipts = set()
-    def collect_migration_files(analysis):
-        reference = analysis.get("performance_migration")
-        if not reference or (reference["path"], reference["sha256"]) in verified_receipts:
-            return
-        verified_receipts.add((reference["path"], reference["sha256"]))
-        from suction20.pretrain_runtime import verify_performance_migration
-        receipt = verify_performance_migration(run, reference, analysis["identity"])
-        parent = Path(reference["path"]).parent
-        # Follow the archived current entry: ordinary saves eventually replace
-        # the P1 predecessor, but its receipt and all three inputs stay required.
-        source_manifest = read_json(run / parent / "source-manifest.json")
-        collect_migration_files(source_manifest["current"].get("analysis", {}))
-        for name, info in receipt["files"].items():
-            relative = str(parent / name)
-            pins[relative], _ = pin_file(run / relative, pin_root)
-            files[relative] = info
-    for entry in entries:
-        collect_migration_files(entry.get("analysis", {}))
     control_sources = {}
     for name in ("assignment.json", "command.json", "worker.json", "status.json",
                  "resources.jsonl", "selected-config.json", "performance-config.json", "pause.request", "validation.request.json", "validation.done.json"):
@@ -1514,10 +1469,7 @@ def main(argv=None):
                 return
             if args.command in ("resume", "recover"):
                 verify_assignment_profile(config, old)
-                if args.command == "resume":
-                    verify_performance_transition(config, old)
-                else:
-                    verify_assignment_performance(config, old)
+                verify_assignment_performance(config, old)
             if args.command == "release" and not coordinator.state["evidence"].get("complete:" + args.experiment):
                 raise Refused("completion acceptance evidence required")
             if args.command == "resume" and old.get("view", {}).get("worker", {}).get("exit_code") != 75:
