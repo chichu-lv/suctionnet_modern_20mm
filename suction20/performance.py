@@ -14,7 +14,10 @@ from pathlib import Path
 SCHEMA_VERSION = 'suction20.performance.v1'
 SCHEMA_VERSION_V2 = 'suction20.performance.v2'
 SCHEMA_VERSION_V3 = 'suction20.performance.v3'
-SCHEMA_VERSION_V4 = 'suction20.performance.v4'def validate_performance_config(value):
+SCHEMA_VERSION_V4 = 'suction20.performance.v4'
+
+
+def validate_performance_config(value):
     keys = {'schema_version', 'fps_backend', 'query_chunk_size', 'query_workers', 'loader', 'detailed_cpu_timing'}
     optional_keys = set()
     if not isinstance(value, dict) or value.get('schema_version') not in (SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, SCHEMA_VERSION_V4):
