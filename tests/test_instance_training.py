@@ -1,6 +1,7 @@
 """Optimizer, loss, selection provenance and resume integration contracts."""
 from copy import deepcopy
 import json
+import gzip
 
 import numpy as np
 import pytest
@@ -8,7 +9,7 @@ import torch
 from torch import nn
 
 from suction20.instance_training import (InstanceSchedule, InstanceTrainer,
-    aggregate_instance_rows, check_source_splits, evaluate_instance_source,
+    aggregate_instance_rows, check_source_splits, evaluate_instance_source, evaluate_instance_attempts,
     load_instance_config, seed_all, source_loss)
 
 
@@ -47,7 +48,7 @@ class MemorySource:
         self.records = [{'scene_id': first+i, 'frame_id': 0, 'split': split,
                          'test_subset': None if split == 'train' else 'seen',
                          'instance_uid': f'{split}-{i}'} for i in range(count)]
-        self.identity = {'fixture': 'synthetic_only', 'split': split, 'asset_hash': 'v1'}
+        self.identity = {'fixture': 'synthetic_only', 'split': split, 'dataset_revision': 'v1'}
 
     def __len__(self):
         return len(self.records)
@@ -200,7 +201,7 @@ def test_best_and_last_are_independent_and_policy_is_not_hidden(tmp_path, monkey
     seed_all(5)
     t = trainer(tmp_path)
     t.config['pretrain']['evaluate_every'] = 1
-    def fake_selection(model, data):
+    def fake_selection(model, data, **kwargs):
         # Ranking rule fixture: earlier checkpoint wins although training continues.
         return {'InstTop1_INST20_at_0_4': 1. if t.step == 1 else .2, 'selected_Q_macro': .5}, []
     monkeypatch.setattr(module, 'evaluate_instance_source', fake_selection)
@@ -235,8 +236,8 @@ def test_resume_rejects_data_asset_change(tmp_path):
     seed_all(1)
     a = trainer(tmp_path/'first'); a.run(stop_after=1)
     b = trainer(tmp_path/'second')
-    b.identity['source']['data_identity']['asset_hash'] = 'replaced'
-    with pytest.raises(ValueError, match='Strict resume identity'):
+    b.identity['source']['data_identity']['dataset_revision'] = 'replaced'
+    with pytest.raises(ValueError, match='Resume dataset definition'):
         b.resume(tmp_path/'first/last.pt')
 
 
@@ -258,11 +259,20 @@ def test_initialization_does_not_accept_legacy_checkpoint(tmp_path):
         t.initialize_finetune(p)
 
 
-def test_source_test_rejects_shared_object_geometry_drift(tmp_path):
+def test_source_test_rejects_known_teacher_physics_drift(tmp_path):
     source, selection = MemorySource(), MemorySource('test')
-    source.identity['object_assets'] = {'7': {'dense_sha256': 'original', 'seal_candidates_sha256': 'same'}}
-    selection.identity['object_assets'] = {'7': {'dense_sha256': 'replaced', 'seal_candidates_sha256': 'same'}}
-    with pytest.raises(ValueError, match='assets differ for object 7'):
+    source.identity['teacher_identity'] = {'physics': {'radius_m': .02}}
+    selection.identity['teacher_identity'] = {'physics': {'radius_m': .01}}
+    with pytest.raises(ValueError, match='physics definitions differ'):
+        InstanceTrainer(TinyInstanceModel(), config(), source, selection, tmp_path, allow_partial=True)
+
+
+@pytest.mark.parametrize('field', ['teacher_spec', 'schema_version', 'quality_contract'])
+def test_source_test_rejects_known_teacher_contract_drift(tmp_path, field):
+    source, selection = MemorySource(), MemorySource('test')
+    source.identity['teacher_identity'] = {field: 'frozen_v2'}
+    selection.identity['teacher_identity'] = {field: 'changed'}
+    with pytest.raises(ValueError, match=f'{field} definitions differ'):
         InstanceTrainer(TinyInstanceModel(), config(), source, selection, tmp_path, allow_partial=True)
 
 
@@ -273,10 +283,166 @@ def test_finetune_keeps_source_selection_provenance_across_resume(tmp_path):
     ft.initialize_finetune(tmp_path/'source/best.pt')
     lineage = deepcopy(ft.initialization)
     assert lineage['checkpoint_selection_role'] == 'test_selected'
-    assert len(lineage['checkpoint_sha256']) == 64
+    assert lineage['checkpoint_file_record']['size_bytes'] > 0
     assert lineage['selection_policy']['independent_test_estimate'] is False
     ft.run(stop_after=1)
     resumed = trainer(tmp_path/'resumed', stage='finetune')
     resumed.resume(tmp_path/'ft/last.pt')
     assert resumed.initialization == lineage
     assert resumed.state_dict()['initialization'] == lineage
+
+
+@pytest.mark.parametrize('attempts', [False, True])
+@pytest.mark.parametrize('raises', [False, True])
+def test_evaluators_restore_all_mixed_modes_and_bn_statistics(attempts, raises):
+    model = TinyInstanceModel()
+    model.train()
+    model.decoder.eval()
+    model.decoder[2].train()  # Deliberate mixed descendant state.
+    model.encoder.eval()
+    before = {name: module.training for name, module in model.named_modules()}
+    bn_before = deepcopy(model.decoder[1].state_dict())
+    base = MemoryAttempts if attempts else MemorySource
+    class Data(base):
+        def __getitem__(self, index):
+            if raises and index == 1:
+                raise RuntimeError('intentional evaluation failure')
+            return super().__getitem__(index)
+    evaluator = evaluate_instance_attempts if attempts else evaluate_instance_source
+    if raises:
+        with pytest.raises(RuntimeError, match='intentional evaluation failure'):
+            evaluator(model, Data('test'))
+    else:
+        evaluator(model, Data('test'))
+    assert {name: module.training for name, module in model.named_modules()} == before
+    # A caller may immediately run a forward without reapplying trainer phase.
+    model(MemorySource()[0]['observation'])
+    assert_nested_equal(model.decoder[1].state_dict(), bn_before)
+
+
+@pytest.mark.parametrize('attempts', [False, True])
+def test_streaming_evaluation_keeps_exact_metrics_without_record_list(attempts):
+    model = TinyInstanceModel()
+    data = MemoryAttempts('test') if attempts else MemorySource('test')
+    evaluator = evaluate_instance_attempts if attempts else evaluate_instance_source
+    expected, records = evaluator(model, data)
+    streamed = []
+    actual, empty = evaluator(model, data, collect_records=False, record_sink=streamed.append)
+    assert actual == expected and streamed == records and empty == []
+
+
+@pytest.mark.parametrize('threshold,has_prediction', [(20, True), (21, False), (150, False)])
+def test_training_and_selection_use_configurable_support_threshold(tmp_path, threshold, has_prediction):
+    class SmallSource(MemorySource):
+        def __getitem__(self, index):
+            item = super().__getitem__(index)
+            item['observation']['support_points'] = item['observation']['support_points'][:20]
+            return item
+    model = TinyInstanceModel()
+    model.min_support_points = threshold
+    _, rows = evaluate_instance_source(model, SmallSource('test'))
+    assert all((row['selected_query'] is not None) == has_prediction for row in rows)
+    t = InstanceTrainer(model, config(), SmallSource(), SmallSource('test'), tmp_path, allow_partial=True)
+    if has_prediction:
+        t.train_one_update()
+        assert t.step == 1 and t.supervised_source_instances == 2
+    else:
+        with pytest.raises(RuntimeError, match='Insufficient supervised source draws'):
+            t.train_one_update()
+        assert t.step == 0 and t.supervised_source_instances == 0
+
+
+@pytest.mark.parametrize('retention,kept', [('best_and_final', [1, 3, 4]), ('all', [1, 2, 3, 4]), ('none', [])])
+def test_periodic_records_are_streamed_and_retained_by_policy(tmp_path, monkeypatch, retention, kept):
+    import suction20.instance_training as module
+    cfg = config()
+    cfg['pretrain'].update(steps=4, evaluate_every=1, evaluation_records=retention)
+    t = InstanceTrainer(TinyInstanceModel(), cfg, MemorySource(), MemorySource('test'), tmp_path, allow_partial=True)
+    values = [.8, .1, .9, .2]
+    def selection(model, data, *, collect_records, record_sink):
+        assert collect_records is False
+        if record_sink is not None:
+            for index in range(11):
+                record_sink({'sample_id': index, 'step': t.step})
+        return {'InstTop1_INST20_at_0_4': values[t.step-1], 'selected_Q_macro': .5}, []
+    monkeypatch.setattr(module, 'evaluate_instance_source', selection)
+    t.run()
+    for step in range(1, 5):
+        report = json.loads((tmp_path/f'evaluation_step{step:06d}.json').read_text())
+        assert 'records' not in report
+        assert report['record_details']['retained'] == (step in kept)
+        details = tmp_path/f'evaluation_step{step:06d}.records.jsonl.gz'
+        assert details.exists() == (step in kept)
+        if step in kept:
+            with gzip.open(details, 'rt') as stream:
+                assert [json.loads(line) for line in stream] == [
+                    {'sample_id': i, 'step': step} for i in range(11)]
+    assert not list(tmp_path.glob('*.tmp'))
+    assert torch.load(tmp_path/'best.pt', weights_only=False)['global_step'] == 3
+
+
+def test_repeated_evaluation_retains_current_best_details_consistently(tmp_path):
+    t = trainer(tmp_path)
+    t.train_one_update()
+    first, second = t.evaluate(), t.evaluate()
+    details = tmp_path/second['record_details']['path']
+    assert first['best_updated'] and not second['best_updated']
+    assert second['record_details']['retained'] and details.exists()
+    t.config['pretrain']['evaluation_records'] = 'none'
+    disabled = t.evaluate()
+    assert not disabled['record_details']['retained'] and not details.exists()
+
+
+def test_finetune_rejects_task_definition_and_cross_manifest_capture_conflicts(tmp_path):
+    target, selection = MemoryAttempts(), MemoryAttempts('val')
+    target.identity['success_definition'] = 'seal_only'
+    selection.identity['success_definition'] = 'lift_and_transport'
+    with pytest.raises(ValueError, match='success_definition'):
+        InstanceTrainer(TinyInstanceModel(), config(), MemorySource(), selection, tmp_path,
+                        stage='finetune', target_dataset=target, allow_partial=True)
+    selection.identity['success_definition'] = target.identity['success_definition']
+    target.observation_owners = {'depth:/same-frame.png': ('train', 'capture-group')}
+    selection.observation_owners = {'depth:/same-frame.png': ('val', 'capture-group')}
+    with pytest.raises(ValueError, match='Shared target observation crosses'):
+        InstanceTrainer(TinyInstanceModel(), config(), MemorySource(), selection, tmp_path,
+                        stage='finetune', target_dataset=target, allow_partial=True)
+
+
+def test_legacy_checksum_metadata_is_ignored_and_not_reemitted(tmp_path):
+    original = trainer(tmp_path/'original')
+    original.run(stop_after=1)
+    state = torch.load(tmp_path/'original/last.pt', weights_only=False)
+    state['identity'].pop('runtime_contract')
+    state['identity'].pop('config_definition')
+    state['identity']['code_sha256'] = 'obsolete-and-intentionally-wrong'
+    state['config']['config_sha256'] = 'obsolete'
+    state['source_schedule']['identity'] = 'opaque-legacy-checksum'
+    state['initialization'] = {'kind': 'legacy', 'checkpoint_sha256': 'obsolete'}
+    path = tmp_path/'legacy.pt'
+    torch.save(state, path)
+    resumed = trainer(tmp_path/'resumed')
+    resumed.resume(path)
+    resumed.run()
+    saved = torch.load(tmp_path/'resumed/last.pt', weights_only=False)
+    assert saved['global_step'] == 2
+    assert saved['initialization'] == {'kind': 'legacy'}
+    assert 'config_sha256' not in saved['config'] and 'code_sha256' not in saved['identity']
+
+
+@pytest.mark.parametrize('dataset', ['source', 'selection', 'target'])
+@pytest.mark.parametrize('field', ['length', 'data_identity'])
+def test_legacy_resume_still_checks_available_dataset_fields(tmp_path, dataset, field):
+    original = trainer(tmp_path/'original', stage='finetune')
+    state = original.state_dict()
+    state['identity'].pop('runtime_contract')
+    state['source_schedule']['identity'] = 'opaque-legacy-checksum'
+    state['target_schedule']['identity'] = 'opaque-legacy-checksum'
+    if field == 'length':
+        state['identity'][dataset][field] += 1
+    else:
+        state['identity'][dataset][field]['dataset_revision'] = 'different-known-data'
+    path = tmp_path/'legacy.pt'
+    torch.save(state, path)
+    resumed = trainer(tmp_path/'resumed', stage='finetune')
+    with pytest.raises(ValueError, match=f'Resume dataset definition differs: {dataset}'):
+        resumed.resume(path)

@@ -1,5 +1,7 @@
 # CD-009 P2：基于 P1 实测的第二轮训练提速方案
 
+本页包含历史性能设计和实测记录。项目当前已移除 SHA-256 计算与核验，历史摘要字段不再作为运行条件；当前操作以 [MODEL_USAGE](MODEL_USAGE.md)、[CHECKPOINT_POLICY](CHECKPOINT_POLICY.md) 和[无内容校验和规则](NO_CONTENT_CHECKSUMS.md)为准。下面的历史数值不重算、不改写。
+
 > **归档提示（2026-11-18）**：本报告中的 CD-009 checkpoint 迁移命令与 supervisor 例外流程仅为历史证据。当前分支已移除迁移工具；不要据此在最新代码上恢复旧运行。请参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
 
 **2026-11-13 状态更新：后续真实 checkpoint 已确认 P3 的实际来源为 P2 `e73d62e`。H20/E5 的 64k 组合，以及 L20/E0、E1、E3 的 16k 组合，均已迁移接续并记录各自首 25 次正常更新。** L20 的原 64k 候选未通过梯度门槛，当前保留 16k。详细时序见 [性能优化完整回顾](PERFORMANCE_HISTORY.md)，最新配置、配对与窗口证据见 [P3 实际结果](performance/P3_INTEGRATED_RESULTS.md) 和 [P3 说明](PERFORMANCE_PHASE3.md)。本文保留 P2 阶段的设计、原测量数字与试验范围，不以历史窗口代表当前进度。
@@ -320,7 +322,7 @@ return self.projection(features)
 
 ### 6.2 新性能 sidecar 规格
 
-新增 `configs/performance/cd009-p2.json`，不要修改已绑定哈希的 P1 文件。建议内容如下；**当前 v1 parser 尚不接受这些新增字段，必须随实现一起修改后才能使用**。
+新增 `configs/performance/cd009-p2.json`，保留历史 P1 文件的实验参数。建议内容如下；**当前 v1 parser 尚不接受这些新增字段，必须随实现一起修改后才能使用**。
 
 ```json
 {
@@ -347,39 +349,13 @@ return self.projection(features)
 
 `no_instance_voxel_heads` 只在 `use_instance_fusion=False` 生效；有实例分支保持原实现。`query_workers` 仍是原 SciPy 调度字段，新 grid 第一版不使用它启动线程。旧 v1 schema 及 P1 解释保持不变，`performance_identity` 返回实际 schema，并在 `backend_builds` 中记录启用的 grid 原生实现。继续使用已有身份构建方式，不另建一套环境管理系统。
 
-### 6.3 现有迁移工具有三处实际阻塞，不能直接照 P1 命令执行
+### 6.3 历史 P1→P2 迁移
 
-这是代码中已经存在的限制，处理它们是保留已训练进度所必需的集成工作。
+这一阶段曾通过一次性迁移保持原模型、Adam、AMP、RNG、已消费游标、样本预算和验证记录，再切换 CPU 网格实现。该转换器与 receipt 链已退出当前代码。本节移除退役的源码/sidecar 摘要要求、白名单修改建议和转换步骤；过去部署及实测数据仍见第 12 节。
 
-| 入口 | 当前为什么不能处理 P1→P2 | 最小修改 |
-| --- | --- | --- |
-| `scripts/migrate_performance_checkpoint.py:migrate` | 仅允许原始 `98862f4` / `d634…`，且拒绝已有 performance 或迁移记录 | 增加明确的当前 P1 来源分支，沿用同实验、已暂停 current checkpoint 与原有配置/进度比较 |
-| `suction20/pretrain_runtime.py:verify_performance_migration` | 同样硬编码原始无 performance 来源 | 接受经现有 P1 receipt 证明的 P1 源身份，继续只允许 code/worktree/performance 身份变化 |
-| `suction20/run_supervisor.py:verify_performance_transition` | assignment 已有 `performance_config_sha256` 时直接拒绝 | 支持旧 assignment 的 P1 sidecar hash → 新 P2 sidecar hash，保留现有 committed identity、migration/backup 状态关联 |
+### 6.4 当前使用范围
 
-当前批准的 P1 来源是：
-
-- code：`996421c664a5a0b84c308aa4ca47c31eaff4035b`；
-- worktree：`23bde51eb6b8f091a15b2aeb336db8a7085b150f304076af44b3a1d83ba7ee20`；
-- sidecar SHA256：`08d2247c5bd433d8fdc16325a9602821a8a5c8c52b0c6cf0148a4991e4f9d188`。
-
-沿用显式来源匹配，不把普通 resume 改为忽略版本差异。保留原 `SOURCE_REVISION` / `SOURCE_WORKTREE_SHA256`，新增 P1 来源常量，不能直接覆盖旧常量导致旧 receipt 失效。源模型、Adam moments/step、AMP、RNG、已消费 sampler 游标、有效样本预算、LR、best/验证节点与日志前缀均保留，性能切换不重新 warmup，也不重置训练步数。
-
-`inspect_worker()` 应保留 verifier 返回的 receipt，在 view 中增加 `performance_migration_source_config_sha256 = receipt.source_identity.performance.config_sha256`（原始无 performance 来源为 `None`）。`verify_performance_transition()` 用这个值与旧 `assignment.performance_config_sha256` 比较；目标 hash 仍与新配置比较。`performance_source_backup_verified` 仍对应最新迁移归档的、刚暂停的 P1 checkpoint，不改为最早的原始 checkpoint。
-
-**旧迁移档案的保留可以复用现有 manifest，不新增 checkpoint 历史字段。** 新迁移已经会归档原始 `source-manifest.json`，其中 `current.analysis.performance_migration` 指向旧 P1 receipt。新 verifier 在 P1 来源分支沿这条已有引用验证旧 receipt，以新 receipt 的 `source_identity` 作为旧 receipt 的目标 identity。备份函数也沿同一引用收集旧 receipt 的源 checkpoint、source-manifest 和 sidecar 文件。
-
-目前只 glob 全部 `receipt.json` 不够：后续 P2 保存会替换 predecessor，旧 P1 的三个归档文件可能不再从当前 manifest 的直接引用中被找到。扩展 `run_supervisor._backup_snapshot()` 的现有归档文件收集函数即可，复用已有 receipt 去重集合；不新增 receipt schema、checkpoint 历史字段或备份任务。
-
-### 6.4 实际切换顺序
-
-1. 在独立 checkout 完成 P2 实现、独立目录内的本机扩展构建和第 7 节一次配对，准备固定提交和 sidecar。
-2. 同一主机上共用训练 checkout/venv 的正式 trainer 在正常保存边界暂停，各使用自己的 current checkpoint。
-3. 切换 supervisor 实际执行的公共 `root/repo` 并安装对应扩展。supervisor 的 cwd、脚本路径和 Python 指向这套环境；独立目录构建完成不等于实际恢复环境已经切换。以实际安装后的代码、sidecar、扩展构建目标身份。
-4. 通过扩展后的现有 migration 入口逐 run 更新性能身份与 receipt，再由原 supervisor 接续。每个 run 保留自己的学习状态。
-5. 读取原预算内 20–30 个成功 update 的正常日志，确认实际收益；之后正常训练。
-
-本轮没有连接或暂停训练机器；L20 GPU0 继续不动。正在运行的 checkout 不直接 `git pull` 文档 HEAD：项目身份包含 code revision/worktree，文档发布 SHA 也不能当作部署代码 SHA。E5/H20 与各 L20 实验仍是独立单卡任务。
+当前从头训练按 v4 配方执行；同版本恢复直接比较实际配置与可得运行字段，不计算内容摘要。不对旧 run 自动更换性能实现，也不修改历史实验记录。[恢复政策](CHECKPOINT_POLICY.md)及[读取规则](NO_CONTENT_CHECKSUMS.md)给出可执行范围。
 
 ## 7. 验收仍只保留三个正常路径
 

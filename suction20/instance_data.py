@@ -19,32 +19,62 @@ from scipy.io import loadmat
 
 from .full_data import resolve_instance_ids, scene_frame0
 from .instance_geometry import (NORMAL_SPEC, SAMPLER_SPEC, PRECISION_SPEC,
-                                array_digest, prepare_instance)
-from .instance_teacher import (InstanceTeacher, LABEL_SCHEMA, QUALITY_CONTRACT,
-                               file_sha256, json_digest, validate_labels)
+                                BOUNDARY_ROUNDOFF_M, observation_descriptor,
+                                query_descriptor, prepare_instance)
+from .instance_teacher import InstanceTeacher, LABEL_SCHEMA, QUALITY_CONTRACT, validate_labels
+from .metadata import without_legacy_checksums
 
 OBSERVATION_SCHEMA = 'instance_observation_v2'
-MANIFEST_VERSION = 'suction20.instance_manifest.v3'
+MANIFEST_VERSION = 'suction20.instance_manifest.v4'
+READABLE_MANIFEST_VERSIONS = (MANIFEST_VERSION, 'suction20.instance_manifest.v3')
 QUERY_FIELDS = ('query_points', 'query_normals', 'query_uv', 'query_ids',
                 'query_source_ids', 'query_components', 'query_valid',
                 'query_cell_ids', 'query_rounds')
 LABEL_ALIASES = {'S': 'seal', 'W': 'wrench', 'Q_inst': 'q_inst', 'valid': 'label_valid'}
-TEACHER_IDENTITY_FIELDS = ('quality_contract', 'schema_version', 'physics_sha256',
-    'teacher_source_sha256', 'seal_source_sha256', 'producer_source_sha256')
+LABEL_IDENTITY_FIELDS = ('quality_contract', 'schema_version', 'teacher_spec', 'physics',
+    'scene_id', 'frame_id', 'instance_row', 'obj_id', 'dense_path', 'seal_candidates_path',
+    'T_world_cam', 'T_world_obj')
+MANIFEST_FIELDS = ('schema_version', 'manifest_version', 'sample_id', 'instance_uid', 'group_id',
+    'capture_uid', 'split', 'test_subset', 'scene_id', 'frame_id', 'instance_row', 'obj_id', 'camera',
+    'source_kind', 'observation_npz', 'observation_identity', 'query_cache', 'query_identity',
+    'label_cache', 'label_identity', 'labelled_queries', 'normal_spec', 'sampler_spec',
+    'precision_spec', 'quality_contract', 'source_paths', 'calibration', 'support_count',
+    'query_count', 'trainable', 'status', 'min_support_points')
+
+
+def _label_identity(identity):
+    """Read declared semantics; discard obsolete, unused integrity metadata."""
+    if not isinstance(identity, dict):
+        raise ValueError('supervised manifest requires a declared teacher identity')
+    if identity.get('quality_contract') != QUALITY_CONTRACT or identity.get('schema_version') != LABEL_SCHEMA:
+        raise ValueError('frozen teacher schema/quality mismatch')
+    result = without_legacy_checksums({key: identity[key]
+                                     for key in LABEL_IDENTITY_FIELDS if key in identity})
+    result.setdefault('teacher_spec', None)
+    result.setdefault('physics', None)
+    if result['physics'] is not None and not isinstance(result['physics'], dict):
+        raise ValueError('declared teacher physics must be a mapping or unknown')
+    return result
 
 
 def _teacher_identity(identity):
-    """Shared frozen physics/code contract, excluding per-object pose assets."""
-    if not isinstance(identity, dict) or any(key not in identity for key in TEACHER_IDENTITY_FIELDS):
-        raise ValueError('supervised manifest requires complete frozen teacher identity')
-    if identity['quality_contract'] != QUALITY_CONTRACT or identity['schema_version'] != LABEL_SCHEMA:
-        raise ValueError('frozen teacher schema/quality mismatch')
-    result = {key: identity[key] for key in TEACHER_IDENTITY_FIELDS}
-    for key, value in result.items():
-        if key.endswith('_sha256') and (not isinstance(value, str) or len(value) != 64
-                or any(c not in '0123456789abcdef' for c in value)):
-            raise ValueError(f'invalid frozen teacher hash: {key}')
-    return result
+    """Small explicit physics/version fields; unknown legacy provenance is None."""
+    identity = _label_identity(identity)
+    return {key: identity.get(key) for key in ('quality_contract', 'schema_version', 'teacher_spec', 'physics')}
+
+
+def _compatible_teacher(left, right):
+    for key in ('quality_contract', 'schema_version', 'teacher_spec', 'physics'):
+        if left.get(key) is not None and right.get(key) is not None and left[key] != right[key]:
+            raise ValueError(f'mixed declared teacher contracts: {key}')
+
+
+def _same_label_identity(left, right):
+    left, right = _label_identity(left), _label_identity(right)
+    _compatible_teacher(left, right)
+    for key in ('scene_id', 'frame_id', 'instance_row', 'obj_id', 'T_world_cam', 'T_world_obj'):
+        if key in left and key in right and left[key] != right[key]:
+            raise ValueError(f'cached label identity differs from manifest: {key}')
 
 
 def source_split(scene_id):
@@ -77,6 +107,7 @@ def _save_npz(path, value):
     """Atomic, pickle-free array archive with separate JSON metadata."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    value = without_legacy_checksums(value)
     arrays = {key: item for key, item in value.items() if isinstance(item, np.ndarray)}
     metadata = {key: item for key, item in value.items() if key not in arrays}
     arrays['metadata_json'] = np.asarray(json.dumps(metadata, sort_keys=True, allow_nan=False))
@@ -88,20 +119,18 @@ def _save_npz(path, value):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    return file_sha256(path)
+    return path
 
 
-def _read_npz(path, expected_sha256=None):
-    if expected_sha256 is not None and file_sha256(path) != expected_sha256:
-        raise ValueError(f'cache content hash differs from manifest: {path}')
+def _read_npz(path):
     with np.load(path, allow_pickle=False) as file:
-        result = {key: file[key] for key in file.files if key != 'metadata_json'}
+        result = without_legacy_checksums({key: file[key] for key in file.files if key != 'metadata_json'})
         if 'metadata_json' in file:
-            meta = json.loads(str(file['metadata_json']))
+            meta = without_legacy_checksums(json.loads(str(file['metadata_json'])))
             if set(meta) & set(result):
                 raise ValueError('array/metadata key collision')
             result.update(meta)
-    return result
+    return without_legacy_checksums(result)
 
 
 def save_observation(path, observation):
@@ -111,29 +140,49 @@ def save_observation(path, observation):
     return _save_npz(path, observation)
 
 
-def load_observation(path, *, expected_sha256=None):
-    """Load an unlabeled prepared cache; physical labels are never required."""
-    obs = _read_npz(path, expected_sha256)
+def load_observation(path):
+    """Load once, then validate geometry in memory; never scan archive bytes."""
+    obs = _read_npz(path)
     if obs.get('normal_spec') != NORMAL_SPEC or obs.get('sampler_spec') != SAMPLER_SPEC:
         raise ValueError('observation normal/sampler version mismatch')
     if obs.get('precision_spec') != PRECISION_SPEC:
         raise ValueError('observation precision contract mismatch')
     k = len(obs['query_points'])
-    if obs['query_points'].shape != (k, 3) or obs['query_normals'].shape != (k, 3):
+    if k > 256 or obs['query_points'].shape != (k, 3) or obs['query_normals'].shape != (k, 3):
         raise ValueError('malformed cached queries')
     if any(len(obs[key]) != k for key in QUERY_FIELDS):
         raise ValueError('unaligned query cache fields')
-    query_identity = array_digest(obs['query_points'], obs['query_normals'], obs['query_source_ids'])
-    if query_identity != obs.get('query_identity'):
-        raise ValueError('query identity mismatch')
     if not np.isfinite(obs['query_points']).all() or not np.isfinite(obs['query_normals']).all():
         raise ValueError('cached canonical queries must be finite')
+    source_ids = np.asarray(obs['query_source_ids'])
+    image = np.asarray(obs['xyz_map'])
+    if (image.ndim != 3 or image.shape[-1] != 3 or source_ids.shape != (k,)
+            or source_ids.dtype.kind not in 'iu' or np.any(source_ids < 0)
+            or np.any(source_ids >= image.shape[0] * image.shape[1])
+            or len(np.unique(source_ids)) != k):
+        raise ValueError('malformed cached source pixel IDs')
+    if not np.array_equal(obs['query_points'], image.reshape(-1, 3)[source_ids]):
+        raise ValueError('query points differ from cached raw source pixels')
+    normal_map = np.asarray(obs['normal_map'])
+    if normal_map.shape != image.shape or not np.array_equal(obs['query_normals'], normal_map.reshape(-1, 3)[source_ids]):
+        raise ValueError('query normals differ from cached organized normals')
+    if np.any(abs(np.linalg.norm(obs['query_normals'], axis=1) - 1) > 1e-4):
+        raise ValueError('cached canonical normals must be unit vectors')
+    if obs['query_valid'].dtype != np.bool_ or not np.all(obs['query_valid']):
+        raise ValueError('cached canonical queries must be eligible')
+    if not np.array_equal(obs['query_ids'], np.arange(k)):
+        raise ValueError('canonical query IDs must preserve their original prefix order')
+    obs.setdefault('min_support_points', int(obs.get('diagnostics', {}).get('min_support', 100)))
+    obs['query_identity'] = query_descriptor(source_ids)
+    obs['observation_identity'] = observation_descriptor(obs)
     return obs
 
 
-def load_labels(path, *, expected_sha256=None, points=None, normals=None):
-    labels = _read_npz(path, expected_sha256)
+def load_labels(path, *, points=None, normals=None):
+    labels = _read_npz(path)
     validate_labels(labels, expected_points=points, expected_normals=normals)
+    if 'identity' in labels:
+        labels['identity'] = _label_identity(labels['identity'])
     for alias, source in LABEL_ALIASES.items():
         labels[alias] = labels[source]
     return labels
@@ -142,26 +191,26 @@ def load_labels(path, *, expected_sha256=None, points=None, normals=None):
 class InstanceDataset:
     """One visible GT instance per item; failures remain in evaluation counts."""
     def __init__(self, manifest_path, split=None, training_queries=None,
-                 require_labels=True, *, verify_hashes=True, cache_size=2):
+                 require_labels=True, *, cache_size=2):
         self.manifest = Path(manifest_path)
         self.root = self.manifest.parent
-        self.manifest_digest = file_sha256(self.manifest)
         if split not in (None, 'train', 'test'):
             raise ValueError('source instance split must be train/test')
         if training_queries is not None and (isinstance(training_queries, bool) or
             not isinstance(training_queries, int) or not 1 <= training_queries <= 256):
             raise ValueError('training_queries must be an integer in [1,256]')
         self.training_queries, self.require_labels = training_queries, bool(require_labels)
-        self.verify_hashes, self.cache_size = bool(verify_hashes), int(cache_size)
+        self.cache_size = int(cache_size)
         if self.cache_size < 0:
             raise ValueError('cache_size cannot be negative')
         self.records, identifiers, identities = [], set(), set()
-        teacher_identity, object_assets = None, {}
+        teacher_identity, object_assets, known_teacher = None, {}, {}
         for number, line in enumerate(self.manifest.read_text().splitlines(), 1):
             if not line.strip():
                 continue
-            row = json.loads(line)
-            if row.get('schema_version') != OBSERVATION_SCHEMA or row.get('manifest_version') != MANIFEST_VERSION:
+            decoded = without_legacy_checksums(json.loads(line))
+            row = {key: decoded[key] for key in MANIFEST_FIELDS if key in decoded}
+            if row.get('schema_version') != OBSERVATION_SCHEMA or row.get('manifest_version') not in READABLE_MANIFEST_VERSIONS:
                 raise ValueError(f'manifest line {number}: schema mismatch')
             if row.get('sample_id') in identifiers:
                 raise ValueError('duplicate source instance identity')
@@ -182,28 +231,31 @@ class InstanceDataset:
                 if require_labels and not row.get('label_cache'):
                     raise ValueError('supervised dataset requires explicit label_cache; no inferred negatives')
                 if require_labels:
-                    current_teacher = _teacher_identity(row.get('label_identity'))
-                    if teacher_identity is not None and current_teacher != teacher_identity:
-                        raise ValueError('mixed frozen teacher physics/code contracts in one manifest')
+                    row['label_identity'] = _label_identity(row.get('label_identity'))
+                    current_teacher = _teacher_identity(row['label_identity'])
+                    _compatible_teacher(known_teacher, current_teacher)
+                    for key, value in current_teacher.items():
+                        if known_teacher.get(key) is None and value is not None:
+                            known_teacher[key] = copy.deepcopy(value)
+                    if teacher_identity is not None:
+                        _compatible_teacher(teacher_identity, current_teacher)
+                        # One unknown legacy row means the shared provenance is
+                        # not completely known; do not infer missing physics.
+                        for key in ('teacher_spec', 'physics'):
+                            if teacher_identity.get(key) is None or current_teacher.get(key) is None:
+                                current_teacher[key] = None
                     teacher_identity = current_teacher
                     label_identity = row['label_identity']
                     for key in ('obj_id', 'scene_id', 'frame_id', 'instance_row'):
                         if label_identity.get(key) != row[key]:
                             raise ValueError(f'teacher identity differs from source instance: {key}')
                     object_key = str(int(row['obj_id']))
-                    assets = {key: label_identity.get(key) for key in
-                              ('dense_sha256', 'seal_candidates_sha256')}
-                    for key, value in assets.items():
-                        if (not isinstance(value, str) or len(value) != 64 or
-                                any(c not in '0123456789abcdef' for c in value)):
-                            raise ValueError(f'invalid frozen object asset hash: {key}')
-                    if object_key in object_assets and object_assets[object_key] != assets:
-                        raise ValueError('same object ID has mixed dense/Seal assets in one manifest')
-                    object_assets[object_key] = assets
+                    assets = {key: label_identity.get(key) for key in ('dense_path', 'seal_candidates_path')}
+                    object_assets.setdefault(object_key, assets)
                 self.records.append(row)
         if len(identities) > 1:
             raise ValueError('mixed label/observation contracts in one manifest')
-        self.identity = dict(manifest_sha256=self.manifest_digest, normal_spec=NORMAL_SPEC,
+        self.identity = dict(manifest_path=str(self.manifest.resolve()), normal_spec=NORMAL_SPEC,
             sampler_spec=SAMPLER_SPEC, precision_spec=PRECISION_SPEC,
             quality_contract=QUALITY_CONTRACT, split=split, training_queries=training_queries,
             teacher_identity=teacher_identity, object_assets=object_assets)
@@ -217,17 +269,15 @@ class InstanceDataset:
             self._cache.move_to_end(index)
             return copy.deepcopy(self._cache[index])
         record = copy.deepcopy(self.records[index])
-        obs = load_observation(_path(self.root, record['observation_npz']),
-            expected_sha256=record['observation_sha256'] if self.verify_hashes else None)
+        obs = load_observation(_path(self.root, record['observation_npz']))
         obs['sample_uid'], obs['instance_uid'] = record['sample_id'], record['instance_uid']
+        obs['observation_identity']['instance_uid'] = record['instance_uid']
         full_count = len(obs['query_points'])
         count = min(full_count, self.training_queries) if self.training_queries is not None else full_count
         labels = None
         if self.require_labels and record.get('label_cache'):
-            labels = load_labels(_path(self.root, record['label_cache']),
-                expected_sha256=record['label_sha256'] if self.verify_hashes else None)
-            if labels.get('identity') != record.get('label_identity'):
-                raise ValueError('cached label identity differs from manifest frozen teacher/geometry')
+            labels = load_labels(_path(self.root, record['label_cache']))
+            _same_label_identity(labels.get('identity'), record.get('label_identity'))
             available = len(labels['points'])
             if available < count and self.require_labels:
                 raise ValueError('requested query count exceeds label prefix; use training_queries or build complete labels')
@@ -242,8 +292,8 @@ class InstanceDataset:
         for key in QUERY_FIELDS:
             obs[key] = obs[key][:count].copy()
         obs['full_query_identity'] = obs['query_identity']
-        obs['query_identity'] = array_digest(obs['query_points'], obs['query_normals'], obs['query_source_ids'])
-        record['has_supervision'] = bool(labels is not None and labels['label_valid'].any() and obs['trainable'])
+        obs['query_identity'] = query_descriptor(obs['query_source_ids'])
+        record['has_supervision'] = bool(labels is not None and labels['label_valid'].any())
         result = {'observation': obs, 'labels': labels, 'record': record}
         if self.cache_size:
             self._cache[index] = copy.deepcopy(result)
@@ -286,18 +336,19 @@ def read_suctionnet_frame(dataset_root, scene_id, frame_id, camera='realsense', 
                                        pixels, depth.shape).reshape(depth.shape)
     T_world_cam = table @ poses[int(frame_id)]
     g = T_world_cam[:3, :3].T @ np.array([0., 0., -1.])
-    source_hashes = {key: file_sha256(path) for key, path in paths.items()}
-    source_hashes.update(camera_poses=file_sha256(pose_path), cam0_wrt_table=file_sha256(table_path))
+    source_paths = {key: str(path.resolve()) for key, path in paths.items()}
+    source_paths.update(camera_poses=str(pose_path.resolve()), cam0_wrt_table=str(table_path.resolve()))
     if instance_mask_root is not None:
-        source_hashes['instance_mask'] = file_sha256(Path(instance_mask_root) / f'scene_{scene_id:04d}' / camera / f'{frame_id:04d}.png')
+        source_paths['instance_mask'] = str((Path(instance_mask_root) / f'scene_{scene_id:04d}' / camera / f'{frame_id:04d}.png').resolve())
     return dict(rgb=rgb, depth_m=depth.astype(np.float64) / scale, instance_ids=instance_ids,
-                intrinsics=K, gravity=g, records=records, source_hashes=source_hashes,
-                calibration_sha256=array_digest(K, T_world_cam, np.asarray(scale)))
+                intrinsics=K, gravity=g, records=records, source_paths=source_paths,
+                calibration={'intrinsics': K.tolist(), 'T_world_cam': T_world_cam.tolist(),
+                             'depth_scale_m': 1. / scale})
 
 
 def build_source_instances(dataset_root, label_root, output, *, split='all', camera='realsense',
                            scenes=None, frames=None, with_labels=True, train_queries=128,
-                           instance_mask_root=None, depth_min_m=.2, depth_max_m=1.2):
+                           instance_mask_root=None, depth_min_m=.2, depth_max_m=1.2, min_support_points=100):
     """Build a deterministic shard; no missing frames/objects silently disappear.
 
     Full defaults cover 100 training and 90 test scenes, 256 views each. A
@@ -326,41 +377,43 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
                 instance_row = instance_id - 1
                 uid = f'{camera}_s{scene_id:04d}_f{frame_id:04d}_i{instance_row:03d}'
                 obs = prepare_instance(frame['rgb'], frame['depth_m'], frame['instance_ids'] == instance_id,
-                    frame['intrinsics'], frame['gravity'], depth_min_m=depth_min_m, depth_max_m=depth_max_m)
+                    frame['intrinsics'], frame['gravity'], depth_min_m=depth_min_m, depth_max_m=depth_max_m,
+                    min_support=min_support_points)
                 obs.update(sample_uid=uid, instance_uid=uid)
+                obs['observation_identity']['instance_uid'] = uid
                 status = obs['diagnostics']['status']
                 status_counts[status] = status_counts.get(status, 0) + 1
                 obs_rel = Path('observations') / f'{uid}.npz'
                 obs_path = output / obs_rel
                 if obs_path.exists():
                     old = load_observation(obs_path)
-                    if old.get('observation_identity') != obs['observation_identity'] or old['query_identity'] != obs['query_identity']:
-                        raise ValueError(f'existing observation identity changed: {obs_path}; use a new output directory')
-                    obs_sha = file_sha256(obs_path)
+                    for key in ('rgb', 'rgb_valid', 'depth_m', 'instance_mask', 'intrinsics', 'gravity',
+                                'query_points', 'query_normals', 'query_source_ids'):
+                        if not np.array_equal(old[key], obs[key], equal_nan=True):
+                            raise ValueError(f'existing observation data changed: {key}; use a new output directory')
+                    if old['min_support_points'] != int(min_support_points):
+                        raise ValueError('existing observation support policy changed; use a new output directory')
                 else:
-                    obs_sha = save_observation(obs_path, obs)
-                label_rel, label_sha, label_identity, labelled_queries = None, None, None, 0
+                    save_observation(obs_path, obs)
+                label_rel, label_identity, labelled_queries = None, None, 0
                 if teacher is not None:
                     count = min(len(obs['query_points']), int(train_queries) if row_split == 'train' else 256)
                     label_rel = Path('labels') / f'{uid}.npz'
                     label_path = output / label_rel
                     if label_path.exists():
                         labels = load_labels(label_path, points=obs['query_points'][:count], normals=obs['query_normals'][:count])
-                        if any(labels['identity'].get(k) != v for k, v in teacher.identity.items()):
-                            raise ValueError('existing teacher cache identity changed; use a new output directory')
-                        # Exact geometry assets are checked even when labels are reused.
-                        scene = teacher._scene(scene_id)
-                        obj = teacher._object(scene['records'][instance_row]['obj_id'])
-                        for key, expected in [('dense_sha256', obj['dense_sha256']),
-                                              ('seal_candidates_sha256', obj['seal_candidates_sha256']),
-                                              ('transforms_sha256', scene['transforms_sha256'])]:
+                        _compatible_teacher(_teacher_identity(labels['identity']), teacher.identity)
+                        for key, expected in [('scene_id', scene_id), ('frame_id', frame_id),
+                                              ('instance_row', instance_row), ('obj_id', frame['records'][instance_row]['obj_id'])]:
                             if labels['identity'].get(key) != expected:
-                                raise ValueError('existing teacher geometry asset identity changed')
-                        label_sha = file_sha256(label_path)
+                                raise ValueError('existing teacher cache refers to another instance')
+                        # Legacy cache provenance stays explicitly unknown. Reuse
+                        # exact poses and values without rescanning geometry or
+                        # rewriting a checksum into another identity format.
                     else:
                         labels = teacher.evaluate(scene_id, frame_id, instance_row,
                             obs['query_points'][:count], obs['query_normals'][:count], obs['query_ids'][:count])
-                        label_sha = _save_npz(label_path, labels)
+                        _save_npz(label_path, labels)
                     label_identity, labelled_queries = labels['identity'], count
                 row = dict(schema_version=OBSERVATION_SCHEMA, manifest_version=MANIFEST_VERSION,
                     sample_id=uid, instance_uid=uid, group_id=f'scene_{scene_id:04d}',
@@ -368,13 +421,14 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
                     split=row_split, test_subset=subset, scene_id=scene_id, frame_id=frame_id,
                     instance_row=instance_row, obj_id=frame['records'][instance_row]['obj_id'], camera=camera,
                     source_kind='suctionnet_rgbd', observation_npz=obs_rel.as_posix(),
-                    observation_sha256=obs_sha, observation_identity=obs['observation_identity'],
+                    observation_identity=obs['observation_identity'],
                     query_cache=obs_rel.as_posix(), query_identity=obs['query_identity'],
-                    label_cache=None if label_rel is None else label_rel.as_posix(), label_sha256=label_sha,
+                    label_cache=None if label_rel is None else label_rel.as_posix(),
                     label_identity=label_identity, labelled_queries=labelled_queries,
                     normal_spec=NORMAL_SPEC, sampler_spec=SAMPLER_SPEC, precision_spec=PRECISION_SPEC,
-                    quality_contract=QUALITY_CONTRACT, source_hashes=frame['source_hashes'],
-                    calibration_sha256=frame['calibration_sha256'], support_count=len(obs['support_points']),
+                    quality_contract=QUALITY_CONTRACT, source_paths=frame['source_paths'],
+                    calibration=frame['calibration'], min_support_points=int(min_support_points),
+                    support_count=len(obs['support_points']),
                     query_count=len(obs['query_points']), trainable=obs['trainable'], status=status)
                 rows.append(row)
     manifest = output / f'manifest_{split}.jsonl'
@@ -382,13 +436,118 @@ def build_source_instances(dataset_root, label_root, output, *, split='all', cam
     temporary.write_text(''.join(json.dumps(row, sort_keys=True, allow_nan=False) + '\n' for row in rows))
     os.replace(temporary, manifest)
     summary = dict(manifest_version=MANIFEST_VERSION, manifest=manifest.name,
-        manifest_sha256=file_sha256(manifest), camera=camera, split=split,
+        camera=camera, split=split,
         scene_ids=list(selected_scenes), frame_ids=list(selected_frames),
         complete_requested_split=selected_scenes == allowed and selected_frames == tuple(range(256)),
         frame_count=len(selected_scenes) * len(selected_frames), visible_instance_count=len(rows),
         empty_gt_frames=empty_frames, status_counts=status_counts, train_queries=int(train_queries),
         test_queries=256, labels_computed=bool(with_labels), quality_contract=QUALITY_CONTRACT,
+        min_support_points=int(min_support_points),
         normal_spec=NORMAL_SPEC, sampler_spec=SAMPLER_SPEC, selection_policy='test_selected_if_used_for_best')
+    manifest.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
+    return manifest, summary
+
+
+def merge_source_manifests(manifest_paths, output, *, split, allow_partial=False):
+    """Merge independently built scene/frame shards without reopening NPZ files.
+
+    Shards own complete frames. Their explicit empty-frame lists are retained,
+    overlap is rejected, and relative cache paths are relocated to the new
+    manifest. A formal result requires every scene and view of the split.
+    """
+    if split not in ('train', 'test'):
+        raise ValueError('merge requires one explicit train or test split')
+    paths = [Path(p) for p in manifest_paths]
+    if not paths or len({str(p.resolve()) for p in paths}) != len(paths):
+        raise ValueError('provide nonempty distinct shard manifests')
+    output = Path(output)
+    rows, declared_frames, empty_frames, seen_ids = [], set(), set(), set()
+    shared, teacher_contract = None, None
+    for path in paths:
+        summary = json.loads(path.with_suffix('.summary.json').read_text())
+        fields = ('camera', 'split', 'train_queries', 'test_queries', 'labels_computed',
+                  'quality_contract', 'normal_spec', 'sampler_spec')
+        contract = {key: summary.get(key) for key in fields}
+        contract['min_support_points'] = summary.get('min_support_points', 100)
+        if contract['split'] != split:
+            raise ValueError('shard summary crosses requested split')
+        if shared is None:
+            shared = contract
+        elif shared != contract:
+            raise ValueError('shards have different cache/query/physics policies')
+        scenes = list(summary['scene_ids'])
+        frames = list(summary['frame_ids'])
+        if (len(set(scenes)) != len(scenes) or len(set(frames)) != len(frames)
+                or not set(scenes) <= set(source_scene_ids(split))
+                or not set(frames) <= set(range(256))):
+            raise ValueError('invalid shard scene/frame declaration')
+        pairs = summary.get('frame_pairs')
+        claimed = ({(int(s), int(f)) for s in scenes for f in frames} if pairs is None
+                   else {tuple(pair) for pair in pairs})
+        if pairs is not None and (len(pairs) != len(claimed) or
+                not claimed <= {(s, f) for s in scenes for f in frames}):
+            raise ValueError('invalid explicit shard frame pairs')
+        if len(claimed) != summary['frame_count'] or not claimed:
+            raise ValueError('shard frame count does not match its declaration')
+        if declared_frames & claimed:
+            raise ValueError('overlapping shard frames are not allowed')
+        dataset = InstanceDataset(path, require_labels=bool(summary['labels_computed']))
+        observed = set()
+        for raw in dataset.records:
+            row = copy.deepcopy(raw)
+            frame = (row['scene_id'], row['frame_id'])
+            if row['split'] != split or row['camera'] != shared['camera'] or frame not in claimed:
+                raise ValueError('shard record crosses declared split/camera/frame')
+            if row['sample_id'] in seen_ids:
+                raise ValueError('duplicate instance ID across shards')
+            seen_ids.add(row['sample_id']); observed.add(frame)
+            if row.get('label_identity') is not None:
+                row['label_identity'] = _label_identity(row['label_identity'])
+                current = _teacher_identity(row['label_identity'])
+                if teacher_contract is not None:
+                    _compatible_teacher(teacher_contract, current)
+                # Keep known physics available for checking all later shards.
+                if teacher_contract is None or teacher_contract['physics'] is None:
+                    teacher_contract = current
+            for field in ('observation_npz', 'query_cache', 'label_cache'):
+                if row.get(field) is not None:
+                    cache = _path(path.parent, row[field]).resolve()
+                    if not cache.is_file():
+                        raise ValueError(f'shard cache is missing: {cache}')
+                    row[field] = os.path.relpath(cache, output.resolve())
+            row['manifest_version'] = MANIFEST_VERSION
+            rows.append(row)
+        empty_list = [tuple(v) for v in summary.get('empty_gt_frames', [])]
+        empty = set(empty_list)
+        if len(empty) != len(empty_list) or not empty <= claimed or empty & observed:
+            raise ValueError('invalid or contradictory empty-frame declaration')
+        if observed | empty != claimed or len(dataset.records) != summary['visible_instance_count']:
+            raise ValueError('shard has missing frames or an incorrect visible-instance count')
+        declared_frames |= claimed; empty_frames |= empty
+    expected = {(s, f) for s in source_scene_ids(split) for f in range(256)}
+    complete = declared_frames == expected
+    if not complete and not allow_partial:
+        raise ValueError(f'merged {split} coverage is incomplete: {len(expected-declared_frames)} missing frames')
+    rows.sort(key=lambda row: (row['scene_id'], row['frame_id'], row['instance_row']))
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / f'manifest_{split}.jsonl'
+    if manifest.resolve() in {p.resolve() for p in paths}:
+        raise ValueError('merged output cannot replace an input shard manifest')
+    temporary = manifest.with_suffix('.jsonl.tmp')
+    temporary.write_text(''.join(json.dumps(row, sort_keys=True, allow_nan=False) + '\n' for row in rows))
+    os.replace(temporary, manifest)
+    status_counts = {}
+    for row in rows:
+        status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
+    summary = dict(shared, manifest_version=MANIFEST_VERSION, manifest=manifest.name,
+        scene_ids=sorted({s for s, _ in declared_frames}), frame_ids=sorted({f for _, f in declared_frames}),
+        # Explicit pairs prevent a nonrectangular partial merge from claiming
+        # the Cartesian product of its scene and frame lists.
+        frame_pairs=[list(pair) for pair in sorted(declared_frames)],
+        frame_count=len(declared_frames), visible_instance_count=len(rows),
+        complete_requested_split=complete, empty_gt_frames=[list(pair) for pair in sorted(empty_frames)],
+        status_counts=status_counts, source_manifests=[str(p.resolve()) for p in paths],
+        selection_policy='test_selected_if_used_for_best')
     manifest.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
     return manifest, summary
 
@@ -403,16 +562,17 @@ class InstanceAttemptDataset:
         if split not in ('train', 'val', 'test'):
             raise ValueError('target split must be train/val/test')
         self.manifest, self.root = Path(manifest_path), Path(manifest_path).parent
-        self.manifest_digest = file_sha256(self.manifest)
-        groups, ids, observations = {}, set(), OrderedDict()
+        groups, ids, observations, observation_owners = {}, set(), OrderedDict(), {}
         definitions = set()
         for line in self.manifest.read_text().splitlines():
             if not line.strip():
                 continue
-            row = json.loads(line)
+            row = without_legacy_checksums(json.loads(line))
             if row.get('schema_version') != 'suction20.target.v1' or row.get('label_kind') != 'attempt_success':
                 raise ValueError('target records must use suction20.target.v1 / attempt_success')
             sample_id, group = row['sample_id'], row['group_id']
+            if row.get('split') not in ('train', 'val', 'test'):
+                raise ValueError('target record split must be train/val/test')
             if sample_id in ids:
                 raise ValueError('duplicate attempt ID')
             ids.add(sample_id)
@@ -422,16 +582,31 @@ class InstanceAttemptDataset:
             obs, attempt = row['observation'], row['attempt']
             if obs.get('format') != 'rgbd' or not obs.get('rgb_path'):
                 raise ValueError('instance routes require organized RGB-D including rgb_path; pointcloud-only target needs original assets')
+            # Shared captures must keep one owner across *all* target instances.
+            # Paths and explicit capture IDs establish recorded provenance only;
+            # no file is opened here and different paths are not content-deduped.
+            for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
+                obs[field] = str(_path(self.root, obs[field]).resolve())
+            owner = (row['split'], group)
+            provenance_keys = [(field, obs[field]) for field in ('depth_path', 'rgb_path')]
+            for declared in (row.get('capture_uid'), obs.get('capture_uid')):
+                if declared is not None:
+                    if not isinstance(declared, str) or not declared.strip():
+                        raise ValueError('target capture_uid must be a nonempty string when provided')
+                    provenance_keys.append(('capture_uid', declared))
+            for provenance_key in provenance_keys:
+                if observation_owners.setdefault(provenance_key, owner) != owner:
+                    raise ValueError('shared target observation/capture crosses split or group')
             if not isinstance(attempt['instance_id'], int) or attempt['instance_id'] <= 0:
                 raise ValueError('planned attempt requires a positive predicted instance_id')
             if not isinstance(attempt['label_valid'], bool) or (attempt['label_valid'] and attempt['success'] not in (0, 1)):
                 raise ValueError('invalid attempt success/label validity')
             if row.get('success_definition'):
                 definitions.add(row['success_definition'])
-            key = (str(_path(self.root, obs['depth_path']).resolve()), attempt['instance_id'])
+            key = (obs['depth_path'], attempt['instance_id'])
             if key not in observations:
                 observations[key] = dict(observation=obs, rows=[], split=row['split'], group_id=group,
-                    instance_id=attempt['instance_id'], sample_id=json_digest({'observation': obs, 'instance_id': attempt['instance_id']}))
+                    instance_id=attempt['instance_id'], sample_id=f"{group}:{obs['depth_path']}:instance_{attempt['instance_id']}")
             item = observations[key]
             if item['observation'] != obs or item['split'] != row['split'] or item['group_id'] != group:
                 raise ValueError('repeated target observation has conflicting calibration/split/group')
@@ -439,26 +614,14 @@ class InstanceAttemptDataset:
         if len(definitions) != 1:
             raise ValueError('attempt dataset requires exactly one success_definition')
         self.success_definition = next(iter(definitions))
+        self.observation_owners = observation_owners
         self.records = [r for r in observations.values() if r['split'] == split]
-        # The old target manifest does not require hashes for raw RGB-D assets.
-        # Bind actual bytes once here so resume detects same-path replacements.
-        asset_hashes = {}
-        for record in self.records:
-            for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
-                path = _path(self.root, record['observation'][field])
-                key = str(path.resolve())
-                if key not in asset_hashes:
-                    asset_hashes[key] = file_sha256(path)
-        # Paths are tracked for checking, but identity is content-based and
-        # remains portable when a relative-manifest tree is moved intact.
-        assets_identity = json_digest({record['sample_id']: {
-            field: asset_hashes[str(_path(self.root, record['observation'][field]).resolve())]
-            for field in ('rgb_path', 'depth_path', 'instance_mask_path')}
-            for record in self.records})
-        self.identity = dict(manifest_sha256=self.manifest_digest, split=split, normal_spec=NORMAL_SPEC,
+        self.identity = dict(manifest_path=str(self.manifest.resolve()), split=split, normal_spec=NORMAL_SPEC,
             sampler_spec=SAMPLER_SPEC, precision_spec=PRECISION_SPEC, success_definition=self.success_definition,
-            observation_assets_sha256=assets_identity, pose_source='planned_pipeline_contact')
-        self._asset_hashes = asset_hashes
+            observation_ids=[record['sample_id'] for record in self.records],
+            observation_provenance=[dict(kind=key[0], value=key[1], split=owner[0], group_id=owner[1])
+                for key, owner in sorted(observation_owners.items())],
+            pose_source='planned_pipeline_contact')
         self.cache_size, self._cache = int(cache_size), OrderedDict()
 
     def __len__(self):
@@ -470,10 +633,6 @@ class InstanceAttemptDataset:
             return copy.deepcopy(self._cache[index])
         record = copy.deepcopy(self.records[index])
         source = record['observation']
-        for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
-            path = _path(self.root, source[field])
-            if file_sha256(path) != self._asset_hashes[str(path.resolve())]:
-                raise ValueError('target observation changed after dataset identity was frozen')
         with Image.open(_path(self.root, source['rgb_path'])) as im:
             rgb = np.asarray(im.convert('RGB'), np.uint8)
         with Image.open(_path(self.root, source['depth_path'])) as im:
@@ -485,8 +644,10 @@ class InstanceAttemptDataset:
             raise ValueError('target depth_scale_m must be positive metres per stored unit')
         obs = prepare_instance(rgb, depth * scale, instance_mask == record['instance_id'],
             source['intrinsics'], source['g_cam'], depth_min_m=source.get('depth_min_m', .2),
-            depth_max_m=source.get('depth_max_m', 1.2))
+            depth_max_m=source.get('depth_max_m', 1.2),
+            min_support=source.get('min_support_points', 100))
         obs.update(sample_uid=record['sample_id'], instance_uid=record['sample_id'])
+        obs['observation_identity']['instance_uid'] = record['sample_id']
         attempt_rows = [r['attempt'] for r in record['rows']]
         points = np.asarray([r['point_cam_m'] for r in attempt_rows], np.float64)
         normals = np.asarray([r['normal_out_cam'] for r in attempt_rows], np.float64)
@@ -503,7 +664,7 @@ class InstanceAttemptDataset:
             if len(obs['support_points']):
                 distance = np.linalg.norm(obs['support_points'] - points[i], axis=1)
                 support_distance[i] = distance.min()
-                support_valid[i] = support_distance[i] <= .005
+                support_valid[i] = support_distance[i] <= .005 + BOUNDARY_ROUNDOFF_M
         attempts = dict(point_cam_m=points, normal_out_cam=normalized,
             success=np.asarray([r['success'] for r in attempt_rows], np.float32),
             label_valid=np.asarray([r['label_valid'] for r in attempt_rows], bool),

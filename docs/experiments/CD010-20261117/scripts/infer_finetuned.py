@@ -6,7 +6,6 @@ the trained task-success score selects and ranks NMS poses.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,11 +14,11 @@ import sys
 import time
 import traceback
 
-from infer_target import (asset, atomic_json, case_key, model_observation,
-                          read_test_rows, render_overlay, sha256, validate_observation)
+from infer_target import (asset, atomic_json, case_key, clean_metadata, existing_cases,
+                          file_record, model_observation, read_test_rows, render_overlay,
+                          require_compatible_identity, sample_seed, validate_observation)
 
 SCHEMA = "suction20.target-finetuned.case.v1"
-MANIFEST_SHA256 = "20f029cf8cc3f86d13c4bec80d56ca6c732cddd64c0d7a8f3558e63e5f65a871"
 RANKING = dict(score_field="task_success_score", proposal_score_field="q0",
                score_semantics="learned_completed_pick_and_transfer_score_not_calibrated_probability",
                physical_quality_field="q", multiply_by_q=False)
@@ -109,51 +108,50 @@ def run(args):
 
     publish()
     try:
-        if sha256(args.manifest) != MANIFEST_SHA256:
-            raise ValueError("Expected the frozen target401 test manifest")
-        if sha256(args.checkpoint) != args.checkpoint_sha256:
-            raise ValueError("Finetuned checkpoint SHA256 mismatch")
         rows = read_test_rows(args.manifest)
         if len(rows) != 401:
             raise ValueError("Expected exactly401 held-out observations")
         for row in rows:
             validate_observation(row, args.manifest.parent)
-        identity = dict(schema_version=SCHEMA, checkpoint_sha256=args.checkpoint_sha256,
-                        checkpoint_step=1000, checkpoint_stage="target_finetune", target_mode="attempt_success",
-                        manifest_sha256=MANIFEST_SHA256, config_sha256=sha256(args.config),
-                        worker_sha256=sha256(__file__), baseline_helper_sha256=sha256(Path(__file__).with_name("infer_target.py")),
-                        ranking=RANKING)
-        identity["repo_source_sha256"] = {name: sha256(args.repo / name) for name in (
-            "suction20/target_dataset.py", "suction20/validation.py", "suction20/training.py",
-            "suction20/runner.py", "models/suction20net.py")}
-        previous = output / "identity.json"
-        if previous.exists() and json.loads(previous.read_text()) != identity:
-            raise ValueError("Output identity differs; select a new directory")
-        atomic_json(previous, identity)
         publish(status="loading_model")
         config, source, model, device = initialize(args)
+        identity = dict(schema_version=SCHEMA, identity_spec="declared_paths_config_v1",
+                        checkpoint=file_record(args.checkpoint),
+                        checkpoint_step=1000, checkpoint_stage="target_finetune", target_mode="attempt_success",
+                        manifest=file_record(args.manifest), config=file_record(args.config),
+                        config_definition=clean_metadata(config), source_label_config=clean_metadata(source),
+                        worker=file_record(__file__), baseline_helper=file_record(Path(__file__).with_name("infer_target.py")),
+                        ranking=RANKING)
+        previous = output / "identity.json"
+        if previous.exists():
+            require_compatible_identity(json.loads(previous.read_text()), identity)
+        atomic_json(previous, identity)
         import torch
         from suction20.target_dataset import load_target_observation
         from suction20.validation import nms_prediction
         atomic_json(output / "inference_config.json", config)
         summaries = []
+        archived = existing_cases(output)
         publish(status="running")
         for row in rows:
             started = time.perf_counter()
-            key = case_key(row)
-            case_path = output / "cases" / f"{key}.json"
+            case_path = archived.get(row["sample_id"], output / "cases" / f"{case_key(row)}.json")
+            key = case_path.stem
             npz_path = case_path.with_suffix(".npz")
             publish(current_sample=row["sample_id"])
             try:
-                hashes = {name: sha256(asset(args.manifest.parent, row["observation"][name]))
+                assets = {name: file_record(asset(args.manifest.parent, row["observation"][name]))
                           for name in ("depth_path", "instance_mask_path", "path", "rgb_path")
                           if row["observation"].get(name)}
                 if case_path.exists():
                     case = json.loads(case_path.read_text())
-                    if case["identity"] != identity or case["asset_sha256"] != hashes or not npz_path.is_file():
-                        raise ValueError("Existing case assets/identity differ or NPZ missing")
+                    require_compatible_identity(case["identity"], identity)
+                    if (case["sample_id"] != row["sample_id"]
+                            or clean_metadata(case["observation"]) != row["observation"]
+                            or not npz_path.is_file()):
+                        raise ValueError("Existing sample/observation declaration differs or NPZ is missing")
                 else:
-                    seed = int.from_bytes(hashlib.sha256(("42:" + row["sample_id"]).encode()).digest()[:4], "big")
+                    seed = sample_seed(row["sample_id"])
                     random.seed(seed)
                     np.random.seed(seed)
                     torch.manual_seed(seed)
@@ -189,7 +187,8 @@ def run(args):
                     rendering = render_task_overlay(row, args.manifest.parent, sample["meta"], prediction,
                                                      scene, output / "images" / f"{key}.jpg")
                     case = dict(schema_version=SCHEMA, sample_id=row["sample_id"], split="test", identity=identity,
-                        asset_sha256=hashes, seed=seed, candidates=candidates, rendering=rendering, ranking=RANKING,
+                        assets=assets, seed=seed, seed_spec="sample_utf8_seedsequence_v1",
+                        candidates=candidates, rendering=rendering, ranking=RANKING,
                         source_index_kind=sample["meta"]["source_index_kind"], observation=row["observation"],
                         metadata={k:v for k,v in row.items() if k != "observation"}, notice=NOTICE,
                         timing=dict(load_seconds=load_s, inference_seconds=inference_s,
@@ -229,7 +228,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("manifest", "repo", "checkpoint", "config", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
-    parser.add_argument("--checkpoint-sha256", required=True)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()

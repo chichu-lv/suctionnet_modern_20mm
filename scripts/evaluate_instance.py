@@ -17,22 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from suction20.instance_data import InstanceAttemptDataset, InstanceDataset
 from suction20.instance_inference import load_instance_checkpoint
 from suction20.instance_training import (atomic_json, check_source_splits,
-    evaluate_instance_attempts, evaluate_instance_source)
+    evaluate_instance_attempts, evaluate_instance_source, check_data_contract)
 
 
 def _check_source_contract(dataset, metadata):
     checkpoint_data = metadata['checkpoint_identity'].get('source', {}).get('data_identity')
     if not isinstance(checkpoint_data, dict):
         raise ValueError('Checkpoint is missing the source preprocessing/teacher identity')
-    for key in ('normal_spec', 'sampler_spec', 'precision_spec', 'quality_contract', 'teacher_identity'):
-        if key not in checkpoint_data or checkpoint_data[key] != dataset.identity[key]:
-            raise ValueError(f'Evaluation source contract differs from checkpoint: {key}')
-    old_assets, new_assets = checkpoint_data.get('object_assets'), dataset.identity['object_assets']
-    if not isinstance(old_assets, dict):
-        raise ValueError('Checkpoint is missing the frozen source object asset identity')
-    for object_id in old_assets.keys() & new_assets.keys():
-        if old_assets[object_id] != new_assets[object_id]:
-            raise ValueError(f'Evaluation source object assets differ from checkpoint: {object_id}')
+    check_data_contract(checkpoint_data, dataset.identity)
 
 
 def main(argv=None):

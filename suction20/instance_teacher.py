@@ -6,7 +6,6 @@ object scan and candidate-position centroid remain the authoritative physics.
 from __future__ import annotations
 
 from collections import OrderedDict
-import hashlib
 import json
 from pathlib import Path
 
@@ -16,23 +15,13 @@ from scipy.spatial import cKDTree
 from .eval_r20 import seal_at_pose
 from .full_data import (collision_mask_for_instance, load_seal, scene_frame0,
                         to_unit, transform_points, voxel_filter, wrench_scores_dual)
-from .instance_geometry import array_digest
+from .metadata import without_legacy_checksums
 
 LABEL_SCHEMA = 'suction20.instance_inst20.v2'
 QUALITY_CONTRACT = 'gt_INST20_pose_v2'
 
 
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def json_digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                     allow_nan=False).encode()).hexdigest()
+TEACHER_SPEC = 'frozen_r20_target_self_v1'
 
 
 def empty_labels(points, normals, query_ids=None):
@@ -97,7 +86,7 @@ class InstanceTeacher:
         self.dataset_root, self.label_root = Path(dataset_root), Path(label_root)
         if frozen_cfg is None:
             frozen_cfg = json.loads((self.label_root / 'config_frozen.json').read_text())
-        self.config = dict(frozen_cfg)
+        self.config = without_legacy_checksums(dict(frozen_cfg))
         required = ('camera', 'radius_m', 'seal_norm_min', 'seal_norm_max', 'wrench_k',
                     'default_baseline_mass_kg', 'gravity_m_s2', 'obstacle_voxel_m',
                     'self_height_threshold_m', 'envelope_segments_m', 'batch_candidates')
@@ -120,11 +109,12 @@ class InstanceTeacher:
         self.camera, self.scene_cache_size = camera, int(scene_cache_size)
         self.chunk_points = int(chunk_points)
         self._objects, self._scenes = {}, OrderedDict()
+        # Small explicit physics fields are compared directly. File contents
+        # and source files are not scanned to establish provenance.
         self.identity = {'quality_contract': QUALITY_CONTRACT, 'schema_version': LABEL_SCHEMA,
-                         'physics_sha256': json_digest(cfg),
-                         'teacher_source_sha256': file_sha256(__file__),
-                         'seal_source_sha256': file_sha256(Path(__file__).with_name('eval_r20.py')),
-                         'producer_source_sha256': file_sha256(Path(__file__).with_name('full_data.py'))}
+                         'teacher_spec': TEACHER_SPEC,
+                         'physics': json.loads(json.dumps(cfg, allow_nan=False))}
+
 
     def _scene(self, scene_id):
         scene_id = int(scene_id)
@@ -138,8 +128,7 @@ class InstanceTeacher:
                 raise ValueError('nonfinite camera transforms')
             recs = scene_frame0(self.dataset_root, scene_id, self.camera, table=table, camera_poses=poses)
             self._scenes[scene_id] = {'records': recs, 'world_camera': table @ poses,
-                                     'targets': {}, 'transforms_sha256': array_digest(table, poses,
-                                         np.asarray([r['T_world_obj'] for r in recs]))}
+                                     'targets': {}}
             if len(self._scenes) > self.scene_cache_size:
                 self._scenes.popitem(last=False)
         self._scenes.move_to_end(scene_id)
@@ -158,7 +147,7 @@ class InstanceTeacher:
                 raise ValueError('original Seal candidate positions cannot be empty/nonfinite')
             self._objects[obj_id] = {'dense': dense, 'candidate_points': seal['points'],
                 'obstacle': voxel_filter(dense, self.config['obstacle_voxel_m']),
-                'dense_sha256': file_sha256(dense_path), 'seal_candidates_sha256': file_sha256(seal_path)}
+                'dense_path': str(dense_path.resolve()), 'seal_candidates_path': str(seal_path.resolve())}
         return self._objects[obj_id]
 
     def evaluate(self, scene_id, frame_id, instance_row, points, normals, query_ids=None):
@@ -200,9 +189,9 @@ class InstanceTeacher:
             result['q_sw'][ids] = result['seal'][ids] * result['wrench'][ids]
             result['q_inst'][ids] = result['q_sw'][ids] * ~result['collision_self'][ids]
             result['label_valid'][ids] = True
-        result['identity'] = dict(self.identity, dense_sha256=obj['dense_sha256'],
-            seal_candidates_sha256=obj['seal_candidates_sha256'],
-            transforms_sha256=scene['transforms_sha256'], query_pose_sha256=array_digest(p, n),
+        result['identity'] = dict(self.identity,
+            dense_path=obj['dense_path'], seal_candidates_path=obj['seal_candidates_path'],
+            T_world_cam=T_world_cam.tolist(), T_world_obj=T_world_obj.tolist(),
             scene_id=int(scene_id), frame_id=int(frame_id), instance_row=int(instance_row), obj_id=rec['obj_id'])
         validate_labels(result)
         return result

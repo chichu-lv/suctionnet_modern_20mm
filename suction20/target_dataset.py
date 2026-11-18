@@ -6,7 +6,6 @@ identity. All relative file paths are resolved against the manifest directory.
 """
 from collections import OrderedDict
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,7 +17,7 @@ from scipy.spatial import cKDTree
 from .batching import collate_public
 from .datasets import derive_masks
 from .observation import AugmentConfig, apply_rigid, depth_geometry, rigid_transform, unit_vectors
-from .training import content_digest
+from .training import configuration_identity
 
 
 _ATTEMPT_DTYPES = {'point_cam_m': np.float32, 'normal_out_cam': np.float32,
@@ -156,7 +155,7 @@ def load_target_observation(observation, manifest_dir, normal_estimation=None, s
     """
     inputs, provenance = _load_observation_geometry(observation, manifest_dir,
                                                    _normal_settings(normal_estimation), source_label_config)
-    uid = content_digest(observation)
+    uid = json.dumps(configuration_identity(observation), sort_keys=True, separators=(',', ':'))
     meta = dict(sample_uid=uid, observation_id=uid, label_kind='unlabeled',
                 source_indices=inputs['source_indices'].copy(),
                 T_aug_from_cam=np.eye(4, dtype=np.float32), **provenance)
@@ -180,9 +179,9 @@ class TargetSuction20Dataset:
         self.manifest = Path(manifest)
         self.root = self.manifest.parent
         raw = self.manifest.read_bytes()
-        self.manifest_digest = hashlib.sha256(raw).hexdigest()
-        self.source_label_config = copy.deepcopy(source_label_config)
-        self.source_label_config_sha256 = content_digest(self.source_label_config)
+        self.manifest_definition = [configuration_identity(json.loads(line)) for line in raw.decode('utf-8').splitlines() if line.strip()]
+        self.source_label_config = configuration_identity(source_label_config)
+        self.source_label_definition = configuration_identity(self.source_label_config)
         if not np.isclose(self.source_label_config['radius_m'], .02):
             raise ValueError('Target adapter requires the source R20 definition')
         self.mode, self.split = mode, split
@@ -229,7 +228,7 @@ class TargetSuction20Dataset:
             if path_key is None:
                 raise ValueError(f'Unknown observation format: {fmt}')
             physical_key = (fmt, str(self._path(obs[path_key]).resolve()))
-            observation_id = content_digest({'format': fmt, 'path': obs[path_key]})
+            observation_id = json.dumps({'format': fmt, 'path': obs[path_key]}, sort_keys=True)
             if physical_key not in observations:
                 observations[physical_key] = dict(observation_id=observation_id, observation=obs,
                                                   group_id=group, split=row_split, rows=[])
@@ -268,7 +267,7 @@ class TargetSuction20Dataset:
         path = self._path(path)
         if path not in self._checked_definitions:
             definition = json.loads(path.read_text())
-            if content_digest(definition) != self.source_label_config_sha256:
+            if configuration_identity(definition) != self.source_label_definition:
                 raise ValueError(f'Target source physical definition differs from checkpoint: {path}')
             self._checked_definitions.add(path)
 
@@ -452,7 +451,7 @@ class TargetGroupSchedule:
         self.members = [list(dataset.group_to_indices[group]) for group in self.groups]
         if not self.groups or any(not member for member in self.members):
             raise ValueError('Target training schedule requires nonempty groups')
-        self.identity = dict(manifest_digest=dataset.manifest_digest, split=dataset.split, mode=dataset.mode,
+        self.identity = dict(manifest_definition=dataset.manifest_definition, split=dataset.split, mode=dataset.mode,
                              groups={group: [dataset.sample_ids[i] for i in dataset.group_to_indices[group]]
                                      for group in self.groups})
         self.epoch_size = len(dataset)
@@ -478,6 +477,9 @@ class TargetGroupSchedule:
                     epoch=self.epoch, position=self.position, rng_state=copy.deepcopy(self.rng.bit_generator.state))
 
     def load_state_dict(self, state):
+        if 'manifest_definition' not in state.get('identity', {}):
+            raise ValueError('Legacy target sampler uses opaque observation IDs; exact resume is unavailable. '
+                             'Load the weights as initialization for a fresh finetuning run.')
         if state['identity'] != self.identity or state['seed'] != self.seed:
             raise ValueError('Target resume manifest/split/groups/seed differs')
         if not 0 <= state['position'] <= self.epoch_size or state['epoch'] < 0:

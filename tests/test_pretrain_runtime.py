@@ -40,7 +40,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(entry, 'make_model', lambda *a: TinyModel())
     monkeypatch.setattr(entry, 'collate_public', lambda samples, voxel: samples[0])
     monkeypatch.setattr(entry, 'source_losses', lambda prediction, *a, **k: {'total': prediction['value'].square().mean()})
-    monkeypatch.setattr(entry, 'worktree_digest', lambda: 'synthetic-fixed-source')
+    monkeypatch.setattr(entry, 'worktree_state', lambda: 'synthetic-fixed-source')
     calls = []
 
     def evaluate(*args, progress=None, **kwargs):
@@ -99,7 +99,7 @@ def test_pause_100_resume_keeps_budget_and_has_no_extra_validation(tmp_path, har
     prefix = runtime.read_json(resumed / 'checkpoint-manifest.json')['nodes']['100']
     assert entry.train(config, resumed, torch.device('cpu'), resume=resumed / 'last.pt', pause_at_step=100) == 101
     assert runtime.read_json(resumed / 'checkpoint-manifest.json')['nodes']['100'] == prefix
-    assert runtime.file_digest(resumed / prefix['path']) == prefix['sha256']
+    assert runtime.file_metadata(resumed / prefix['path']) == {'size_bytes': prefix['size_bytes']}
     same_training(state(resumed), state(full))
     assert len(calls) == 1
     assert [row['global_step'] for row in canonical_rows(resumed)] == list(range(1, 102))
@@ -196,7 +196,7 @@ def test_identity_drift_and_cross_run_resume_are_rejected(tmp_path, monkeypatch,
     changed['experiment'] = 'E2'
     with pytest.raises(ValueError, match='semantics|experiment'):
         entry.train(changed, run, torch.device('cpu'), resume=run / 'last.pt')
-    monkeypatch.setattr(entry, 'worktree_digest', lambda: 'changed-source')
+    monkeypatch.setattr(entry, 'worktree_state', lambda: 'changed-source')
     with pytest.raises(ValueError, match='identity'):
         entry.train(config, run, torch.device('cpu'), resume=run / 'last.pt')
     with pytest.raises(ValueError, match='this run'):
@@ -215,7 +215,7 @@ def test_waiting_gate_honors_pause_and_rejects_stale_grant(tmp_path):
             (tmp_path / 'pause.request').touch()
     try:
         with patch.object(runtime, 'atomic_json', publish):
-            assert progress.validation_grant({'sha256': 'digest'}, 2) is None
+            assert progress.validation_grant({'generation': 'checkpoint-generation'}, 2) is None
         assert progress.state['phase'] == 'waiting_validation'
     finally:
         progress.close()
@@ -392,7 +392,7 @@ def test_matching_validation_grant_is_required(tmp_path):
             original(tmp_path / 'validation.grant.json', dict(value, token='assignment-token'))
     try:
         with patch.object(runtime, 'atomic_json', coordinator):
-            grant = progress.validation_grant({'sha256': 'digest'}, 2)
+            grant = progress.validation_grant({'generation': 'checkpoint-generation'}, 2)
         assert grant['token'] == 'assignment-token'
         assert grant['attempt_id'] == 'attempt' and grant['step'] == 2
     finally:
@@ -563,3 +563,44 @@ def test_explicit_bf16_normal_pause_resume_without_scaling(tmp_path, harness):
     assert [row["global_step"] for row in rows] == [1, 2, 3]
     assert all(row["updated"] and row["precision"]["dense"] == "bf16" for row in rows)
     assert all(row["amp_scale"] == 1 for row in rows)
+
+
+def test_file_metadata_requires_only_stat_and_checks_committed_length(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = tmp_path / 'payload.bin'
+    path.write_bytes(b'unchanged length')
+    size = path.stat().st_size
+    def refuse_open(*args, **kwargs):
+        raise AssertionError('metadata must not open or read file contents')
+    monkeypatch.setattr(Path, 'open', refuse_open)
+    assert runtime.file_metadata(path) == {'size_bytes': size}
+    assert runtime.file_metadata(path, size - 1) == {'size_bytes': size - 1}
+    with pytest.raises(ValueError, match='Truncated'):
+        runtime.file_metadata(path, size + 1)
+
+
+def test_legacy_identity_resume_ignores_retired_fields_and_republishes_structure(tmp_path, harness):
+    config, _, _ = harness
+    full, resumed = tmp_path / 'full', tmp_path / 'legacy'
+    entry.train(config, full, torch.device('cpu'))
+    entry.train(config, resumed, torch.device('cpu'), pause_at_step=1)
+    old = state(resumed)
+    identity = old['runtime_state']['identity']
+    for key in ('source_label_definition', 'semantic_config', 'worktree_snapshot'):
+        identity.pop(key)
+    identity['semantic_config_sha256'] = 'retired-value-ignored'
+    old['source_label_config_sha256'] = 'retired-value-ignored'
+    old['training_config']['runtime']['raw_config_sha256'] = 'retired-value-ignored'
+    manifest = runtime.read_json(resumed / 'checkpoint-manifest.json')
+    current_path = manifest['current']['path']
+    torch.save(old, resumed / current_path)
+    for candidate in [manifest.get(key) for key in ('current', 'predecessor', 'best')] + list(manifest.get('nodes', {}).values()):
+        if candidate and candidate['path'] == current_path:
+            candidate['size_bytes'] = (resumed / current_path).stat().st_size
+    runtime.atomic_json(resumed / 'checkpoint-manifest.json', manifest)
+    assert entry.train(config, resumed, torch.device('cpu'), resume=resumed / 'last.pt') == 4
+    restored = state(resumed)
+    same_training(restored, state(full))
+    assert 'source_label_config_sha256' not in restored
+    assert 'semantic_config_sha256' not in restored['runtime_state']['identity']
+    assert restored['runtime_state']['identity']['source_label_definition'] == {'radius': .02}

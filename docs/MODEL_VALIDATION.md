@@ -1,5 +1,15 @@
 # 模型验证与当前训练状态
 
+## 2026-11-18 CPU 热路径、状态恢复与无内容校验和修复
+
+按项目要求，所有现行执行代码移除 SHA-256 计算与验证，旧元数据只读兼容且不重新输出；永久约束及回归门禁见 [NO_CONTENT_CHECKSUMS.md](NO_CONTENT_CHECKSUMS.md)。共同数据保留真实 schema、p/n、标签公式、物理定义、配置和 split/group/capture 检查。旧 pretrain 只核对仍可得的实际配置/运行字段；旧 target sampler 若仅有不可还原的观察 ID，明确不支持精确续训，可使用权重初始化新运行。
+
+A 的批量邻居关联在 15,000 支撑点、2,048 主干点下由 **187.740 ms 降至 17.473 ms（10.745×）**；最近锚点的256-query批次由1.815 ms降至0.163 ms。结果与冻结旧标量实现逐字节一致。报告含每次采样、1次预热/7次测量及依赖版本，见 [CPU组件基准](performance/INSTANCE_NEIGHBORS_CPU.json)。范围排除索引构建、FPS、网络、I/O和GPU，不能转述为整条推理时延。
+
+评价上下文恢复每个子模块原有 training 标志，正常和异常退出都保持微调冻结BN；5mm支撑判定统一使用1e-12m舍入容差，A最小支撑阈值读模型配置，B当前回退100。source保持100训练场景和完整90测试场景选best，默认1750步一次共5次，checkpoint保存间隔875步，140000成功实例预算不变。每次评价保存汇总，明细流式写gzip，仅best更新/当前best重复评价/最终步保留，临时文件正常或异常清理。
+
+最终本地A/B联合源码回归 **620 passed / 1 skipped（22.39s）**，命令为 `python -m pytest -q --ignore=tests/test_prefetch.py`。唯一skip需要真实 `R20_RELEASE_ROOT`。本地完整运行在多进程预取处超时，因此只将该文件交由各分支GitHub完整CI，未修改其测试或新增跳过。另已通过135项训练/推理/评价与禁用规则测试、23项共同数据/B CLI集成、29项基础几何参考检查；这些集合有重叠，不相加。B集成覆盖builder、暂停/恢复、微调、raw RGB-D推理与评价；两场景 `--workers 2` 构建及10项CD010旧脚本smoke通过。没有在本环境执行真实SpConv/GPU、全量训练或机器人成功率验证。
+
 ## 2026-11-18 A/B代码实现与当前执行政策
 
 本轮已实现共同数据/teacher、A和B网络、预训练/两阶段目标微调、严格checkpoint恢复、原始RGB-D/无标签推理与native评价。实际运行入口见[IMPLEMENTATION.md](instance_routes/IMPLEMENTATION.md)。source直接训练scene0000–0099，完整scene0100–0189 test选择best并保存test_selected身份；last另保留。目标1676/399/87划分不变。公开仅半径评价deferred，不是开训门禁。下方较早的90/10→refit方案是修订历史，不覆盖当前规则。
@@ -8,7 +18,7 @@
 
 B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照；每步8个train查询、test完整256候选、RGB增强开启。模型126个张量、优化器、采样器、Python/NumPy/Torch及增强RNG逐项完全相同；7条build后训练/推理/评价CLI成功。无标签缓存与原始RGB-D的Top5输出逐字段相同，SE(3)合法。best停在step1，last在step2，报告清楚区分test_selected与budget_endpoint_or_progress。小汇总在[B分支验证记录](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/CPU_INTEGRATION.json)；脚本级复现也由 `tests/test_instance_route_b_integration.py`覆盖。
 
-本地联合快照回归为 **481 passed / 21 skipped / 1 deselected**（38.99s）；命令排除 `tests/test_prefetch.py`，并跳过 `test_prefetched_trainer_preserves_ordinary_sequence_and_resume`，这些多进程预取路径交由实际GitHub checkout中的完整CI验证。真实release/GPU等条件项仍按测试自身条件skip。原地初次快照缺Git元数据造成的旧测试失败已通过建立本地测试快照解决，不修改旧训练器。本地新代码测试与远端分支CI状态分别登记，不把旧129项NumPy参考或历史E5测试计数冒充新模型运行。完整真实source/target训练、A GPU稀疏骨干、部署时延与TensorRT导出均未执行。运行checkpoint记录完整源码/数据/teacher身份，FT额外保存初始化源checkpoint SHA及其test选择来源。
+本地联合快照回归为 **481 passed / 21 skipped / 1 deselected**（38.99s）；命令排除 `tests/test_prefetch.py`，并跳过 `test_prefetched_trainer_preserves_ordinary_sequence_and_resume`，这些多进程预取路径交由实际GitHub checkout中的完整CI验证。真实release/GPU等条件项仍按测试自身条件skip。原地初次快照缺Git元数据造成的旧测试失败已通过建立本地测试快照解决，不修改旧训练器。本地新代码测试与远端分支CI状态分别登记，不把旧129项NumPy参考或历史E5测试计数冒充新模型运行。完整真实source/target训练、A GPU稀疏骨干、部署时延与TensorRT导出均未执行。该轮旧checkpoint记录过摘要身份；当前运行按上方无内容校验和规则保存实际配置/数据/teacher定义，FT保存源checkpoint路径/大小和test选择来源。
 
 ## 较早修订记录
 
@@ -38,7 +48,7 @@ B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照�
 
 [两路线工程规范](instance_routes/README.md)已修订为v3，保留物理v2目标自碰合同与B共享编码结构。新增A中心化高度RMS/前三阶谐波、B实际半径/角槽门控与显式缺测/原始高度摘要；共同法向改为同实例3×3平滑加±3差分，候选加入位反转Morton逐轮格内FPS回填。[v3边界复核](instance_routes/BOUNDARY_REVIEW.md)区分成立风险、已有保护和不能过度推广的结论。Python3.12.14、NumPy2.3.5下基础29项、v2 26项、v3法向/采样26项与接触边界48项检查通过，共129项。细长掩码固定样例1,132个合法像素从46个首轮候选补到256个唯一候选。
 
-[完整检查与源码SHA256](instance_routes/reference/VALIDATION.json)明确为synthetic_only。这不是A/B模型实现、真实数据teacher数值、训练收敛、物理成功率或GPU延迟的验证。现有E5历史记录保持原实验范围。
+[历史合成检查记录](instance_routes/reference/VALIDATION.json)明确为synthetic_only。这不是A/B模型实现、真实数据teacher数值、训练收敛、物理成功率或GPU延迟的验证。现有E5历史记录保持原实验范围。
 
 ## E5完整测试与公开方法对比（2026-11-18）
 

@@ -100,7 +100,7 @@ def test_checkpoint_inference_round_trip_and_config_mismatch(tmp_path):
     with pytest.raises(ValueError, match="seed_count"):
         validation.checkpoint_inference_config(bad, state)
     state["source_label_config"]["radius_m"] = .04
-    with pytest.raises(ValueError, match="digest"):
+    with pytest.raises(ValueError, match="source label definitions"):
         validation.checkpoint_inference_config(config, state)
 
 

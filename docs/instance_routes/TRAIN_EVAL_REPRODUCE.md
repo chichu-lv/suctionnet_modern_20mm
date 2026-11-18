@@ -41,7 +41,7 @@ python docs/instance_routes/reference/revision_contract.py check-labels \
 
 v3采样demo生成固定噪声平面与细长掩码的NPZ、JSON；64/128前缀取自同一256池。v2 demo生成 `[9,72,2]` 投影坐标；半径0可只读取一次，生产实现每query有577个不同采样槽位。它不执行神经网络或读取真实表面。标签示例3行，2行有效、1行masked NaN，其中一个有效点SW=0.72但存在self而Q_inst=0。
 
-已有清单可继续运行 `python docs/instance_routes/reference/geometry_contract.py check-manifest <manifest.jsonl>`。manifest检查仅核对声明的hash/group关系，不读取原始字节，也不证明无相邻帧泄漏。`revision_contract.py check-labels`只校验其参考demo的顶层schema NPZ；生产metadata_json版标签应由 `load_labels` / `InstanceDataset`校验，旧SW检查也不能验证self语义。完整结果与源码hash见[VALIDATION.json](reference/VALIDATION.json)。
+已有清单可继续运行 `python docs/instance_routes/reference/geometry_contract.py check-manifest <manifest.jsonl>`。manifest参考检查核对声明的sample_id/group_id/capture_uid/split关系，不读取文件内容，也不证明无相邻帧泄漏。`revision_contract.py check-labels`只校验其参考demo的顶层schema NPZ；生产metadata_json版标签应由 `load_labels` / `InstanceDataset`校验，旧SW检查也不能验证self语义。当次完整结果见[VALIDATION.json](reference/VALIDATION.json)；其中旧源码校验和仅保留为历史档案，不参与当前加载或验证。
 
 ## 3 生产环境和版本固定
 
@@ -58,7 +58,7 @@ python -m pip install pytest
 
 B已在 `models/instance_route_b.py` 自行实现ResNet18/GN8，使用原生Torch，不需要torchvision，也不自动下载ImageNet权重。A/B首版均从新的架构初始化，RGB输入不通过静默填零/改键“恢复”旧8通道E5模型。
 
-每个真实运行保存 `environment.txt`、完整配置、代码commit、数据与标签manifest hash、随机种子、GPU型号、CUDA/cuDNN/spconv版本、CPU线程数及实际microbatch。正常resume要求这些语义身份一致；不恢复已清理的历史迁移白名单，也不删除旧收据强制载入。[checkpoint政策](../CHECKPOINT_POLICY.md)
+每个真实运行保存 `environment.txt`、完整配置、代码commit（出处记录）、数据/标签清单路径与样本ID、显式normal/sampler/physics/运行合同、随机种子、GPU型号、CUDA/cuDNN/spconv版本、CPU线程数及实际microbatch。数据、标签与checkpoint流程不计算SHA-256或替代内容校验和；旧校验和metadata直接忽略。固定外部骨干原有的Git blob SHA-1源码锁定机制保持不变。正常resume核对可用的配置/模型/运行/采样定义并恢复状态，路径和文件大小不能证明内容没有改变。[checkpoint政策](../CHECKPOINT_POLICY.md)
 
 ## 4 预训练损失与输出含义
 
@@ -95,17 +95,22 @@ $$
 | optimizer | AdamW，betas=(0.9,0.999)，eps=1e-8，weight_decay=0.01 |
 | 学习率 | peak=3e-4，warmup438次成功更新，之后cosine至1e-5 |
 | 首版训练精度 | 网络FP32；新几何正确性基线从原始深度/内参以float64构造XYZ/法向/canonical query/理想环并判边界；冻结teacher保留原算术 |
-| source test选模节点 | 875、1750、…、8750，共10次，每次完整90×256帧可见实例 |
+| source test选模节点 | 1750、3500、5250、7000、8750，共5次，每次完整90×256帧可见实例 |
 | 随机性 | Python/NumPy/Torch/CUDA和数据loader种子均固定并保存RNG |
 | 源域选模 | test上的 `InstTop1_INST20@0.4` 最大；再按selected-Q宏平均最大；仍并列则更早步；保存 `test_selected` 身份 |
 | 数据增强 | 每实例一致RGB jitter；灰度化概率0.2；首版不缩放米制几何 |
-| checkpoint | best.pt和last.pt，记录完整模型/优化器/采样器/RNG及身份 |
+| checkpoint | 每875成功步保存last.pt；best.pt按上述5次完整test结果更新，记录完整模型/优化器/采样器/RNG及定义 |
+| 评价明细 | `evaluation_records=best_and_final`；逐实例流式压缩为jsonl.gz，仅当次更新best或最终步保留 |
 
 RGB jitter固定 brightness/contrast/saturation=0.2、hue=0.05；RGB归一化固定 mean=(0.485,0.456,0.406)、std=(0.229,0.224,0.225)，invalid位置在归一化后再置零。A的raw支持与backbone点、B的全局与原分辨率纹理ROI共享同一个实例级光度变换。颜色增强不是对真实纹理特征有效性的先验保证。
 
 默认FP32先确定可重复的训练协议。后续如选择AMP，需保存实际dtype和新执行配置；只在optimizer成功时增加有效预算，AMP skip产生的已读样本另计 `consumed_instance_draws`，不能隐瞒额外曝光或冒充成功步。microbatch×累积必须为16，但改变microbatch可能影响BatchNorm统计，不自动视作逐位等价。
 
 140000 的预算仅计参与有效源监督且所在 optimizer 更新成功的实例暴露。没有任何有效源 query 的实例可以保留清单身份，但须记为 `has_supervision=false`，不充当有效 batch 的受监督实例，也不计入该预算；读取、过滤及跳过数量另存。累积单元按 16 个有监督实例组织，不能把无监督零损失或重复计数用于凑满成功更新。
+
+A支持点数的训练与评价门槛来自 `model.min_support_points`，默认100；B当前无该构造参数，helper仍使用默认100。`has_supervision` 只表示存在有效teacher标签，不替代可配置支持门槛。builder另保存 `--min-support-points` 和当时 `trainable/status` 作为准备诊断，修改模型阈值时不能继续硬编码100。目标动作5mm中心支持统一使用 `BOUNDARY_ROUNDOFF_M=1e-12 m` 的闭边界。
+
+每次选模仍覆盖完整90×256帧。`evaluation_stepXXXXXX.json` 只保存指标、选择键和 `record_details`；明细写入 `.records.jsonl.gz`，不将10万级记录列表同时驻留内存并缩进写入JSON。`best_and_final` 在遍历时写临时压缩流，评价后对非best且非final节点删除；`all` 保留所有节点，`none` 不写明细。此策略控制长期磁盘占用，不承诺省去完整评价的前向计算或所有临时写入。
 
 旧E5的 `2880×48=138240` 是全场景有效观测，不是138240个单物体。新预算取140000是明确的新工程上限，不承诺为最优样本量。若有M个可训练实例观测，140000/M仅是曝光次数近似，不是shuffle-without-replacement意义的epoch；B也不承诺15–20epoch或数小时收敛。
 
@@ -130,7 +135,7 @@ $$
 | 201–1000 | 上述头；A的decoder/接触模块，B的Fq投影/共享纹理stem/环向编码；两者query融合与对象池化投影 | heads 1e-4，其余1e-5 |
 | 全程 | encoder冻结；BatchNorm running stats与affine冻结 | — |
 
-阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。B v3全局encoder与共享纹理stem采用GroupNorm(groups=8,eps=1e-5)；环向模块按 `[Q,72,16]` 的最后16通道做LayerNorm(16,eps=1e-5)，无效角在卷积前和归一化/激活后按原mask清零。从新架构初始化；没有可静默复用的旧BN权重。GroupNorm/LayerNorm不是BatchNorm，affine参数按所在模块是否解冻处理。参数组名称与成员hash写入checkpoint；旧E5的组名不能不经检查直接套A/B。
+阶段切换保留已训练head的Adam moments；只新增或解冻既定参数组，不重建整个optimizer后丢失历史。B v3全局encoder与共享纹理stem采用GroupNorm(groups=8,eps=1e-5)；环向模块按 `[Q,72,16]` 的最后16通道做LayerNorm(16,eps=1e-5)，无效角在卷积前和归一化/激活后按原mask清零。从新架构初始化；没有可静默复用的旧BN权重。GroupNorm/LayerNorm不是BatchNorm，affine参数按所在模块是否解冻处理。参数组名称与完整成员列表写入checkpoint；旧E5的组名不能不经检查直接套A/B。
 
 ### 6.1 BN冻结是已有要求，执行时必须核验
 
@@ -149,6 +154,8 @@ for module in model.modules():
 ```
 
 验收比较微调前后running_mean、running_var、num_batches_tracked及affine均不变。梯度累积16次不等于BN见到了batch16；它每次前向仍见microbatch大小。[PyTorch BatchNorm](https://docs.pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html)、[Group Normalization原论文](https://www.ecva.net/papers/eccv_2018/papers_ECCV/papers/Yuxin_Wu_Group_Normalization_ECCV_2018_paper.pdf)。
+
+`evaluate_instance_source` 与 `evaluate_instance_attempts` 统一使用 `evaluation_mode`：进入前保存每个子模块的 `.training`，退出或抛错后按原值直接恢复。恢复时不调用根模块 `model.train(previous)`，也不依赖“下一训练步再次冻结BN”；返回调用方时混合train/eval状态已经保持正确。独立回归覆盖两个入口的正常及异常路径。
 
 ### 6.2 可选小幅姿态一致性，默认关闭
 
@@ -199,7 +206,7 @@ $$
 
 contact→TCP来自工具标定，不能将唇口中心直接当法兰原点。参考工具只生成相机系contact姿态，不执行机器人动作。
 
-当前 `infer_instance` 返回每实例字典：`schema="instance_suction_prediction_v2"`、`status/reason`、`poses[]`、ranking、合同/输入身份、NMS/过滤计数及计时。每个 `poses[i]` 包含原始评分p/n、`T_cam_contact`、`pose_sha256`、q/Seal/Wrench/ell、task logit/概率、ranking score和 `support` 诊断；没有顶层扁平query，也没有统一的顶层 `coverage_lip` 字段。
+当前 `infer_instance` 返回每实例字典：`schema="instance_suction_prediction_v2"`、`status/reason`、`poses[]`、ranking、合同/输入身份、NMS/过滤计数及计时。每个 `poses[i]` 包含原始评分p/n、`T_cam_contact`、`pose_id`、q/Seal/Wrench/ell、task logit/概率、ranking score和 `support` 诊断；没有顶层扁平query，也没有统一的顶层 `coverage_lip` 字段。
 
 下面是从单实例结果中截取的字段示意，省略身份与计时等字段，数值不代表实测：
 
@@ -242,7 +249,7 @@ CLI还添加 `schema="instance_suction_inference_v1"` 的报告外层，包含ch
 | 历史动作成败 | AUROC、AP、BCE、Brier | 总动作数、有效数、正负数、逐动作分数；BCE/Brier只针对task概率 |
 | 部署成本 | model-only及instance端到端p50/p95 | 硬件、dtype、原始点数、候选数、拷贝、预处理和NMS范围 |
 
-INST主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。少于100点、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
+INST主指标固定为：每frame内对可见GT实例平均，再对同scene的有效frame平均，再对scene等权平均。低于当前路线支持门槛（A读取min_support_points、默认100；B回退100）、无有效法向或无输出实例按不命中计入；没有任何GT实例的frame另计并不进入平均。另报微平均，避免不同聚合权重静默改变排名。
 
 **两分支首次实现统一细化次级选模口径：** “selected-Q 宏平均（no_pose=0）”对每个可见 GT 实例取被选姿态的有效 `Q_inst`，无输出实例取 0，再采用与主指标相同的 frame→scene→scene 三层等权聚合；空 GT 帧仍另计并排除。另报“仅有输出时的 Q 均值”为所有有效输出姿态的微平均，并附输出数量与无输出率，不用它替换次级选模统计。该细化只明确统计分母，不改变物理质量、标签 schema 或原有选模优先级。
 
@@ -285,7 +292,7 @@ python scripts/finetune.py \
 
 | 模块 | 实际文件 | 已实现行为 |
 |---|---|---|
-| 数据/标签 | `scripts/build_instance_dataset.py`、`suction20/instance_data.py`、`instance_teacher.py`、`instance_geometry.py` | 官方RGB-D读取、v3法向/回填、同姿态S/W/self、缓存与字节hash |
+| 数据/标签 | `scripts/build_instance_dataset.py`、`scripts/merge_instance_manifests.py`、`suction20/instance_data.py`、`instance_teacher.py`、`instance_geometry.py` | 官方RGB-D读取、v3法向/回填、同姿态S/W/self、每进程独立分片与安全合并、实际数组/schema检查 |
 | A模型 | `models/instance_route_a.py`、`instance_route_a_geometry.py` | 12通道稀疏骨干、Fq、raw lip谐波、531融合、精确姿态评分 |
 | B模型 | `models/instance_route_b.py` | 共享GN18/Fq/纹理、577投影槽位、96维环编码、330融合 |
 | 训练 | `scripts/train_instance.py`、`suction20/instance_training.py` | source100、test选best、200+800微调、域均值损失、严格恢复 |
@@ -294,7 +301,9 @@ python scripts/finetune.py \
 
 每条分支只包含本路线模型及运行YAML，共同模块保持相同版本。设计JSON继续保留 `artifact_kind=design_spec`，实际训练读取 `configs/instance_a.yaml` 或 `configs/instance_b.yaml`；parser拒绝把设计文件当运行配置。完整命令、数据字段和输出见[代码运行说明](IMPLEMENTATION.md)。
 
-checkpoint绑定代码SHA256、运行配置、模型参数、优化器、成功预算、Python/NumPy/Torch/CUDA RNG、数据调度器及RGB增强RNG，以及manifest/缓存/teacher共同身份。source与test的物理和预处理身份必须相同。`--resume`要求完整身份一致；`--init-checkpoint`只允许同路线、同模型/预处理/物理/代码身份的source checkpoint启动新微调阶段。不会将旧E5或跨路线权重改键载入。
+checkpoint保存完整 `config_definition`、显式 `runtime_contract`、route/stage、模型与优化器、成功预算、Python/NumPy/Torch/CUDA RNG、实际采样ID序列及RGB增强RNG，并保留manifest路径/数量和teacher的结构化定义。不生成或校验文件/数组校验和。source与selection的normal/sampler/precision/quality一致；双方physics都已知时直接比较，旧来源未知时写null而不伪称一致。
+
+`--resume`核对当前运行配置、路线/阶段、环境类型、可用数据定义与模型状态形状，恢复全部调度和优化器状态。旧checkpoint的校验和字段忽略，但仍检查可得的配置、样本数量、预处理、teacher_spec和已知physics；不会仅因缺少新字段强制重算teacher。旧调度器只有不透明身份而缺少实际语义序列时，不能证明同长度清单没有重排；新版保存真实ID序列并检查顺序。`--init-checkpoint`只允许同路线、同模型配置及兼容物理/预处理的source checkpoint启动新微调阶段，记录路径/大小、原step和选模角色；不会将旧E5或跨路线权重改键载入。
 
 ## 11 本次验证与后续记录
 

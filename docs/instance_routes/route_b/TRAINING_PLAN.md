@@ -8,7 +8,7 @@
 
 B的学习网络从新架构初始化，ResNet-18不加载外部预训练权重；实现直接使用PyTorch 2.5.1，不依赖torchvision或spconv，也不自动下载ImageNet权重。离线teacher仍有其科学计算和数据依赖。参考脚本的Python3.12.14/NumPy2.3.5环境与既有GPU环境分开，完整环境说明见[共同复现页](../TRAIN_EVAL_REPRODUCE.md)。
 
-每次真实运行保存代码commit、环境/硬件、配置、源/目标manifest和标签hash、normal/sampler/输入/精度合同、RNG与参数组。旧8通道E5或A权重不能通过改key或补零静默恢复为B。
+每次真实运行保存代码commit、环境/硬件、配置、源/目标manifest与标签路径、实际标定和已知physics、normal/sampler/输入/精度合同、RNG与参数组。旧8通道E5或A权重不能通过改key或补零静默恢复为B。
 
 ## 2. 源域物理损失和正确归约
 
@@ -39,8 +39,8 @@ $$L_{pre}=L_q+0.5\,SmoothL1_{\beta=.05}(\hat S,S_{20})
 | 优化器 | AdamW；betas=(0.9,0.999)，eps=1e-8，weight_decay=.01 |
 | 学习率 | peak3e-4；438次成功更新线性warmup，随后cosine至1e-5 |
 | 精度 | 网络FP32；原始几何构造及新接触判定float64；teacher保持冻结算术 |
-| 选模评价 | 成功步875、1750、…、8750，共10次；每次完整source test，不抽帧 |
-| 保存 | test-selected best.pt，以及训练进度/预算终点last.pt；完整恢复状态 |
+| 选模评价 | 成功步1750、3500、5250、7000、8750，共5次；每次完整source test，不抽帧 |
+| 保存 | test-selected best.pt；每875成功步保存last.pt，最终步记录预算完成；完整恢复状态 |
 
 RGB jitter与灰度化遵循[预处理](PREPROCESSING.md)，同一实例的上下文/原生纹理使用同一光度参数。训练环phase由seed、样本身份、精确p/n字节的query身份和成功步确定抽取，与query顺序或chunk无关；仅改变观测特征采样，不改标签p/n。验证/推理phase=0。首版不缩放米制几何、不为query改轴后复制源标签。
 
@@ -53,6 +53,10 @@ RGB jitter与灰度化遵循[预处理](PREPROCESSING.md)，同一实例的上�
 第一关键字为 `InstTop1_INST20@0.4` 最大，第二为 selected-Q宏平均最大，再并列选更早成功步。两个量都按frame内实例→scene内有效frame→scene等权聚合；no_pose对两者贡献0，空GT帧排除并单计。另报有输出条件下的Q微平均和输出数。
 
 这只是共同协议的分母细化，不改变物理目标。存在所选姿态或Coverage等指标所需query的未知/非法teacher标签时，该评价不完整，应修复缓存；不能把未知补Q=0、删除实例分母或据此选best。详见[实验指标定义](EXPERIMENT_PLAN.md)。
+
+周期评价每次遍历完整90场景，`evaluation_stepXXXXXX.json` 仅保存指标/选择键和 `record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；不内嵌records数组，也不把全量明细常驻内存。可选 `all` 保留各节点、`none` 完全不写明细。该策略减少长期存储，仍有一次临时压缩流写入。
+
+共享训练器读取模型的 `min_support_points`；当前B构造器没有该参数，因此回退默认100，不能在B YAML中加入该未支持选项。无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算；builder的准备阈值另存metadata，不以缓存trainable代替运行门槛。
 
 ## 4. 目标域1000次成功更新
 
@@ -68,7 +72,7 @@ $$L_{ft}=\frac{L_{t1}+L_{t2}}2+0.5\frac{L_{s1}+L_{s2}}2.$$
 | 201–1000 | 五头；query融合、L1/L2投影、G投影、native纹理stem、三个环编码器 | heads1e-4；其余1e-5 |
 | 全程 | ResNet-18 encoder冻结 | 不更新 |
 
-B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每角16通道归一化并按原mask清零。阶段切换保留已有head的Adam moments，只加入/解冻既定参数组，不重建optimizer丢失状态。参数组名和成员hash入checkpoint，不能照抄旧decoder/local-CNN名字。
+B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每角16通道归一化并按原mask清零。阶段切换保留已有head的Adam moments，只加入/解冻既定参数组，不重建optimizer丢失状态。参数组名和完整成员列表写入checkpoint，不能照抄旧decoder/local-CNN名字。
 
 每100次成功更新评价固定399条val动作；AUROC最大选best，依次以BCE更低、更早步打破平局。保留总数、有效数、正负数和排除原因；单类分组AUROC标未定义。87条test在权重、排序、数据口径冻结后一次性使用。
 
@@ -80,7 +84,7 @@ B没有BN。GN/LN的affine跟随各自模块的冻结状态；LN继续仅对每�
 
 ## 6. 恢复状态和训练准入验收
 
-checkpoint至少包含：模型类/版本、13/5通道输入、330融合及环门控/LN/summary合同、normal/sampler与精确query hash、INST/self配置、归一化/padding、精度/ranking、权重/优化器/scaler、成功步/监督实例/已消费draw、参数组、sampler/loader/RNG、源目标清单和代码身份。resume只接受同身份；初始化与resume互斥，不恢复退役迁移白名单。
+checkpoint至少包含：模型类/版本、13/5通道输入、330融合及环门控/LN/summary合同、normal/sampler/precision与query/label精确ID、p/n对齐合同、INST/self配置、归一化/padding、精度/ranking、权重/优化器/scaler、成功步/监督实例/已消费draw、参数组、sampler/loader/RNG、源目标清单路径与采样ID序列，以及完整config_definition和显式runtime_contract。初始化与resume互斥；按模型/配置/已知physics/预处理和状态结构检查兼容性。旧校验和字段忽略，未知physics保留null，不计算文件或数组校验和，也不要求为迁移metadata重算全部teacher。
 
 运行配置校验 `instance_runtime_v1`、route=b、source scene范围和 `public_evaluation.status=deferred`。CLI支持严格resume和finetune初始化，参数见第7节；不通过旧E5参数或替换文件名绕过模型/数据身份。
 

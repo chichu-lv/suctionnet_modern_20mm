@@ -2,12 +2,11 @@
 
 Configuration parsing is stdlib-only for supervisor use. Torch and backend imports
 are deferred until target-environment identity construction. Hardware profiles are
-never rewritten; performance identity is independent of their raw file digest.
+never rewritten; performance identity records their actual execution settings.
 """
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 
@@ -97,7 +96,7 @@ def attach_performance(config, path):
     result = copy.deepcopy(config)
     runtime = result.setdefault('runtime', {})
     runtime['performance'] = validate_performance_config(json.loads(payload))
-    runtime['performance_config_sha256'] = hashlib.sha256(payload).hexdigest()
+    runtime['performance_config_metadata'] = {'size_bytes': len(payload)}
     return result
 
 
@@ -106,9 +105,6 @@ def performance_identity(config):
     if 'performance' not in runtime:
         return None
     performance = validate_performance_config(runtime['performance'])
-    digest = runtime.get('performance_config_sha256')
-    if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
-        raise ValueError('Performance sidecar requires its original byte SHA256')
     from models.geometry_ops import fps_backend_identity
     fps_options = {'precision': 'float32'} if performance.get('geometry_precision') == 'float32' else {}
     builds = {'fps': fps_backend_identity(performance['fps_backend'], **fps_options)}
@@ -126,25 +122,25 @@ def performance_identity(config):
             if abi != 1:
                 raise RuntimeError('Unsupported native contact query ABI; rebuild models._spatial_index_cpu')
             builds['spatial_index']['contact_abi_version'] = abi
-    return {'schema_version': performance['schema_version'], 'config_sha256': digest,
+    return {'schema_version': performance['schema_version'], 'settings': performance,
             'backend_builds': builds}
 
 
-def build_runtime_identity(config, source_data, *, code_revision_value=None, worktree_sha256=None):
+def build_runtime_identity(config, source_data, *, code_revision_value=None, worktree_snapshot=None):
     import importlib.metadata
     import torch
     from .pretrain_budget import resolve_budget
-    from .pretrain_runtime import file_digest
-    from .training import content_digest, semantic_config, code_revision, worktree_digest
+    from .pretrain_runtime import file_metadata
+    from .training import configuration_identity, semantic_config, code_revision, worktree_state
     label_root = Path(config['data'].get('label_root', '.'))
     manifest, frozen = label_root / 'manifest.json', label_root / 'config_frozen.json'
-    identity = {'source_label_config_sha256': content_digest(source_data),
-                'semantic_config_sha256': content_digest(semantic_config(config)),
+    identity = {'source_label_definition': configuration_identity(source_data),
+                'semantic_config': configuration_identity(semantic_config(config)),
                 'code_revision': code_revision_value if code_revision_value is not None else code_revision(),
-                'worktree_sha256': worktree_sha256 if worktree_sha256 is not None else worktree_digest(),
-                'manifest_sha256': file_digest(manifest) if manifest.exists() else None,
-                'frozen_config_raw_sha256': file_digest(frozen) if frozen.exists() else None,
-                'raw_config_sha256': config.get('runtime', {}).get('raw_config_sha256'),
+                'worktree_snapshot': worktree_snapshot if worktree_snapshot is not None else worktree_state(),
+                'manifest_metadata': file_metadata(manifest) if manifest.exists() else None,
+                'frozen_config_metadata': file_metadata(frozen) if frozen.exists() else None,
+                'raw_config_metadata': config.get('runtime', {}).get('raw_config_metadata'),
                 'budget_contract': resolve_budget(config)['contract_version'],
                 'runtime_profile': config.get('runtime_profile'), 'dependencies': {}}
     for package in ('torch', 'numpy', 'scipy', 'spconv-cu120', 'cumm-cu120'):
@@ -160,3 +156,34 @@ def build_runtime_identity(config, source_data, *, code_revision_value=None, wor
     if performance is not None:
         identity['performance'] = performance
     return identity
+
+
+def validate_runtime_identity(previous, current, previous_config, current_config):
+    """Compare available runtime metadata without reviving retired checksums.
+
+    Current records require exact structural identity. Historical records lack
+    the new inspectable definitions; their actual saved training/source configs
+    are checked by the caller, while all surviving runtime fields stay binding.
+    """
+    from .metadata import without_legacy_checksums
+    if not isinstance(previous, dict):
+        raise ValueError("Resume requires matching complete runtime/code/data identity")
+    if all(key in previous for key in ('source_label_definition', 'semantic_config', 'worktree_snapshot')):
+        if without_legacy_checksums(previous) != current:
+            raise ValueError("Resume requires matching complete runtime/code/data identity")
+        return
+    stable = ('code_revision', 'budget_contract', 'runtime_profile', 'dependencies', 'math_settings')
+    if any(key not in previous for key in stable):
+        raise ValueError("Historical runtime identity lacks required runtime metadata")
+    saved = without_legacy_checksums(previous)
+    def matches_available(old, new):
+        if isinstance(old, dict):
+            return isinstance(new, dict) and all(key in new and matches_available(value, new[key])
+                                                 for key, value in old.items())
+        return old == new
+    if not matches_available(saved, current):
+        raise ValueError("Resume runtime/code/data identity differs in available metadata")
+    old_settings = without_legacy_checksums(previous_config.get('runtime', {}).get('performance'))
+    new_settings = without_legacy_checksums(current_config.get('runtime', {}).get('performance'))
+    if old_settings != new_settings:
+        raise ValueError("Resume execution settings differ from the saved configuration")

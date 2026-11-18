@@ -76,7 +76,7 @@ def _actual_b_integration(tmp_path):
     del trainer, model
     gc.collect()
 
-    # A strict resume consumes the full real optimizer/RNG/data/code identity.
+    # A strict resume consumes the full optimizer/RNG and declared data/configuration identity.
     resumed_model = create_instance_model(config, 'cpu')
     resumed = InstanceTrainer(resumed_model, config, source, selection, run_dir, allow_partial=True)
     resumed.resume(run_dir / 'last.pt')

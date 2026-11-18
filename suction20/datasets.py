@@ -4,7 +4,6 @@ Importing this module does not require torch. ``collate_public`` imports torch
 only when packing a training batch; all source reads/derivations use NumPy.
 """
 from collections import OrderedDict
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +14,7 @@ from PIL import Image
 from scipy.io import loadmat
 
 from .batching import collate_public
+from .metadata import without_legacy_checksums
 from .full_data import load_seal, scene_frame0
 from .observation import AugmentConfig, apply_rigid, depth_geometry, rigid_transform, unit_vectors
 
@@ -192,8 +192,8 @@ class PublicSuction20Dataset:
         self.keys = [frame_key(key, camera) for key in frame_keys]
         config_path = self.label_root / 'config_frozen.json'
         config_bytes = config_path.read_bytes()
-        self.data_cfg = json.loads(config_bytes)
-        self.source_label_config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+        self.data_cfg = without_legacy_checksums(json.loads(config_bytes))
+        self.source_label_definition = without_legacy_checksums(self.data_cfg)
         if not np.isclose(self.data_cfg['radius_m'], .02):
             raise ValueError('This adapter requires the R20 (20mm radius) release')
         if any(key[1] != self.data_cfg['camera'] for key in self.keys):
@@ -357,7 +357,7 @@ class PublicSuction20Dataset:
         meta = dict(sample_uid=key, source_indices=pixels.copy(), image_shape=shape,
                     T_world_cam=T_world_cam, T_aug_from_cam=np.eye(4, dtype=np.float32),
                     source_format=effective, source_schema_version=str(np.asarray(frame.get('schema_version', '')).item()),
-                    source_label_config_sha256=self.source_label_config_sha256,
+                    source_label_definition=self.source_label_definition,
                     augmentation_seed=int(augmentation_seed), label_path=str(path))
         for field in ('candidate_row', 'candidate_id', 'class_id', 'match_distance', 'normal_valid'):
             if field in frame:

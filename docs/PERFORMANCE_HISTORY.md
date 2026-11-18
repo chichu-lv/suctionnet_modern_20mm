@@ -163,7 +163,7 @@ flowchart TD
 
 已经训练到一半的任务通过显式性能迁移切换代码和扩展身份，保留模型权重、Adam moments/step、AMP scaler、RNG、已消费采样器、LR、成功步、有效帧预算、best 与验证计划。P1 的实际迁移源包括 H20/E5 第 380 步、L20/E0 第 833 步、L20/E3 第 441 步。
 
-这是为了让优化能够接入正在进行的训练，不是新的训练算法；不重新 warmup、不用“只加载模型权重”替代续训。后续 P2/P3 继续使用这套机制，没有每轮再建一套恢复系统。[迁移入口](../scripts/migrate_performance_checkpoint.py) · [P1 实际记录](performance/P1_REAL_RESULTS.json)
+这是为了让优化能够接入正在进行的训练，不是新的训练算法；不重新 warmup、不用“只加载模型权重”替代续训。后续 P2/P3 继续使用这套机制，没有每轮再建一套恢复系统。[现行恢复政策](CHECKPOINT_POLICY.md)（旧迁移入口已退役） · [P1 实际记录](performance/P1_REAL_RESULTS.json)
 
 ### 5.9 P1 正常训练已经观察到什么
 
@@ -303,7 +303,7 @@ CPU 子图验证使用真实维度的 393→256→256 MLP、2,049 点、9 块：
 
 v3 sidecar 增加可选顶层 `dense_chunk_size_override` 与 `chunk_input_mode`，模型记录实际执行值。旧 v1/v2/原 v3 字节继续可识别；没有将冻结硬件 profile 的历史值改写成新值。
 
-迁移器接入批准的原始/P1/P2 到目标 v3 关系，保留原训练状态。当前实际配对源已经是 P2；直接迁移能力是为其他合法来源接续保留，不要求已有任务先再跑一遍 P2。配对工具只调整了与 chunk 实现变化相关的共享骨干依赖检查，并保留实际输出、离散选择、原 AMP 梯度与 VJP 比较。[performance.py](../suction20/performance.py) · [迁移入口](../scripts/migrate_performance_checkpoint.py) · [P3 实施文档](PERFORMANCE_PHASE3.md)
+迁移器接入批准的原始/P1/P2 到目标 v3 关系，保留原训练状态。当前实际配对源已经是 P2；直接迁移能力是为其他合法来源接续保留，不要求已有任务先再跑一遍 P2。配对工具只调整了与 chunk 实现变化相关的共享骨干依赖检查，并保留实际输出、离散选择、原 AMP 梯度与 VJP 比较。[performance.py](../suction20/performance.py) · [现行恢复政策](CHECKPOINT_POLICY.md)（旧迁移入口已退役） · [P3 实施文档](PERFORMANCE_PHASE3.md)
 
 ## 10. 真机反馈怎样修正了 P3 的最终选择
 

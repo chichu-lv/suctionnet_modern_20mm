@@ -53,7 +53,7 @@ $$T_{base,TCP}=T_{base,cam}\,T_{cam,contact}\,T_{contact,TCP}.$$
 
 | 字段组 | 要求 |
 |---|---|
-| 身份 | instance_uid、query_id/source_point_id或attempt_id、route/model版本、checkpoint/data/calibration/normal/sampler hash |
+| 身份 | instance_uid、query_id/source_point_id或attempt_id、route/model版本、checkpoint路径与大小、数据/标定定义、normal/sampler显式版本 |
 | 状态 | ok/no_pose、有效性与各排除原因、实际候选数、过滤/NMS前后数量 |
 | 姿态 | 原始 point_cam_m、normal_out_cam、tool_z_cam、4×4 contact姿态、roll_policy |
 | 分数 | q_inst、seal、wrench、ell、task_probability、ranking_score、ranking_alpha、quality_contract |

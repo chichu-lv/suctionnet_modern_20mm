@@ -13,19 +13,19 @@ import time
 import numpy as np
 import torch
 
-from suction20.performance import attach_performance, build_runtime_identity
+from suction20.performance import attach_performance, build_runtime_identity, validate_runtime_identity
 from suction20.precision import resolve_precision, UpdateLossAccumulator
 from suction20.geometry_pipeline import GeometryPipeline, GeometryCompletion
 from suction20.pretrain_budget import CONTRACT_VERSION, resolve_budget, resolve_config, sampling_epoch, validate_resume_progress
 from suction20.datasets import collate_public, frame_key, split_scene_ids
 from suction20.losses import source_losses
 from suction20.runner import add_runtime_arguments, make_model, make_source_dataset, override_paths, require_device
-from suction20.training import (FrameSchedule, content_digest, make_optimizer, learning_rate,
+from suction20.training import (FrameSchedule, configuration_identity, make_optimizer, learning_rate,
                                load_checkpoint, load_config, move_to_device, select_training_gpu_inputs, optimizer_update,
-                               save_checkpoint, seed_everything, validate_resume_config, worktree_digest,
+                               save_checkpoint, seed_everything, validate_resume_config, worktree_state,
                                capture_rng, restore_rng, semantic_config, code_revision, source_supervision_counts)
 from suction20.pretrain_runtime import (AttemptLog, CheckpointStore, Progress, RunLock,
-                                       atomic_json, file_digest, read_json, normalize_gpu_uuid)
+                                       atomic_json, file_metadata, read_json, normalize_gpu_uuid)
 
 
 def apply_gpu_memory_limit(config, device):
@@ -126,7 +126,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     if formal and init_checkpoint:
         raise ValueError("Formal experiments require independent initialization")
     identity = build_runtime_identity(config, dataset.data_cfg, code_revision_value=code_revision(),
-                                      worktree_sha256=worktree_digest())
+                                      worktree_snapshot=worktree_state())
     math_settings = identity["math_settings"]
     progress.update(performance_identity=identity.get("performance"), performance_settings=performance)
     step, best, previous = 0, None, None
@@ -141,8 +141,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             previous = state.get("runtime_state")
             if state.get("stage") != "public_pretrain" or state.get("experiment") != config.get("experiment"):
                 raise ValueError("Resume experiment or stage differs")
-            if not previous or previous.get("schema_version") != 1 or previous["identity"] != identity:
+            if not previous or previous.get("schema_version") != 1:
                 raise ValueError("Resume requires matching complete runtime/code/data identity")
+            validate_runtime_identity(previous.get("identity"), identity, state["training_config"], config)
             if state["scheduler_state_dict"]["global_step"] != state["global_step"]:
                 raise ValueError("Resume scheduler step differs")
             validate_resume_progress(state, budget)
@@ -185,9 +186,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
     pending = (previous or {}).get("pending_validation")
     validations = dict((previous or {}).get("validations", {}))
     for reference in validations.values():
-        if file_digest(run_dir / reference["path"]) != reference["sha256"]:
+        if reference.get("file_metadata") is not None and file_metadata(run_dir / reference["path"]) != reference["file_metadata"]:
             log.close()
-            raise ValueError("Committed validation result checksum mismatch")
+            raise ValueError("Committed validation result size mismatch")
     skips = int((previous or {}).get("consecutive_skips", 0))
     last_completed_validation = (previous or {}).get("last_completed_validation")
     completed_validation_nodes = list((previous or {}).get("completed_validation_nodes", []))
@@ -210,9 +211,9 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
             save_checkpoint(path, model, optimizer, scaler, schedule, global_step=step,
                             config=config, source_label_config=dataset.data_cfg, best_metric=best,
                             runtime_state=runtime_state, code_revision=identity["code_revision"],
-                            code_worktree_sha256=identity["worktree_sha256"])
+                            code_worktree_state=identity["worktree_snapshot"])
         prefix_node = (store.manifest or {}).get("nodes", {}).get(str(budget["prefix_step"]))
-        # Keep the paused prefix's original checkpoint/hash across new attempts.
+        # Keep the paused prefix's checkpoint generation across new attempts.
         # The first attempt may refresh its node through the normal pause save,
         # but a resume's initial save must not replace that recovery evidence.
         retain_prefix = step == budget["prefix_step"] and (not prefix_node or prefix_node["attempt_id"] == log.attempt_id)
@@ -226,7 +227,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
                               retain=retain or retain_prefix, promote_best=promote_best, analysis=analysis)
         saved_step, saved_time = step, time.monotonic()
         log.event("checkpoint_published", global_step=step, reason=reason, checkpoint=entry["path"],
-                  sha256=entry["sha256"], elapsed_seconds=time.monotonic() - checkpoint_started)
+                  generation=entry["generation"], elapsed_seconds=time.monotonic() - checkpoint_started)
         progress.update(durable_checkpoint=entry, global_step=step, effective_samples_completed=step * effective_batch,
                         last_completed_validation=last_completed_validation, completed_validation_nodes=completed_validation_nodes)
 
@@ -291,7 +292,7 @@ def _train(config, run_dir, device, progress, *, resume, init_checkpoint, stop_a
         if improved:
             best = {"values": candidate, "global_step": step}
         validations[str(step)] = {"path": str(result_path.relative_to(run_dir)),
-                                  "sha256": file_digest(result_path)}
+                                  "file_metadata": file_metadata(result_path)}
         last_completed_validation = dict(step=step, effective_samples=step * effective_batch,
                                          frame_count=len(metrics["frames"]), result=validations[str(step)],
                                          metrics={"instance_Top1_Q20_at_0_4": candidate[0], "AP_R20": candidate[1]})
@@ -608,7 +609,7 @@ def main():
     add_runtime_arguments(parser)
     args = parser.parse_args()
     config = override_paths(load_config(args.config), args)
-    config.setdefault("runtime", {})["raw_config_sha256"] = file_digest(args.config)
+    config.setdefault("runtime", {})["raw_config_metadata"] = file_metadata(args.config)
     if args.performance_config:
         config = attach_performance(config, args.performance_config)
     for key in ("cpu_threads", "gpu_memory_limit_gib"):

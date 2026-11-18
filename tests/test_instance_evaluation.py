@@ -29,7 +29,7 @@ class _FixedPrediction(torch.nn.Module):
 def _metadata(source_identity, stage='pretrain'):
     role, split = ('test_selected', 'test') if stage == 'pretrain' else ('validation_selected', 'val')
     return {'schema': 'instance_loaded_checkpoint_v1', 'route': 'b', 'stage': stage,
-        'checkpoint_sha256': '1' * 64, 'quality_contract': 'gt_INST20_pose_v2',
+        'checkpoint_file': {'path': 'test.pt', 'size_bytes': 1}, 'quality_contract': 'gt_INST20_pose_v2',
         'checkpoint_kind': 'best', 'global_step': 1,
         'selection_policy': {'selection_split': split, 'selection_role': role,
             'independent_test_estimate': False, 'train_scene_range': [0, 99],
@@ -79,14 +79,10 @@ def test_source_partial_and_physics_mismatch_fail_explicitly(tmp_path, monkeypat
     with pytest.raises(ValueError, match='full 100-train/90-test'):
         cli.main(args)
     metadata['checkpoint_identity']['source']['data_identity'] = deepcopy(identity)
-    metadata['checkpoint_identity']['source']['data_identity']['teacher_identity']['physics_sha256'] = '0' * 64
-    with pytest.raises(ValueError, match='teacher_identity'):
-        cli.main(args + ['--allow-partial-manifests'])
-    metadata['checkpoint_identity']['source']['data_identity'] = deepcopy(identity)
-    metadata['checkpoint_identity']['source']['data_identity']['object_assets']['0']['dense_sha256'] = '0' * 64
-    with pytest.raises(ValueError, match='object assets'):
-        cli.main(args + ['--allow-partial-manifests'])
-    assert not (tmp_path / 'report.json').exists()
+    metadata['checkpoint_identity']['source']['data_identity']['teacher_identity']['physics']['radius_m'] = .01
+    with pytest.raises(ValueError, match='physics definitions differ'):
+        cli.main(['--checkpoint', 'own.pt', '--manifest', str(manifest), '--domain', 'source',
+                  '--output', str(tmp_path / 'bad.json'), '--device', 'cpu', '--allow-partial-manifests'])
 
 
 def test_pretrain_cannot_report_target_probabilities(tmp_path, monkeypatch):

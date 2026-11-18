@@ -18,12 +18,14 @@ pretrain:
   peak_lr: 0.0003
   final_lr: 0.00001
   warmup_steps: 438
-  evaluate_every: 875
+  evaluate_every: 1750
+  evaluation_records: best_and_final
   checkpoint_every: 875
 finetune:
   steps: 1000
   head_only_steps: 200
   evaluate_every: 100
+  evaluation_records: best_and_final
   checkpoint_every: 100
 public_evaluation:
   status: deferred

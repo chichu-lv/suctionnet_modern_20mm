@@ -1,7 +1,6 @@
 """CPU FPS backends with explicit FP64 compatibility or FP32 fresh-training precision."""
 from __future__ import annotations
 
-import hashlib
 import importlib
 from pathlib import Path
 import sys
@@ -36,7 +35,7 @@ def _compiled():
 
 
 def fps_backend_identity(name, *, precision='float64'):
-    """Startup-only source/binary/build identity; never silently substitute FPS."""
+    """Explicit ABI/build metadata; never read binary contents or substitute FPS."""
     if precision not in ('float32', 'float64'):
         raise ValueError('FPS precision must be float32 or float64')
     result = dict(backend=name, abi_version=1, python_cache_tag=sys.implementation.cache_tag)
@@ -47,11 +46,11 @@ def fps_backend_identity(name, *, precision='float64'):
         if precision == 'float32' and getattr(module, 'FPS_FLOAT32_VERSION', None) != 1:
             raise RuntimeError('FP32 FPS requires rebuilding models._fps_cpu')
         return dict(result, compile_flags=module.COMPILE_FLAGS.split(), compiler=module.COMPILER,
-                    source_sha256=module.SOURCE_SHA256,
-                    binary_sha256=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest())
+                    source_version=getattr(module, 'SOURCE_VERSION', 'legacy_abi1'),
+                    binary_filename=Path(module.__file__).name)
     if name == 'numpy':
-        return dict(result, compile_flags=[], compiler=None, binary_sha256=None,
-                    source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        return dict(result, compile_flags=[], compiler=None, binary_filename=None,
+                    source_version='numpy_fps_v1')
     raise ValueError(f'Unsupported FPS backend: {name}')
 
 

@@ -303,9 +303,9 @@ step 200 与后续 best 的对比可直接判断解冻 decoder 是否值得；�
     "target_mode": "dense_proxy",          # 或 attempt_success
     "source_checkpoint_ref": source_ref,
     "source_label_config": original_frozen_config,
-    "source_label_config_sha256": original_digest,
+    "source_label_definition": original_physical_config,
     "quality_target": "gt_B",             # attempt 模式也保持原义
-    "target_manifest_digest": manifest_digest,
+    "target_manifest_definition": actual_manifest_records,
     "target_split_groups": split_groups,
     "success_definition": success_definition_or_none,
     "task_success_head_present": mode == "attempt_success",

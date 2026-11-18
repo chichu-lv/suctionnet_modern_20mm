@@ -66,7 +66,7 @@ $$
 
 ## 7. 实施产物和验收
 
-输出包至少包括 `context[13,128,128]`、`texture[5,H_pad,W_pad]`、原始 organized 几何/法向/mask、K及仿射/逆变换、c_vis/尺寸、RGB/normal有效性、query清单、所有版本/hash和统计。固定几何和 query 可缓存；随机光度增强与训练环 phase 不能混入无身份的静态缓存。
+输出包至少包括 `context[13,128,128]`、`texture[5,H_pad,W_pad]`、原始 organized 几何/法向/mask、K及仿射/逆变换、c_vis/尺寸、RGB/normal有效性、query清单、所有显式版本、query ID与统计。固定几何和 query 可缓存；随机光度增强与训练环 phase 不能混入无身份的静态缓存。
 
 必须通过：原始投反影；上下文边界/ROI原点回读；大小物体完整性；fx≠fy；不同深度层不混合；法向断层/空洞拒绝且原点不变；稀疏mask回填、无重复、64/128前缀；空实例/全invalid无NaN。法向宽stencil和纹理不足的真实比例另报，不能只凭合成参考通过即宣告预处理成本和质量达标。
 

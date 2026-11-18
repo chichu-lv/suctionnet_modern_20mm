@@ -8,7 +8,7 @@ B模型及共同训练/推理链路已实现，实际网络CPU前向、反向和
 |---|---|
 | 源训练 | scene 0–99全部100场景、全部256视角可抽样；从头训练，不再90/10开发后final refit |
 | 预算 | 140000个成功受监督实例、8750次成功更新；128-query训练前缀 |
-| best选择 | 每875成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
+| best选择 | 每1750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
 | 成绩身份 | `test_selected` / `independent_test_estimate=false`；源test只评价、不反传，但已参与模型选择 |
 | 目标域 | 1676 train、399 val选best、87 test冻结后评价；保留既有group和规划动作语义 |
 | 本轮评价 | INST20实例Top1/selected-Q/coverage，以及目标固定动作AUROC/AP/BCE/Brier |
@@ -97,7 +97,7 @@ E1的64–128是teacher成本和一致性剖析样本，不是训练收敛样本
 
 本节指标用于完整source test选best，并分Seen/Similar/Novel报告，所有结果标 `test_selected`。未参与梯度并不使其成为独立测试；继续调参或增加比较同样必须保留该选择身份。
 
-令每个可见GT实例i的Top1命中 `h_i=1[有输出且所选姿态Q_inst>=0.4]`。少于100支持点、无合法观测法向、无输出实例的h_i=0，保留在原始实例分母。按frame内实例均值→scene内有效frame均值→scene等权平均得到 `InstTop1_INST20@0.4`；空GT帧另计并排除。另报实例微平均。[协议来源](../TRAIN_EVAL_REPRODUCE.md)
+令每个可见GT实例i的Top1命中 `h_i=1[有输出且所选姿态Q_inst>=0.4]`。当前B默认100点以下支持的实例、无合法观测法向、无输出实例的h_i=0，保留在原始实例分母。按frame内实例均值→scene内有效frame均值→scene等权平均得到 `InstTop1_INST20@0.4`；空GT帧另计并排除。另报实例微平均。[协议来源](../TRAIN_EVAL_REPRODUCE.md)
 
 次级selected-Q使用相同宏平均层级：有输出取所选姿态Q_inst，no_pose取0；它用于同主指标时选模。另报**有输出条件下**所选Q的微平均及有效输出数，避免把两个均值混称。所有结果同时报告原始实例数、少支持/无normal/无输出计数及原因。
 
@@ -132,7 +132,7 @@ E1的64–128是teacher成本和一致性剖析样本，不是训练收敛样本
 
 ## 7. 最小对照，避免展开参数笛卡尔积
 
-当前执行B-source100与B-target-ft，公开pair留待协议确定。各路线独立执行，不将另一分支完成设为前置条件。追加对照只回答已经观察到的问题，每次仅改变一个因素并记录 variant/config/hash：
+当前执行B-source100与B-target-ft，公开pair留待协议确定。各路线独立执行，不将另一分支完成设为前置条件。追加对照只回答已经观察到的问题，每次仅改变一个因素并记录 variant、完整config与显式版本：
 
 | 触发条件 | 允许的最小对照 | 保持不变 |
 |---|---|---|
