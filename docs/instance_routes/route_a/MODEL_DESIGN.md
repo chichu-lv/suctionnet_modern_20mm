@@ -26,7 +26,7 @@ canonical使用共同候选的p/n；历史规划动作直接调用相同接口�
 
 真实主干点做masked mean/max，拼成512维，再经 `512→128→64` 得到 `G[64]`。padding不参与池化。F通过同组件最多3邻居、10mm门槛关联到query和raw支持；缺失保留mask及原始RGB/几何，详见预处理。
 
-新A接触、池化、融合和头部MLP隐藏层使用带bias线性层和ReLU，不用dropout；保留的backbone 512→256投影沿用原wrapper中的LayerNorm/ReLU。外部 `resnet.py` / `backbone_resunet14.py` 仍按固定blob校验，不改其源码绕过身份检查。
+新A接触、池化、融合和头部MLP隐藏层使用带bias线性层和ReLU，不用dropout；保留的backbone 512→256投影沿用原wrapper中的LayerNorm/ReLU。外部 `resnet.py` / `backbone_resunet14.py` 保留既有固定Git blob SHA-1源码核验，避免加载偏离固定骨干的源码。它不是本轮新增的数据校验方式；被移除的数据/标签/运行SHA-256不以另一种摘要替代。
 
 默认 `singleton_bn_policy=running_stats`：仅在训练模式某一BatchNorm1d输入每通道值数≤1时，改用该层已有running mean/variance，避免单活动体素的BN异常；不更新这次的running统计或batch计数。其余输入沿用普通BN前向及统计更新，不把源预训练全部BN冻结。策略写入架构身份，`error`可作为显式替代配置。微调期按训练器规定冻结全部BN running stats及affine，和这个退化输入保护是两件事；单例保护不证明真实SpConv已验证。
 

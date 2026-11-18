@@ -12,8 +12,8 @@ import math
 import numpy as np
 from scipy.spatial import cKDTree
 
+from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M
 
-BOUNDARY_ROUNDOFF_M = 1e-12
 ZONE_BOUNDS = ((0., .010), (.010, .018), (.018, .022))
 ZONE_SAMPLES = (32, 32, 64)
 HEIGHT_LIMIT_M = .040
@@ -103,14 +103,18 @@ class NeighborIndex:
         d, rows = self.all_tree.query(points, k=min(2, len(self.points)))
         if len(self.points) == 1:
             d, rows = d[:, None], rows[:, None]
-        for i in range(len(points)):
-            first_distance = float(d[i, 0])
-            if first_distance > radius + BOUNDARY_ROUNDOFF_M:
-                continue
-            choices = np.asarray([rows[i, 0]], np.int64)
-            if d.shape[1] > 1 and d[i, 1] == first_distance:
-                choices = np.asarray(self.all_tree.query_ball_point(
-                    points[i], np.nextafter(first_distance, np.inf)), np.int64)
+        supported = d[:, 0] <= radius + BOUNDARY_ROUNDOFF_M
+        active = np.flatnonzero(supported)
+        anchors[active] = rows[active, 0]
+        # Recompute with the same NumPy reduction as the scalar reference;
+        # cKDTree's own distance arithmetic is not the output contract.
+        distance[active] = np.linalg.norm(
+            self.points[rows[active, 0]] - points[active], axis=1)
+        ties = (supported & (d[:, 0] == d[:, 1]) if d.shape[1] > 1
+                else np.zeros(len(points), bool))
+        for i in np.flatnonzero(ties):
+            choices = np.asarray(self.all_tree.query_ball_point(
+                points[i], np.nextafter(d[i, 0], np.inf)), np.int64)
             actual = np.linalg.norm(self.points[choices] - points[i], axis=1)
             winner = np.lexsort((self.source_ids[choices], actual))[0]
             anchors[i] = int(choices[winner])
@@ -144,22 +148,52 @@ class NeighborIndex:
             distances, nearest = tree.query(points[query_rows], k=k)
             if k == 1:
                 distances, nearest = distances[:, None], nearest[:, None]
-            for local_row, query_row in enumerate(query_rows):
-                selected = source_rows[np.asarray(nearest[local_row]).reshape(-1)]
+            selected = source_rows[nearest]
+            dist = np.linalg.norm(self.points[selected] - points[query_rows, None], axis=2)
+            # Sort the short axis in one vectorized operation. This handles
+            # ties within the returned neighbors and any last-bit difference
+            # between tree and NumPy distances without a Python point loop.
+            order = np.lexsort((self.source_ids[selected], dist), axis=1)[:, :3]
+            selected = np.take_along_axis(selected, order, axis=1)
+            dist = np.take_along_axis(dist, order, axis=1)
+            width = selected.shape[1]
+            d1[query_rows] = dist[:, 0]
+            if width == 3:
+                d3[query_rows] = dist[:, 2]
+            keep = dist <= radius + BOUNDARY_ROUNDOFF_M
+            counts[query_rows] = keep.sum(axis=1)
+            indices[query_rows, :width] = np.where(keep, selected, -1)
+            reciprocal = np.zeros_like(dist)
+            np.divide(1., dist, out=reciprocal, where=keep & (dist != 0))
+            denominator = reciprocal.sum(axis=1, keepdims=True)
+            normalized = np.zeros_like(reciprocal)
+            np.divide(reciprocal, denominator, out=normalized, where=denominator != 0)
+            weights[query_rows, :width] = normalized
+            exact = (counts[query_rows] > 0) & (dist[:, 0] == 0)
+            weights[query_rows[exact]] = 0.
+            weights[query_rows[exact], 0] = 1.
+
+            # Only a tie across the three-neighbor cut can hide additional
+            # contenders. Re-run the original ball/lexsort path for those rows.
+            ties = (np.flatnonzero(distances[:, 2] == distances[:, 3])
+                    if k == 4 else np.empty(0, np.int64))
+            for local_row in ties:
+                query_row = query_rows[local_row]
+                selected = source_rows[np.asarray(tree.query_ball_point(
+                    points[query_row], np.nextafter(distances[local_row, 2], np.inf)), np.int64)]
                 dist = np.linalg.norm(self.points[selected] - points[query_row], axis=1)
-                if k == 4 and distances[local_row, 2] == distances[local_row, 3]:
-                    selected = source_rows[np.asarray(tree.query_ball_point(
-                        points[query_row], np.nextafter(distances[local_row, 2], np.inf)), np.int64)]
-                    dist = np.linalg.norm(self.points[selected] - points[query_row], axis=1)
                 order = np.lexsort((self.source_ids[selected], dist))[:3]
                 selected, dist = selected[order], dist[order]
                 d1[query_row] = dist[0]
+                d3[query_row] = np.nan
                 if len(dist) >= 3:
                     d3[query_row] = dist[2]
                 keep = dist <= radius + BOUNDARY_ROUNDOFF_M
                 selected, dist = selected[keep], dist[keep]
                 count = len(selected)
                 counts[query_row] = count
+                indices[query_row] = -1
+                weights[query_row] = 0.
                 indices[query_row, :count] = selected
                 if not count:
                     continue

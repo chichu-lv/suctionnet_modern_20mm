@@ -92,7 +92,7 @@ teacher 始终对实际参与监督的同一 `(p_cam_m,n_out_cam)` 计算 S、W�
 
 ### 6.1 主干和全物体上下文
 
-ResUNet14 wrapper已增加 `in_channels` 可选参数，默认8保持旧E5调用行为，A显式传12；保留512维骨干输出和512→256投影，每个真实主干点得到 `F[N,256]`。不编辑受blob校验约束的外部源码，旧8通道权重不伪装成12通道恢复。
+ResUNet14 wrapper已增加 `in_channels` 可选参数，默认8保持旧E5调用行为，A显式传12；保留512维骨干输出和512→256投影，每个真实主干点得到 `F[N,256]`。外部骨干继续使用既有固定Git blob SHA-1源码核验；本轮不改变该机制，也不把移除的数据SHA-256校验改成SHA-1，旧8通道权重不伪装成12通道恢复。
 
 A默认 `singleton_bn_policy=running_stats`：只在训练时某BN每通道输入值数≤1的退化情形使用已有running统计，不更新该次统计/计数；其他源训练输入保持普通BN路径。微调期所有BN统计和affine冻结，策略进入架构身份。CPU测试验证该退化保护，真实稀疏骨干仍待GPU验收。
 
@@ -104,7 +104,9 @@ A默认 `singleton_bn_policy=running_stats`：只在训练时某BN每通道输�
 
 无主干邻居时 `F_local=0, feature_valid=False`，原始位置、RGB和观测法向仍保留。相同实例/4连通约束减少跨不连通区域关联，但不是完整薄壁层识别或碰撞保证；不能以扩大距离掩盖关联失效。
 
-canonical query的组件来自其原始像素。历史query用目标实例内距记录点最近、距离≤5 mm的原始几何点确定组件，并列取最小source ID；这只是关联锚点，**不移动记录的p、不改变记录的轴**。找不到此锚点时记 `pose_geometry_invalid` 并报告；找到几何锚点但 `Fq` 无10 mm内主干邻居时，以零 `Fq` 和 `query_feature_valid=False` 继续评分。
+canonical query的组件来自其原始像素。历史query用目标实例内距记录点最近、`distance <= 0.005 + BOUNDARY_ROUNDOFF_M` 的原始几何点确定组件；共同常量为 `1e-12 m`，目标数据集与模型共用，并列取最小source ID。这只是关联锚点，**不移动记录的p、不改变记录的轴**。找不到此锚点时记 `pose_geometry_invalid` 并报告；找到几何锚点但 `Fq` 无10 mm内主干邻居时，以零 `Fq` 和 `query_feature_valid=False` 继续评分。
+
+关联热路径已改为批量树查询、float64距离重算、短轴排序和权重归一化；仅三近邻截断的第3/4精确tie回退标量球查询，最近锚点仅首二精确tie回退。CPU的15000-support/2048-backbone基准中，`associate` 中位数187.740→17.473ms、10.745×；排除I/O、索引构建/FPS、网络与GPU，不能代替端到端时延。[实现细节与验证范围](route_a/PREPROCESSING.md#5-连通组件与特征关联) · [基准记录](../performance/INSTANCE_NEIGHBORS_CPU.json)
 
 ### 6.3 三径向区域与无任意切平面方向的描述
 
@@ -208,7 +210,7 @@ scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index)
 
 历史动作默认以原 `planned_pipeline_contact` 的一个task logit计算一次BCEWithLogits，源回放系数0.5。`actual_execution_verified=false`意味着输出应解释为给定规划命令及观测的成败概率，不是已知真实执行落点的成功概率。只有完全缺少合法几何关联的动作才跳过并报告原因；不能仅因 `Fq` 缺失就删除历史样本。
 
-本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每875步在完整test scene 100–189、每场景256帧选best，明确 `test_selected`、非独立测试估计，同时保留预算终点last。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
+本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每1750步在完整test scene 100–189、每场景256帧选best，明确 `test_selected`、非独立测试估计，同时保留预算终点last。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
 
 轻度位姿微扰是可选正则，按共同训练规范启用，默认关闭；不能复制S/W标签到新姿态，也不把一个动作拆成多个独立成败样本。前200步和后800步的参数组必须覆盖本模型的实际新增层，不照搬旧E5组名。
 

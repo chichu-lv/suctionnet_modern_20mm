@@ -38,7 +38,9 @@
 
 共接受 2162 条、排除 629 条，排除明细不在 GitHub 汇总内。验证对应 399 个观测、3 个 group；未公开的训练/test group 数量不推测。来源见[数据汇总](../experiments/CD010-20261117/finetuning/data/summary.json)和[微调记录](../experiments/CD010-20261117/finetuning/README.md)。
 
-每个 capture 的不同深度版本、裁剪、相邻帧和同一摆放/session 继承既有 group；同一动作不能以 RGB-D 和双目深度两份样本跨 split。内容 SHA-256 补充现有按规范路径识别同观测的检查。多个实例共享同一观测 hash 合法，但必须同 group、同 split。hash 校验只验证输入清单声明，不能代替真实资产字节校验和采集过程核对。
+每个 capture 的不同深度版本、裁剪、相邻帧和同一摆放/session 继承既有 group；同一动作不能以 RGB-D 和双目深度两份样本跨 split。按既有sample/capture/group ID及规范化观测路径识别共同来源；多个实例共享同一观测合法，但必须同group、同split。不计算文件或数组校验和，也不以旧校验和字段阻止加载。路径/ID与声明只能核对已记录的来源关系，不能证明不同路径的文件没有重复，也不提供内容篡改检测保证。
+
+`InstanceAttemptDataset` 在按目标instance分组之前，为规范化深度路径、RGB路径及显式 `capture_uid` 建立共同的 `(split,group_id)` 归属表；同一frame的不同instance不能借不同实例ID跨split或group。`./depth.png` 与 `depth.png` 解析为同一路径；capture UID相同而深度版本不同也遵守同一归属。`.observation_owners` 供训练器比较分开的target与selection清单，完整可读来源列表进入identity。检查不需要打开图像内容；不同路径且无共同ID的文件不宣称已去重。
 
 ## 2. 坐标与传感器合同
 
@@ -64,7 +66,7 @@
 
 完整有效实例 RGB-D 是共同观测资产。A 可物化 `P_support[M,3]`；B 可保留 organized XYZ 图并按像素读取，**不要求建立无序点云、KD-tree 或逐 query 栅格**。所有 RGB、XYZ、mask、法向和原像素身份保持对应。
 
-全体有限有效实例观测的均值 `mu_vis` 用作平移原点，抽样后不重算。它不是物理质心，米制尺度不能按对象大小消除。训练原始有效支持少于 100 点的实例记 `insufficient_support`，不进入常规源域采样；验证/测试仍保留身份，分别报告无输出，并计入主指标失败分母。
+全体有限有效实例观测的均值 `mu_vis` 用作平移原点，抽样后不重算。它不是物理质心，米制尺度不能按对象大小消除。默认 `min_support_points=100`：训练原始有效支持不足时不进入成功受监督预算；验证/测试仍保留身份，报告无输出，并计入主指标失败分母。builder的 `--min-support-points` 写入准备状态与summary，A读取模型 `min_support_points` 决定实际训练/评价阈值；B当前无该构造参数，helper回退100。不要把缓存时的 `trainable` 当成A不可配置的100点规则。`has_supervision` 单独表示存在有效物理标签。
 
 A 的 2048 主干点、法向估计支持、接触几何支持是不同预算。用于降低索引成本的 2 mm 体素不能替代保存细节的原始唇口 RGB/深度；体素化也不保证任何大小对象都有同样点数。
 
@@ -230,30 +232,34 @@ q_inst = q_sw*(NOT C_self)
 
 ## 6. 缓存预算与身份
 
-当前builder按所选scene/frame范围构建固定 `(instance_uid,p,n)` 缓存，默认每训练实例128个标签；重复instance draw复用相同缓存，训练调度器的状态和顺序身份保存在checkpoint。按需异步生成缓存仍属于后续优化，不要求为100训练场景每实例计算256个标签；训练默认128，test固定256。当前builder按所请求的scene/frame范围完整生成缓存；正式trainer要求完整100场景清单。可分范围生成做成本试验，但只有显式 `--allow-partial-manifests` 才能用于链路验证，不冒充正式训练。
+当前builder按所选scene/frame范围构建固定 `(instance_uid,p,n)` 缓存，默认每训练实例128个标签；重复instance draw复用相同缓存，训练调度器的实际语义ID序列及RNG状态保存在checkpoint。按需异步缓存仍属于后续优化。已实现 `--workers N` 的scene分片多进程构建：每进程使用独立 `shards/part_XXXX` 输出目录，完成后由 `merge_source_manifests` 合并。训练默认128标签、test完整最多256；正式trainer仍要求完整100场景训练清单和90场景选择清单。
+
+外部分片可用 `scripts/merge_instance_manifests.py --manifests ... --output ... --split train|test` 合并；它重定位相对NPZ路径，核对真实文件存在、场景/帧声明、实例唯一性、已知physics及所有 `empty_gt_frames`，拒绝重叠、漏帧和跨split。默认只接受完整split。`--allow-partial` 只为显式成本/接线分片生成不完整汇总，训练时另须 `--allow-partial-manifests`，不能把这类输出登记为完整训练或选模集。[完整命令](IMPLEMENTATION.md#2-构建共同source缓存)
 
 首次真实资产接入时，先在约 64–128 个覆盖不同实例尺寸与 dense 点数的样本上测量：加载时间、Seal 秒/query、self-envelope 时间、秒/instance、缓存大小和命中率。然后按实际不同实例及查询数估计总成本。该数量是成本剖析样本，不是收敛证明或新的性能结果；不能直接许诺几小时重算或训练。
 
-缓存身份绑定：观测与实例身份、完整对象资产 hash、冻结物理配置 hash、teacher 代码 commit、normal-spec、sampler-spec、精确查询点/轴字节 hash、split 清单 hash、质量合同和单位。以下变化需要新身份：点或法向改变、normal/sampler 变化、物理参数/自碰定义变化。RGB 光度增强不改标签；刚性坐标变换须一致作用 p/n/g 并保存逆变换。
+缓存使用可读的结构化定义：观测/实例语义ID、normal/sampler/precision规范、query原像素ID序列、quality/schema、`teacher_spec=frozen_r20_target_self_v1`、小型完整 `physics` 字典，以及scene/frame/instance_row/obj_id和实际4×4变换。dense/Seal资产的路径只记录出处，不宣称内容版本一致；不计算文件或数组校验和。加载时直接核对query ID和顺序、query p/n与原像素几何、标签p/n与对应query逐元素相等，以及S/W/self/质量关系。
+
+新manifest为 `suction20.instance_manifest.v4`，读取器仍接受旧v3且忽略旧校验和字段。清理递归覆盖旧物理配置、标签identity、观测metadata和嵌套来源信息；新manifest/NPZ不再输出这些旧字段，不复制大数组来处理metadata。旧标签没有结构化physics时保留 `physics=null`，表示来源未知，不能从旧字段推断已知；只在双方physics均已知时直接比较，任何已知冲突仍拒绝。旧缓存经上述实际数组/schema检查后可以复用，不要求全量重算teacher；加载过程不重写NPZ。显式builder输出新manifest时更新metadata声明，已有标签仍保留未知来源的事实。点、法向、normal/sampler或已知物理规则改变时须重新匹配/构建对应标签。RGB光度增强不改标签；刚性坐标变换须一致作用p/n/g并保存逆变换。
 
 旧 S/W 仅能在其原精确 p/n 保持不变时复用；旧总 collision 不能拆出 self，`gt_B` 也不能通过除法恢复被门控抹去的质量。不可先把标签稠密插值再称为任意姿态真值。
 
 ## 7. 数据文件和 v2 标签字段
 
-原始数据、权重和整套标签留在数据根目录，不提交GitHub。source manifest由 `scripts/build_instance_dataset.py` 自动生成，一行一个实例观测；目标动作JSONL沿用独立 `suction20.target.v1` schema，示例见[运行说明](IMPLEMENTATION.md)。不要手写解释性hash占位符作为生产清单。
+原始数据、权重和整套标签留在数据根目录，不提交GitHub。source manifest由 `scripts/build_instance_dataset.py` 自动生成，一行一个实例观测；目标动作JSONL沿用独立 `suction20.target.v1` schema，示例见[运行说明](IMPLEMENTATION.md)。配置与来源字段必须写实际可读值，不使用伪造的身份占位符。
 
 | source manifest字段 | 实际内容 |
 |---|---|
-| `schema_version` / `manifest_version` | `instance_observation_v2` / `suction20.instance_manifest.v3` |
+| `schema_version` / `manifest_version` | `instance_observation_v2` / `suction20.instance_manifest.v4` |
 | `sample_id/instance_uid/group_id/capture_uid` | 稳定实例、场景分组及帧身份 |
 | `scene_id/frame_id/instance_row/obj_id/camera` | 官方场景0–189、帧0–255、实例行/对象ID和相机 |
 | `split/test_subset/source_kind` | train或test；seen/similar/novel或null；`suctionnet_rgbd` |
 | `normal_spec/sampler_spec/precision_spec/quality_contract` | 代码导出的四项精确合同字符串 |
-| `observation_npz/observation_sha256/observation_identity` | 实例NPZ、实际文件字节hash、来源身份 |
-| `query_cache/query_identity` | query与观测在同一个NPZ，独立精确p/n/顺序身份 |
-| `label_cache/label_sha256/label_identity/labelled_queries` | 标签NPZ、文件hash、物理/代码/对象/视角身份、已标注前缀长度；无标签模式为null/0 |
-| `source_hashes/calibration_sha256` | 原始RGB/depth/mask与标定来源的hash |
-| `support_count/query_count/trainable/status` | 原始支持点数、实际K与样本状态 |
+| `observation_npz/observation_identity` | 实例NPZ路径；图像shape、K、gravity、min_support和normal/sampler/precision定义 |
+| `query_cache/query_identity` | query与观测同一NPZ；sampler_spec、count和有序source_point_ids |
+| `label_cache/label_identity/labelled_queries` | 标签NPZ路径、physics/teacher_spec及对象/视角声明、已标注前缀长度；无标签模式为null/0 |
+| `source_paths/calibration` | 原始RGB/depth/mask/meta出处路径，实际K、T_world_cam与depth_scale_m |
+| `support_count/query_count/min_support_points/trainable/status` | 原始支持点数、实际K、构建时阈值与诊断状态 |
 
 原始观测包含RGB、米制XYZ图、实例mask、intrinsics/gravity及有效性标记。query字段实际为 `query_points[K,3]`、`query_normals[K,3]`、`query_valid[K]`、`query_uv[K,2]`、`query_source_ids[K]`、`query_ids[K]`、`query_components`、`query_cell_ids`和`query_rounds`。它们由 `prepare_instance` 生成并直接供两模型消费。
 
@@ -263,7 +269,7 @@ q_inst = q_sw*(NOT C_self)
 from suction20.instance_data import InstanceDataset
 source = InstanceDataset('/data/instance-v3/train/manifest_train.jsonl',
                          split='train', training_queries=128)
-item = source[0]  # 校验文件hash、精确query、label数值关系和身份
+item = source[0]  # 每份NPZ加载一次；检查实际query、label数值关系与已知配置
 ```
 
 v2标签解包后的共同监督字段如下；生产NPZ的metadata保存 `schema_version="suction20.instance_inst20.v2"` 与 `quality_contract="gt_INST20_pose_v2"`：
@@ -294,7 +300,9 @@ q 的浮点乘积核对采用 `atol=1e-6, rtol=1e-5`；合法质量在 [0,1]。�
 | `pose_source` | `planned_pipeline_contact` |
 | `actual_execution_verified` | 现有数据为 false |
 | 输出 `pose_valid / pose_support_valid / supported` | 数值有效、观测支持及最终可评价状态，与成败标签分开 |
-| checkpoint数据身份 | manifest和原始RGB/depth/mask字节hash；相机系p/n由原清单提供，禁止静默替换 |
+| checkpoint数据定义 | manifest路径、样本数、sample/group/观测语义ID、normal/sampler/precision和成功定义；相机系p/n由原清单提供，禁止静默替换 |
+
+目标支持边界和A的 `nearest_anchor` 使用同一个 `BOUNDARY_ROUNDOFF_M=1e-12 m`：`support_distance <= 0.005 + BOUNDARY_ROUNDOFF_M`。它只解决5mm边界的float64舍入一致性，不扩大传感器或执行误差容限。目标数据不在初始化或抽样时进行全文件校验和读取。
 
 ## 8. B 的监督与投影
 
@@ -314,7 +322,8 @@ B 默认只在共同的明确 query 姿态上计算源域 loss，不要求把稀
 - 固定真实 query 的 S/W 与冻结原 evaluator 一致，self 分项与原碰撞函数目标部分一致；独立外部项与 self 合并后复原旧总 C。
 - 修改点、轴、normal/sampler/teacher 配置后旧缓存身份被拒绝。
 - 标签未知、padding、重复点和空实例不产生伪监督，未观测区域不能补成已确认无碰撞。
-- scene/group/hash 不跨 split；统计总数、有效数、各类排除和正负例分布，无输出实例保留在评价分母。
+- scene/group/sample/规范观测路径不跨split；统计总数、有效数、各类排除和正负例分布，无输出实例保留在评价分母。
+- 修改旧校验和字段不会阻止加载；真实schema、shape/dtype、p/n、query顺序或质量公式不符仍拒绝。旧physics未知与标签未求值须分别报告，不能混作同一状态。
 - 分项报告法向、候选构建、teacher、编码、查询评分及端到端耗时；无实测时只标预算/目标。
 
 合成工具能验证数学与文件合同，不能替代真实标定、teacher 数值对齐、原始数据来源与逐记录核验。

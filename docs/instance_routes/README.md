@@ -4,6 +4,8 @@
 
 **A/B的实例数据、teacher、网络、预训练/微调、checkpoint恢复和native推理/评价已实现。** 直接100场景训练，完整source test选best并标记 `test_selected`；公开仅半径评价待定。运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。当前完成CPU和合成资产链路验证，尚无新模型完整真实数据精度、GPU时延或TensorRT结果。
 
+当前运行使用manifest v4，兼容旧v3并忽略旧校验和字段；数据/标签/checkpoint身份改为实际数组检查、可读配置和语义ID，不计算SHA-256，也不改用另一种摘要。source预训练仍为140000成功实例/8750更新，每1750步完整test选模、共5次，每875步保存last；默认仅保留当次best或最终步的gzip明细。builder已支持独立scene分片多进程和安全合并。A近邻热路径向量化、评价后逐层模式恢复、5mm共同舍入边界和A可配置支持门槛的代码与验证见[运行说明](IMPLEMENTATION.md)。
+
 生产代码审查基线为 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。初稿保留在 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)；v2修订保留在 [`8e63e92`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/8e63e925bc54c442e8b5df6422ed51a69ce73fc1)；本页及子文档以v3为准。[逐项复核与修正](REVIEW_AND_CORRECTIONS.md)说明初稿缺陷和v2决策；[v3几何边界复核](BOUNDARY_REVIEW.md)说明本次四项修订、数值反例与限制。
 
 ## 分支实施入口

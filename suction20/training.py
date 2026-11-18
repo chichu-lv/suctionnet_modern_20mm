@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import math
 import os
@@ -15,6 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 import yaml
+from .metadata import without_legacy_checksums
 
 EXPERIMENTS = {
     "E0": ("gt_A", False, False, False), "E1": ("gt_B", False, False, False),
@@ -31,7 +31,7 @@ def load_config(path: str | Path) -> dict:
         config = json.load(stream) if path.suffix.lower() == ".json" else yaml.safe_load(stream)
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a mapping")
-    config = copy.deepcopy(config)
+    config = without_legacy_checksums(copy.deepcopy(config))
     experiment = config.get("experiment")
     if experiment is not None:
         if experiment not in EXPERIMENTS:
@@ -47,14 +47,14 @@ def load_config(path: str | Path) -> dict:
     return config
 
 
-def content_digest(value: dict) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                     ensure_ascii=False).encode()).hexdigest()
+def configuration_identity(value: dict) -> dict:
+    """Keep an inspectable configuration instead of a content checksum."""
+    return without_legacy_checksums(copy.deepcopy(value))
 
 
 def semantic_config(config: dict) -> dict:
     """Permit relocating files and devices, but preserve all training semantics."""
-    result = copy.deepcopy(config)
+    result = configuration_identity(config)
     result.pop("runtime", None)
     result.pop("init_checkpoint", None)
     for section in ("data", "source_replay"):
@@ -219,15 +219,12 @@ def code_revision() -> str:
     return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
 
 
-def worktree_digest() -> str:
+def worktree_state() -> dict:
     root = Path(__file__).resolve().parents[1]
-    paths = subprocess.check_output(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard"], text=True).splitlines()
-    digest = hashlib.sha256()
-    for name in sorted(set(paths)):
-        path = root / name
-        if path.is_file():
-            digest.update(name.encode() + b"\0" + path.read_bytes())
-    return digest.hexdigest()
+    changes = subprocess.check_output(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+        text=True).splitlines()
+    return {"revision": code_revision(), "tracked_changes": changes}
 
 
 def save_checkpoint(path, model, optimizer, scaler, schedule, *, global_step, config,
@@ -236,7 +233,7 @@ def save_checkpoint(path, model, optimizer, scaler, schedule, *, global_step, co
              "model_state_dict": model.state_dict(), "model_config": config["model"],
              "quality_target": config["model"].get("quality_target", "gt_B"),
              "source_label_config": source_label_config,
-             "source_label_config_sha256": content_digest(source_label_config),
+             "source_label_definition": configuration_identity(source_label_config),
              "experiment": config.get("experiment"), "optimizer_state_dict": optimizer.state_dict(),
              "scheduler_state_dict": {"global_step": global_step, "config": config.get("scheduler", {})},
              "scaler_state_dict": scaler.state_dict(), "global_step": global_step,
@@ -247,7 +244,7 @@ def save_checkpoint(path, model, optimizer, scaler, schedule, *, global_step, co
                  "val": list(range(9, 100, 10))}),
              "best_metric": best_metric, "training_config": config,
              "code_revision": extra["code_revision"] if "code_revision" in extra else code_revision(),
-             "code_worktree_sha256": extra["code_worktree_sha256"] if "code_worktree_sha256" in extra else worktree_digest()}
+             "code_worktree_state": extra["code_worktree_state"] if "code_worktree_state" in extra else worktree_state()}
     state.update(extra)
     write_checkpoint_state(path, state)
 
@@ -260,7 +257,7 @@ def write_checkpoint_state(path, state):
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("xb") as stream:
-            torch.save(state, stream)
+            torch.save(without_legacy_checksums(state), stream)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
@@ -274,7 +271,7 @@ def load_checkpoint(path, model, *, optimizer=None, scaler=None, schedule=None,
     state = torch.load(path, map_location="cpu", weights_only=False)
     if state.get("format_version") != "suction20.checkpoint.v1":
         raise ValueError("Unsupported checkpoint format")
-    if source_label_config is not None and content_digest(source_label_config) != state["source_label_config_sha256"]:
+    if source_label_config is not None and configuration_identity(source_label_config) != configuration_identity(state["source_label_config"]):
         raise ValueError("Source label definition differs from checkpoint")
     if allow_new_task_head and not resume:
         result = model.load_state_dict(state["model_state_dict"], strict=False)

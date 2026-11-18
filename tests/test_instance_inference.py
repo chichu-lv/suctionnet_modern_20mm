@@ -21,7 +21,7 @@ from suction20.instance_geometry import (NORMAL_SPEC, SAMPLER_SPEC, PRECISION_SP
                                         prepare_instance)
 from suction20.instance_inference import (contact_transform, infer_instance,
     load_instance_checkpoint, load_raw_observation, nms_pose_candidates, resolve_ranking)
-from suction20.instance_training import CHECKPOINT_SCHEMA, QUALITY_CONTRACT, digest_json
+from suction20.instance_training import CHECKPOINT_SCHEMA, QUALITY_CONTRACT
 import suction20.instance_inference as inference
 from scripts import infer_instance as cli
 
@@ -151,7 +151,16 @@ def test_top_five_ties_and_valid_empty_instances():
     assert empty['reason'] == 'no_eligible_queries'
     unsupported = infer_instance(FixedScorer(valid=[False, False]), observation(2, support=20), stage='pretrain')
     assert unsupported['status'] == 'no_pose' and unsupported['reason'] == 'insufficient_support'
-    assert unsupported['rejection_counts'] == {'pose_geometry_invalid': 2}
+    assert unsupported['rejection_counts'] == {'insufficient_support': 2}
+
+
+@pytest.mark.parametrize('threshold,expected_calls', [(20, 1), (21, 0), (150, 0)])
+def test_inference_uses_model_support_threshold(threshold, expected_calls):
+    model = FixedScorer()
+    model.min_support_points = threshold
+    report = infer_instance(model, observation(2, support=20), stage='pretrain')
+    assert model.encode_calls == expected_calls
+    assert report['status'] == ('ok' if expected_calls else 'no_pose')
 
 
 @pytest.mark.parametrize('override,match', [
@@ -179,7 +188,7 @@ def checkpoint_state(model, *, route='a', stage='pretrain'):
               'independent_test_estimate': False, 'train_scene_range': [0, 99],
               'public_evaluation_status': 'deferred', 'paper_comparison_ready': False}
     identity = {'route': route, 'stage': stage, 'quality_contract': QUALITY_CONTRACT,
-                'config_sha256': digest_json(config), 'code_sha256': 'test-code',
+                'config_definition': deepcopy(config),
                 'source': {'data_identity': {'normal_spec': NORMAL_SPEC, 'sampler_spec': SAMPLER_SPEC,
                             'precision_spec': PRECISION_SPEC, 'quality_contract': QUALITY_CONTRACT}}}
     return {'schema': CHECKPOINT_SCHEMA, 'config': config, 'identity': identity, 'policy': policy,
@@ -200,7 +209,6 @@ def test_checkpoint_loading_preserves_policy_and_strict_weights(tmp_path, monkey
         return FixedScorer().to(device)
 
     monkeypatch.setattr(inference, 'create_instance_model', factory)
-    monkeypatch.setattr(inference, 'runtime_code_digest', lambda route: 'test-code')
     loaded, metadata = load_instance_checkpoint(path, backbone_root=tmp_path/'relocated-backbone')
     assert not loaded.training and loaded.weight.item() == pytest.approx(4.2)
     assert factory_calls[0]['model']['backbone_root'] == str((tmp_path/'relocated-backbone').resolve())
@@ -208,7 +216,8 @@ def test_checkpoint_loading_preserves_policy_and_strict_weights(tmp_path, monkey
     assert metadata['selection_policy']['independent_test_estimate'] is False
     assert metadata['checkpoint_selection_role'] == 'test_selected'
     assert metadata['initialization'] is None
-    assert len(metadata['checkpoint_sha256']) == 64
+    assert metadata['checkpoint_file']['path'] == str(path.resolve())
+    assert metadata['checkpoint_file']['size_bytes'] == path.stat().st_size
     state['model']['unexpected_weight'] = torch.ones(1)
     torch.save(state, path)
     with pytest.raises(RuntimeError, match='Unexpected key'):
@@ -217,12 +226,11 @@ def test_checkpoint_loading_preserves_policy_and_strict_weights(tmp_path, monkey
 
 def test_finetune_parent_provenance_survives_without_parent_file(tmp_path, monkeypatch):
     state = checkpoint_state(FixedScorer(), stage='finetune')
-    state['initialization'] = {'checkpoint_sha256': 'a'*64, 'checkpoint_kind': 'best',
+    state['initialization'] = {'checkpoint_file_record': {'path': 'source/best.pt', 'size_bytes': 1234}, 'checkpoint_kind': 'best',
         'global_step': 2880, 'checkpoint_selection_role': 'test_selected',
         'selection_policy': {'selection_role': 'test_selected', 'independent_test_estimate': False}}
     path = tmp_path/'finetuned.pt'
     torch.save(state, path)
-    monkeypatch.setattr(inference, 'runtime_code_digest', lambda route: 'test-code')
     monkeypatch.setattr(inference, 'create_instance_model', lambda config, device='cpu': FixedScorer().to(device))
     _, metadata = load_instance_checkpoint(path)
     assert metadata['stage'] == 'finetune'
@@ -234,10 +242,9 @@ def test_finetune_parent_provenance_survives_without_parent_file(tmp_path, monke
 @pytest.mark.parametrize('mutate,match', [
     (lambda s: s.update(schema='legacy'), 'Expected'),
     (lambda s: s['identity'].update(quality_contract='gt_SW20'), 'quality'),
-    (lambda s: s['identity'].update(code_sha256='old-code'), 'implementation hash'),
     (lambda s: s['identity']['source']['data_identity'].update(normal_spec='one-pixel'), 'normal/sampler'),
     (lambda s: s['policy'].update(independent_test_estimate=True), 'selection policy'),
-    (lambda s: s['config']['model'].update(backbone_points=8), 'config hash'),
+    (lambda s: s['config']['model'].update(backbone_points=8), 'config definition'),
     (lambda s: s.update(global_step=0), 'completed optimizer'),
 ])
 def test_checkpoint_mismatches_are_not_accepted(tmp_path, monkeypatch, mutate, match):
@@ -245,7 +252,6 @@ def test_checkpoint_mismatches_are_not_accepted(tmp_path, monkeypatch, mutate, m
     mutate(state)
     path = tmp_path/'bad.pt'
     torch.save(state, path)
-    monkeypatch.setattr(inference, 'runtime_code_digest', lambda route: 'test-code')
     monkeypatch.setattr(inference, 'create_instance_model', lambda *args, **kwargs: pytest.fail('Invalid checkpoint reached model factory'))
     with pytest.raises(ValueError, match=match):
         load_instance_checkpoint(path)

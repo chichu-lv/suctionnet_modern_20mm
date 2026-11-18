@@ -7,7 +7,6 @@ stage timings separately from actual training throughput (measured in run logs).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,29 +15,56 @@ import sys
 import time
 
 
-def digest(path):
-    h = hashlib.sha256()
-    with Path(path).open('rb') as f:
-        for block in iter(lambda: f.read(1024 * 1024), b''):
-            h.update(block)
-    return h.hexdigest()
+def file_metadata(path):
+    path = Path(path).resolve()
+    return {'path': str(path), 'size_bytes': path.stat().st_size}
 
 
-def fingerprint(value):
+def checkout_state(repo, training):
+    # Older baseline checkouts may lack this metadata API.
+    if hasattr(training, 'worktree_state'):
+        return training.worktree_state()
+    changes = subprocess.check_output(
+        ['git', '-C', str(Path(repo).resolve()), 'status', '--porcelain', '--untracked-files=no'],
+        text=True).splitlines()
+    return {'revision': training.code_revision(), 'tracked_changes': changes}
+
+
+def array_structure(value):
+    """Descriptive metadata only; exact comparisons use the saved arrays."""
     import numpy as np
     import torch
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
     if isinstance(value, np.ndarray):
-        return {'shape': list(value.shape), 'dtype': str(value.dtype),
-                'sha256': hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()}
+        return {'shape': list(value.shape), 'dtype': str(value.dtype)}
     if isinstance(value, dict):
-        return {str(k): fingerprint(v) for k, v in sorted(value.items())}
+        return {str(k): array_structure(v) for k, v in sorted(value.items())}
     if isinstance(value, (tuple, list)):
-        return [fingerprint(v) for v in value]
+        return [array_structure(v) for v in value]
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def exact_equal(left, right):
+    """Compare bounded diagnostic arrays directly, including signed zeros."""
+    import numpy as np
+    import torch
+    if isinstance(left, torch.Tensor):
+        if not isinstance(right, torch.Tensor):
+            return False
+        left, right = left.detach().cpu().numpy(), right.detach().cpu().numpy()
+    if isinstance(left, np.ndarray):
+        return (isinstance(right, np.ndarray) and left.dtype == right.dtype and
+                left.shape == right.shape and left.tobytes() == right.tobytes())
+    if isinstance(left, dict):
+        return (isinstance(right, dict) and left.keys() == right.keys() and
+                all(exact_equal(left[key], right[key]) for key in left))
+    if isinstance(left, (tuple, list)):
+        return (isinstance(right, (tuple, list)) and len(left) == len(right) and
+                all(exact_equal(a, b) for a, b in zip(left, right)))
+    return bool(left == right)
 
 
 def child(args):
@@ -47,13 +73,14 @@ def child(args):
     sys.path.insert(0, str(Path(args.repo).resolve()))
     import copy
     import torch
+    from suction20 import training
     from suction20.datasets import collate_public, frame_key, split_scene_ids
     from suction20.losses import source_losses
     from suction20.pretrain_budget import resolve_budget, resolve_config, sampling_epoch
     from suction20.runner import make_model, make_source_dataset, override_paths
     from suction20.training import (FrameSchedule, capture_rng, restore_rng,
                                    load_config, move_to_device, seed_everything,
-                                   code_revision, worktree_digest)
+                                   code_revision)
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -101,7 +128,9 @@ def child(args):
             before = capture_rng()
             value = original_query(*pos, **kw)
             after = capture_rng()
-            row = {'result': fingerprint(value)}
+            artifact = f'{args.phase}-query-{len(query_results)}.pt'
+            torch.save(value, out / artifact)
+            row = {'result': array_structure(value), 'artifact': artifact}
             saved_timings = copy.deepcopy(getattr(group, 'last_timings', {}))
             saved_query_timings = copy.deepcopy(getattr(group, 'last_query_timings', {}))
             if not query_results:
@@ -113,7 +142,7 @@ def child(args):
                     started = time.perf_counter()
                     repeated = original_query(*pos, **kw)
                     repetitions.append(time.perf_counter() - started)
-                    if fingerprint(repeated) != row['result']:
+                    if not exact_equal(repeated, value):
                         raise ValueError('Repeated fixed-pose query changed its result')
                 row['query_repeated_seconds'] = repetitions
                 if args.phase == 'optimized':
@@ -131,7 +160,7 @@ def child(args):
                             started = time.perf_counter()
                             variant = query(*pos, **kw)
                             durations.append(time.perf_counter() - started)
-                            if fingerprint(variant) != row['result']:
+                            if not exact_equal(variant, value):
                                 raise ValueError(f'{label} changed fixed-pose geometry')
                         variants[label] = {'seconds': durations,
                                            'timings': copy.deepcopy(group.last_query_timings)}
@@ -160,7 +189,10 @@ def child(args):
         normalized = frame_key(key, config['data'].get('camera', 'realsense'))
         sample, read_s = timed(lambda: dataset.get_sample(keys[normalized], aug_seed))
         packed, collate_s = timed(lambda: collate_public([sample], config['model'].get('voxel_size_m', .002)))
-        data_identity = fingerprint({'inputs': packed['inputs'], 'targets': packed['targets'], 'meta': packed['meta']})
+        data = {key: packed[key] for key in ('inputs', 'targets', 'meta')}
+        data_identity = array_structure(data)
+        torch.save(data, out / f'{args.phase}-data-{index}.pt')
+        del data
         kwargs = {}
         if performance is not None:
             from suction20.cpu_geometry import CpuGeometry, SamplerTargetsCPU
@@ -198,14 +230,14 @@ def child(args):
         raise ValueError('Non-finite comparison gradients')
     torch.save({'gradients': gradients, 'buffers': {k: v.detach().cpu() for k, v in model.named_buffers()},
                 'rng': capture_rng()}, out / f'{args.phase}-state.pt')
-    report = {'phase': args.phase, 'repo': str(Path(args.repo).resolve()), 'checkpoint_sha256': digest(args.checkpoint),
-              'code_revision': code_revision(), 'worktree_sha256': worktree_digest(),
+    report = {'phase': args.phase, 'repo': str(Path(args.repo).resolve()), 'checkpoint_metadata': file_metadata(args.checkpoint),
+              'code_revision': code_revision(), 'worktree_state': checkout_state(args.repo, training),
               'checkpoint_step': state['global_step'], 'frames': records, 'queries': query_results,
               'sampler_after': schedule.state_dict(), 'amp': bool(amp), 'optimizer_updates': 0,
               'gradient_scale': scaler.get_scale(),
               'diagnostic_performance': performance,
               'model_execution': getattr(model, 'execution_settings', {}),
-              'performance_config_sha256': digest(args.performance_config) if performance else None}
+              'performance_config_metadata': file_metadata(args.performance_config) if performance else None}
     (out / f'{args.phase}.json').write_text(json.dumps(report, indent=2) + '\n')
 
 
@@ -217,7 +249,10 @@ def compare(args):
     failures, numeric = [], {}
     atol, rtol = (2e-4, 2e-3) if old['amp'] else (1e-6, 1e-4)
 
-    def check(a, b, path):
+    def check(a, b, path, *, exact=False):
+        if exact:
+            if not exact_equal(a, b): failures.append(path)
+            return
         if isinstance(a, torch.Tensor):
             if not isinstance(b, torch.Tensor) or a.shape != b.shape or a.dtype != b.dtype:
                 failures.append(path + ': tensor contract'); return
@@ -237,22 +272,29 @@ def compare(args):
             for i, (x, y) in enumerate(zip(a, b)): check(x, y, f'{path}.{i}')
         elif a != b: failures.append(path)
 
-    for k in ('checkpoint_sha256', 'checkpoint_step', 'sampler_after', 'amp'):
+    for k in ('checkpoint_metadata', 'checkpoint_step', 'sampler_after', 'amp'):
         check(old[k], new[k], k)
     for i, (a, b) in enumerate(zip(old['frames'], new['frames'])):
         for k in ('frame_key', 'augmentation_seed', 'data'): check(a[k], b[k], f'frame.{i}.{k}')
+        check(torch.load(out / f'baseline-data-{i}.pt', weights_only=False),
+              torch.load(out / f'optimized-data-{i}.pt', weights_only=False),
+              f'frame.{i}.data_values', exact=True)
         for k in a['loss']:
             check(torch.tensor(a['loss'][k]), torch.tensor(b['loss'][k]), f'frame.{i}.loss.{k}')
         check(torch.load(out / f'baseline-frame-{i}.pt', weights_only=False),
               torch.load(out / f'optimized-frame-{i}.pt', weights_only=False), f'outputs.{i}')
     check([q['result'] for q in old['queries']], [q['result'] for q in new['queries']], 'query')
+    for i, (a, b) in enumerate(zip(old['queries'], new['queries'])):
+        check(torch.load(out / a['artifact'], weights_only=False),
+              torch.load(out / b['artifact'], weights_only=False), f'query.{i}.values', exact=True)
     check(torch.load(out / 'baseline-state.pt', weights_only=False),
           torch.load(out / 'optimized-state.pt', weights_only=False), 'state')
-    report = {'schema_version': 'suction20.pipeline-comparison.v1', 'passed': not failures,
+    report = {'schema_version': 'suction20.pipeline-comparison.v2', 'passed': not failures,
               'failures': failures, 'atol': atol, 'rtol': rtol, 'numeric_errors': numeric,
               'baseline': old, 'optimized': new,
               'limitations': ['Four fixed real frames, no optimizer update, no quality/convergence claim.',
                   'Explicit stage CUDA synchronization; diagnostic query repeats inflate forward timing.',
+                  'Bounded data/query arrays are saved and compared directly; artifact I/O is diagnostic overhead.',
                   'Both processes compare gradients with the same checkpoint AMP scale; gradients are not unscaled.',
                   'Both processes upload all input fields; selective H2D and prefetch gains require normal logs.',
                   'Normal training logs, not this benchmark, establish combined pipeline throughput.']}

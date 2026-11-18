@@ -6,7 +6,7 @@ No training, physical evaluator, or outcome-derived model inputs are used.
 from __future__ import annotations
 
 import argparse
-import hashlib
+import base64
 import html
 import json
 import math
@@ -17,7 +17,6 @@ import sys
 import time
 import traceback
 
-CHECKPOINT_SHA256 = "5bc2c14c014fbf23cbef48062a0dac523ea243b6c18e540bb5af022ff7d0ea3a"
 CHECKPOINT_STEP = 2880
 SCHEMA = "suction20.target-baseline.case.v1"
 NOTICE = ("Pretrained E5; no finetuning. q/q0 are predicted source-domain quality scores, "
@@ -29,19 +28,57 @@ NOTICE = ("Pretrained E5; no finetuning. q/q0 are predicted source-domain qualit
           "are not measured executed contact poses.")
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def clean_metadata(value):
+    """Drop obsolete checksum fields when consuming archived JSON metadata."""
+    if isinstance(value, dict):
+        return {key: clean_metadata(item) for key, item in value.items()
+                if not any(token in str(key).lower().replace("_", "").replace("-", "")
+                           for token in ("sha256", "checksum", "digest"))}
+    if isinstance(value, list):
+        return [clean_metadata(item) for item in value]
+    return value
+
+
+def file_record(path):
+    """Record location and byte count without opening or authenticating content."""
+    path = Path(path)
+    return dict(path=str(path.resolve()), size_bytes=path.stat().st_size)
+
+
+def require_compatible_identity(previous, current):
+    """Compare declared fields that exist on both sides; old provenance can be unknown."""
+    previous, current = clean_metadata(previous), clean_metadata(current)
+    for key in previous.keys() & current.keys():
+        if previous[key] != current[key]:
+            raise ValueError(f"Output declaration differs for {key}; select a new directory")
+
+
+def existing_cases(output):
+    """Locate archival files by their stored sample ID, without interpreting filenames."""
+    found = {}
+    for path in sorted((Path(output) / "cases").glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        sample_id = record.get("sample_id")
+        if not isinstance(sample_id, str) or not sample_id:
+            raise ValueError(f"Case has no sample_id: {path}")
+        if sample_id in found:
+            raise ValueError(f"Duplicate archived sample_id: {sample_id}")
+        found[sample_id] = path
+    return found
+
+
+def sample_seed(sample_id):
+    """Deterministic RNG seed from the semantic ID, unrelated to file validation."""
+    import numpy as np
+    entropy = [42, *sample_id.encode("utf-8")]
+    return int(np.random.SeedSequence(entropy).generate_state(1, dtype=np.uint32)[0])
 
 
 def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, allow_nan=False, indent=2)
+        json.dump(clean_metadata(value), stream, ensure_ascii=False, allow_nan=False, indent=2)
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
@@ -54,7 +91,11 @@ def asset(root, value):
 
 
 def case_key(row):
-    return hashlib.sha256(row["sample_id"].encode("utf-8")).hexdigest()
+    # URL-safe base64 is reversible and does not validate or conceal identity.
+    key = "sample_" + base64.urlsafe_b64encode(row["sample_id"].encode("utf-8")).decode("ascii").rstrip("=")
+    if len(key) > 220:
+        raise ValueError("sample_id is too long for a portable artifact filename")
+    return key
 
 
 def read_test_rows(manifest):
@@ -62,7 +103,7 @@ def read_test_rows(manifest):
     for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
-        row = json.loads(line)
+        row = clean_metadata(json.loads(line))
         if not isinstance(row, dict) or not isinstance(row.get("sample_id"), str) or not row["sample_id"].strip():
             raise ValueError(f"Line {number}: sample_id required")
         if row["sample_id"] in identities:
@@ -189,9 +230,10 @@ def render_overlay(row, root, sample_meta, prediction, selected, destination):
 def write_gallery(output, rows):
     escape = lambda value: html.escape(str(value), quote=True)
     cards = []
+    archived = existing_cases(output)
     for row in rows:
-        key = case_key(row)
-        case_path = output / "cases" / f"{key}.json"
+        case_path = archived.get(row["sample_id"], output / "cases" / f"{case_key(row)}.json")
+        key = case_path.stem
         case = json.loads(case_path.read_text()) if case_path.exists() else None
         manual = json.dumps(row.get("raw_review", row.get("manual_outcome")), ensure_ascii=False)
         body = f"<h2>{escape(row['sample_id'])}</h2><p>Original manual label: {escape(manual)}</p>"
@@ -243,8 +285,6 @@ def initialize_model(args):
     from suction20.runner import make_model
     from suction20.training import load_checkpoint, load_config
     from suction20.validation import checkpoint_inference_config
-    if sha256(args.checkpoint) != CHECKPOINT_SHA256:
-        raise ValueError("Checkpoint differs from fixed E5-best SHA256")
     torch.set_num_threads(args.threads)
     device = torch.device(args.device)
     config = attach_performance(load_config(args.config), args.performance)
@@ -307,45 +347,46 @@ def run(args):
         if args.preflight_only:
             publish(status="preflight_passed")
             return 0
-        if sha256(args.checkpoint) != CHECKPOINT_SHA256:
-            raise ValueError("Checkpoint differs from fixed E5-best SHA256")
-        identity = dict(checkpoint_sha256=CHECKPOINT_SHA256, config_sha256=sha256(args.config),
-                        performance_sha256=sha256(args.performance), manifest_sha256=sha256(manifest),
-                        worker_sha256=sha256(__file__), checkpoint_step=CHECKPOINT_STEP, schema_version=SCHEMA)
-        identity["repo_source_sha256"] = {name: sha256(args.repo / name) for name in (
-            "suction20/target_dataset.py", "suction20/validation.py", "suction20/training.py",
-            "suction20/performance.py", "suction20/runner.py", "models/suction20net.py")}
-        saved_identity = output / "identity.json"
-        if saved_identity.exists() and json.loads(saved_identity.read_text()) != identity:
-            raise ValueError("Output identity differs; use a new output directory")
-        atomic_json(saved_identity, identity)
         if initialized is None:
             initialized = initialize_model(args)
         config, source_config, model, device = initialized
+        identity = dict(identity_spec="declared_paths_config_v1", checkpoint=file_record(args.checkpoint),
+                        config=file_record(args.config), performance=file_record(args.performance),
+                        manifest=file_record(manifest), worker=file_record(__file__),
+                        checkpoint_step=CHECKPOINT_STEP, schema_version=SCHEMA,
+                        config_definition=clean_metadata(config), source_label_config=clean_metadata(source_config))
+        saved_identity = output / "identity.json"
+        if saved_identity.exists():
+            require_compatible_identity(json.loads(saved_identity.read_text()), identity)
+        atomic_json(saved_identity, identity)
         import numpy as np
         import torch
         from suction20.target_dataset import load_target_observation
         from suction20.validation import nms_prediction, predict_sample
         atomic_json(output / "inference_config.json", config)
+        archived = existing_cases(output)
         publish(status="running")
         for row in rows:
-            key = case_key(row)
-            case_path = output / "cases" / f"{key}.json"
+            case_path = archived.get(row["sample_id"], output / "cases" / f"{case_key(row)}.json")
+            key = case_path.stem
             npz_path = case_path.with_suffix(".npz")
             publish(current_sample=row["sample_id"])
             started = time.perf_counter()
             try:
-                asset_hashes = {name: sha256(asset(manifest.parent, row["observation"][name]))
-                                for name in ("depth_path", "instance_mask_path", "path", "rgb_path")
-                                if row["observation"].get(name)}
+                assets = {name: file_record(asset(manifest.parent, row["observation"][name]))
+                          for name in ("depth_path", "instance_mask_path", "path", "rgb_path")
+                          if row["observation"].get(name)}
                 if case_path.exists():
                     previous = json.loads(case_path.read_text())
-                    if previous["identity"] != identity or previous["asset_sha256"] != asset_hashes or not npz_path.is_file():
-                        raise ValueError("Existing case identity/assets differ or NPZ is missing")
+                    require_compatible_identity(previous["identity"], identity)
+                    if (previous["sample_id"] != row["sample_id"]
+                            or clean_metadata(previous["observation"]) != row["observation"]
+                            or not npz_path.is_file()):
+                        raise ValueError("Existing sample/observation declaration differs or NPZ is missing")
                     progress["completed"] += 1
                     publish()
                     continue
-                seed = int.from_bytes(hashlib.sha256(("42:" + row["sample_id"]).encode()).digest()[:4], "big")
+                seed = sample_seed(row["sample_id"])
                 random.seed(seed)
                 np.random.seed(seed)
                 torch.manual_seed(seed)
@@ -380,7 +421,8 @@ def run(args):
                         instance_id=int(prediction["instance_id"][i]), source_index=source_index, source_pixel_uv=pixel,
                         scene_rank=ranks.get(i), per_instance_nms=i in per_instance_set))
                 case = dict(schema_version=SCHEMA, sample_id=row["sample_id"], split="test", identity=identity,
-                            asset_sha256=asset_hashes, seed=seed, candidates=candidates, rendering=rendering,
+                            assets=assets, seed=seed, seed_spec="sample_utf8_seedsequence_v1",
+                            candidates=candidates, rendering=rendering,
                             source_index_kind=sample["meta"]["source_index_kind"], observation=row["observation"],
                             metadata={k: v for k, v in row.items() if k != "observation"}, notice=NOTICE,
                             timing=dict(load_seconds=load_seconds, inference_seconds=inference_seconds,

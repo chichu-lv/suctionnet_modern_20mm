@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
-import hashlib
 import importlib
 import json
 import os
@@ -51,10 +50,6 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def file_sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def source_identity(github_base):
     paths = [REPO_ROOT / name for name in (
         'models/contact_grouping.py', 'models/contact_ops.py', 'models/geometry_ops.py', 'models/spatial_index.py',
@@ -69,8 +64,9 @@ def source_identity(github_base):
     except FileNotFoundError:
         current_head = None
     return {'github_base': github_base, 'local_snapshot_head': current_head,
-            'head_note': 'The local snapshot commit is not the GitHub source revision; source SHA256 values identify the measured working tree.',
-            'sha256': {str(p.relative_to(REPO_ROOT)): file_sha256(p) for p in sorted(paths)}}
+            'head_note': 'The local snapshot commit is distinct from the supplied GitHub baseline; file sizes are descriptive metadata only.',
+            'source_files': {str(p.relative_to(REPO_ROOT)): {'size_bytes': p.stat().st_size}
+                             for p in sorted(paths)}}
 
 
 def compare_queries(expected, actual):
@@ -119,7 +115,8 @@ def main(argv=None):
             'grid': spatial_index_backend_identity('uniform_grid_cpu'),
             'contact': {'abi_version': contact_module.CONTACT_ABI_VERSION,
                         'link_flags': getattr(contact_module, 'LINK_FLAGS', '').split(),
-                        'binary_sha256': file_sha256(Path(contact_module.__file__))},
+                        'source_version': getattr(contact_module, 'SOURCE_VERSION', 'legacy_abi1'),
+                        'binary_filename': Path(contact_module.__file__).name},
         },
         'environment': {
             'python': sys.version, 'platform': platform.platform(), 'machine': platform.machine(),

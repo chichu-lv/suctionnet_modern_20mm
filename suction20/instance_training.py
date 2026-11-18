@@ -6,8 +6,9 @@ paper AP are different protocols; the radius-only proposal remains deferred.
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 from copy import deepcopy
-import hashlib
+import gzip
 import json
 import math
 from pathlib import Path
@@ -25,17 +26,43 @@ CHECKPOINT_SCHEMA = 'instance_training_checkpoint_v1'
 QUALITY_CONTRACT = 'gt_INST20_pose_v2'
 
 
-def digest_json(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                    allow_nan=False).encode()).hexdigest()
+RUNTIME_CONTRACT = 'instance_runtime_semantic_checks_v2'
 
 
-def file_digest(path):
-    h = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            h.update(chunk)
-    return h.hexdigest()
+def clean_metadata(value):
+    """Discard obsolete content-checksum metadata without reading any asset."""
+    if isinstance(value, dict):
+        return {k: clean_metadata(v) for k, v in value.items()
+                if 'sha256' not in str(k).lower().replace('_', '').replace('-', '')}
+    if isinstance(value, (tuple, list)):
+        return [clean_metadata(v) for v in value]
+    return deepcopy(value)
+
+
+def file_record(path):
+    """Cheap provenance only; size and path do not authenticate file contents."""
+    path = Path(path)
+    return {'path': str(path.resolve()), 'size_bytes': path.stat().st_size}
+
+
+@contextmanager
+def evaluation_mode(model):
+    """Restore every module's exact mixed train/eval flags, also on errors."""
+    previous_states = [(module, module.training) for module in model.modules()]
+    try:
+        model.eval()
+        yield
+    finally:
+        # train(flag) recurses and would overwrite descendants with mixed modes.
+        for module, flag in previous_states:
+            module.training = flag
+
+
+def minimum_support_points(model):
+    value = getattr(model, 'min_support_points', 100)
+    if isinstance(value, bool) or int(value) != value or value < 1:
+        raise ValueError('min_support_points must be a positive integer')
+    return int(value)
 
 
 def load_instance_config(path):
@@ -43,6 +70,7 @@ def load_instance_config(path):
         config = yaml.safe_load(stream)
     if not isinstance(config, dict) or config.get('schema') != 'instance_runtime_v1':
         raise ValueError('Expected an instance_runtime_v1 runtime config, not design_spec')
+    config = clean_metadata(config)
     if config.get('route') not in ('a', 'b'):
         raise ValueError('route must be a or b')
     if config.get('quality_contract') != QUALITY_CONTRACT:
@@ -56,6 +84,8 @@ def load_instance_config(path):
         row = config[stage]
         if int(row['steps']) < 1 or int(row['evaluate_every']) < 1:
             raise ValueError('steps and evaluate_every must be positive')
+        if row.get('evaluation_records', 'best_and_final') not in ('best_and_final', 'all', 'none'):
+            raise ValueError('evaluation_records must be best_and_final, all or none')
     if not 1 <= int(pre['queries']) <= 256 or int(pre['accumulate_instances']) < 1:
         raise ValueError('Invalid query or effective batch budget')
     if int(config['finetune']['head_only_steps']) < 0:
@@ -115,7 +145,11 @@ class InstanceSchedule:
         self.groups = {s: dict(f) for s, f in sorted(grouped.items())}
         self.scenes = list(self.groups)
         self.length = len(records)
-        self.identity = digest_json(records)
+        # Stable semantic keys, not file contents or a content digest. Save the
+        # actual sequence so resumed index draws have the same meaning.
+        self.identity = [(int(row.get('scene_id', 0)), int(row.get('frame_id', i)),
+                          row.get('instance_row'), str(row.get('sample_id', row.get('instance_uid', i))))
+                         for i, row in enumerate(records)]
 
     def next(self):
         self.draws += 1
@@ -133,7 +167,11 @@ class InstanceSchedule:
                 'identity': self.identity, 'hierarchy': self.hierarchy}
 
     def load_state_dict(self, state):
-        if (state['identity'], state['hierarchy']) != (self.identity, self.hierarchy):
+        if state['hierarchy'] != self.hierarchy:
+            raise ValueError('Sampler strategy changed across resume')
+        # Earlier checkpoints stored only a checksum. It is ignored; new states
+        # compare the concrete semantic order directly.
+        if isinstance(state.get('identity'), (list, tuple)) and state['identity'] != self.identity:
             raise ValueError('Sampler data/order/strategy changed across resume')
         self.rng.bit_generator.state = state['rng']
         self.draws = int(state['draws'])
@@ -233,31 +271,46 @@ def _to_numpy(tensor):
     return tensor.detach().cpu().numpy() if torch.is_tensor(tensor) else np.asarray(tensor)
 
 
+class _InstanceMetrics:
+    """Keep only three scalar metrics per instance, never large record dicts."""
+    def __init__(self):
+        self.frames = defaultdict(list)
+        self.instance_count = 0
+        self.no_pose_count = 0
+
+    def add(self, row):
+        self.frames[(row['scene_id'], row['frame_id'])].append(
+            (row['hit'], row['selected_quality'], row['coverage']))
+        self.instance_count += 1
+        self.no_pose_count += row['selected_query'] is None
+
+    def result(self):
+        scenes = defaultdict(list)
+        for (scene, _), values in self.frames.items():
+            # Use the original per-column reduction order for selection ties.
+            scenes[scene].append([float(np.mean([r[k] for r in values])) for k in range(3)])
+        if not scenes:
+            raise ValueError('No instances available for source selection')
+        names = ('InstTop1_INST20_at_0_4', 'selected_Q_macro', 'Coverage_INST20_at_256')
+        result = {name: float(np.mean([np.mean([f[k] for f in fs]) for fs in scenes.values()]))
+                  for k, name in enumerate(names)}
+        result.update(instance_count=self.instance_count, frame_count=len(self.frames),
+                      scene_count=len(scenes), no_pose_count=self.no_pose_count)
+        return result
+
+
 def aggregate_instance_rows(rows):
-    frames = defaultdict(list)
-    for r in rows:
-        frames[(r['scene_id'], r['frame_id'])].append(r)
-    scenes = defaultdict(list)
-    for (scene, _), items in frames.items():
-        scenes[scene].append({key: float(np.mean([r[key] for r in items]))
-                              for key in ('hit', 'selected_quality', 'coverage')})
-    if not scenes:
-        raise ValueError('No instances available for source selection')
-    metrics = {name: float(np.mean([np.mean([f[key] for f in fs]) for fs in scenes.values()]))
-               for name, key in [('InstTop1_INST20_at_0_4', 'hit'),
-                                 ('selected_Q_macro', 'selected_quality'),
-                                 ('Coverage_INST20_at_256', 'coverage')]}
-    metrics.update(instance_count=len(rows), frame_count=len(frames), scene_count=len(scenes),
-                   no_pose_count=sum(r['selected_query'] is None for r in rows))
-    return metrics
+    accumulator = _InstanceMetrics()
+    for row in rows:
+        accumulator.add(row)
+    return accumulator.result()
 
 
 @torch.no_grad()
-def evaluate_instance_source(model, dataset):
-    previous = model.training
-    model.eval()
-    rows = []
-    try:
+def evaluate_instance_source(model, dataset, *, collect_records=True, record_sink=None):
+    rows, overall, subsets = [], _InstanceMetrics(), {}
+    threshold = minimum_support_points(model)
+    with evaluation_mode(model):
         for item in dataset:
             obs, labels, record = item['observation'], item['labels'], item['record']
             count = len(obs['query_points'])
@@ -268,7 +321,7 @@ def evaluate_instance_source(model, dataset):
             if len(quality) != count or not valid_label.all() or not np.isfinite(quality).all():
                 raise ValueError('Incomplete teacher for selection/coverage; no unknown-to-zero fill')
             selected = None
-            if count and len(obs['support_points']) >= 100:
+            if count and len(obs['support_points']) >= threshold:
                 pred = model(obs)
                 valid = _to_numpy(pred.get('valid', np.ones(count, bool))).astype(bool)
                 scores = _to_numpy(pred['q_inst']).reshape(-1)
@@ -279,27 +332,29 @@ def evaluate_instance_source(model, dataset):
                     query_ids = np.asarray(obs.get('query_ids', np.arange(count)))
                     selected = int(ids[np.lexsort((query_ids[ids], -scores[ids]))[0]])
             selected_q = float(quality[selected]) if selected is not None else 0.
-            rows.append({'scene_id': int(record['scene_id']), 'frame_id': int(record['frame_id']),
-                         'instance_uid': str(record.get('instance_uid', record.get('uid', record.get('sample_id', '')))),
-                         'test_subset': record.get('test_subset'), 'selected_query': selected,
-                         'selected_quality': selected_q, 'hit': float(selected is not None and selected_q >= .4),
-                         'coverage': float(np.any(quality >= .4))})
-    finally:
-        model.train(previous)
-    metrics = aggregate_instance_rows(rows)
-    metrics['by_subset'] = {s: aggregate_instance_rows([r for r in rows if r['test_subset'] == s])
-                            for s in ('seen', 'similar', 'novel') if any(r['test_subset'] == s for r in rows)}
+            row = {'scene_id': int(record['scene_id']), 'frame_id': int(record['frame_id']),
+                   'instance_uid': str(record.get('instance_uid', record.get('uid', record.get('sample_id', '')))),
+                   'test_subset': record.get('test_subset'), 'selected_query': selected,
+                   'selected_quality': selected_q, 'hit': float(selected is not None and selected_q >= .4),
+                   'coverage': float(np.any(quality >= .4))}
+            overall.add(row)
+            if row['test_subset'] in ('seen', 'similar', 'novel'):
+                subsets.setdefault(row['test_subset'], _InstanceMetrics()).add(row)
+            if collect_records:
+                rows.append(row)
+            if record_sink is not None:
+                record_sink(row)
+    metrics = overall.result()
+    metrics['by_subset'] = {s: a.result() for s, a in subsets.items()}
     metrics['evaluation_protocol'] = 'native_INST20_not_public_AP'
     return metrics, rows
 
 
 @torch.no_grad()
-def evaluate_instance_attempts(model, dataset):
-    previous = model.training
-    model.eval()
+def evaluate_instance_attempts(model, dataset, *, collect_records=True, record_sink=None):
     scores, outcomes, rows = [], [], []
     total = 0
-    try:
+    with evaluation_mode(model):
         for item in dataset:
             a = item['attempts']
             p, n = _array(a, 'point_cam_m', 'points'), _array(a, 'normal_out_cam', 'normal_out')
@@ -315,18 +370,20 @@ def evaluate_instance_attempts(model, dataset):
                 raise ValueError('Nonfinite task probability')
             scores.extend(probability[valid].tolist()); outcomes.extend(y[valid].tolist())
             for i in range(len(p)):
-                rows.append({'observation_uid': str(item['record'].get('observation_uid', item['record'].get('sample_id', ''))),
-                             'attempt_id': str(a.get('attempt_ids', list(range(len(p))))[i]),
-                             'action_index': i, 'supported': bool(valid[i]),
-                             'pose_source': a.get('pose_source', 'planned_pipeline_contact'),
-                             'pose_valid': bool(a.get('pose_valid', np.ones(len(p), bool))[i]),
-                             'pose_support_valid': bool(a.get('pose_support_valid', np.ones(len(p), bool))[i]),
-                             'actual_execution_verified': bool(a.get('actual_execution_verified_by_attempt',
-                                 np.full(len(p), a.get('actual_execution_verified', False)))[i]),
-                             'probability': float(probability[i]) if valid[i] else None,
-                             'outcome': int(y[i]) if valid[i] else None})
-    finally:
-        model.train(previous)
+                row = {'observation_uid': str(item['record'].get('observation_uid', item['record'].get('sample_id', ''))),
+                       'attempt_id': str(a.get('attempt_ids', list(range(len(p))))[i]),
+                       'action_index': i, 'supported': bool(valid[i]),
+                       'pose_source': a.get('pose_source', 'planned_pipeline_contact'),
+                       'pose_valid': bool(a.get('pose_valid', np.ones(len(p), bool))[i]),
+                       'pose_support_valid': bool(a.get('pose_support_valid', np.ones(len(p), bool))[i]),
+                       'actual_execution_verified': bool(a.get('actual_execution_verified_by_attempt',
+                           np.full(len(p), a.get('actual_execution_verified', False)))[i]),
+                       'probability': float(probability[i]) if valid[i] else None,
+                       'outcome': int(y[i]) if valid[i] else None}
+                if collect_records:
+                    rows.append(row)
+                if record_sink is not None:
+                    record_sink(row)
     metrics = attempt_metrics(np.asarray(scores), np.asarray(outcomes), calibrated=True)
     metrics.update(total_attempts=total, supported_attempts=len(scores), unsupported_attempts=total-len(scores))
     return metrics, rows
@@ -351,8 +408,10 @@ def check_source_splits(dataset, expected, *, allow_partial=False):
         summary_path = Path(manifest).with_suffix('.summary.json')
         if summary_path.is_file():
             summary = json.loads(summary_path.read_text())
-            if summary.get('manifest_sha256') != file_digest(manifest):
-                raise ValueError('Manifest coverage summary hash mismatch')
+            if summary.get('manifest', Path(manifest).name) != Path(manifest).name:
+                raise ValueError('Manifest coverage summary names another manifest')
+            # Coverage is checked structurally below; obsolete file checksums
+            # are intentionally not read or evaluated.
             for scene, frame in summary.get('empty_gt_frames', []):
                 if int(scene) not in expected_set or int(frame) not in range(256):
                     continue  # A combined train/test summary can list both splits.
@@ -369,26 +428,46 @@ def check_source_splits(dataset, expected, *, allow_partial=False):
 
 def _dataset_identity(dataset):
     path = getattr(dataset, 'manifest_path', getattr(dataset, 'manifest', None))
-    return {'manifest_sha256': file_digest(path) if path is not None else digest_json(dataset.records),
-            'records_sha256': digest_json(dataset.records), 'length': len(dataset),
-            'data_identity': getattr(dataset, 'identity', None)}
+    return {'manifest_path': str(Path(path).resolve()) if path is not None else None,
+            'length': len(dataset), 'data_identity': clean_metadata(getattr(dataset, 'identity', None))}
 
 
-def _check_shared_object_assets(left, right):
-    a, b = left.get('object_assets', {}), right.get('object_assets', {})
-    for object_id in a.keys() & b.keys():
-        if a[object_id] != b[object_id]:
-            raise ValueError(f'Frozen geometry/Seal assets differ for object {object_id}')
+def check_data_contract(left, right):
+    """Compare known semantic preprocessing/physics, never content checksums."""
+    for key in ('normal_spec', 'sampler_spec', 'precision_spec', 'quality_contract'):
+        if left.get(key) != right.get(key):
+            raise ValueError(f'Source preprocessing/quality differs: {key}')
+    a, b = left.get('teacher_identity') or {}, right.get('teacher_identity') or {}
+    for key in ('physics', 'teacher_spec', 'schema_version', 'quality_contract'):
+        if a.get(key) is not None and b.get(key) is not None and a[key] != b[key]:
+            raise ValueError(f'Source teacher {key} definitions differ')
 
 
-def runtime_code_digest(route):
-    root = Path(__file__).resolve().parents[1]
-    paths = list((root / 'suction20').glob('instance_*.py'))
-    paths += list((root / 'models').glob(f'instance_route_{route}*.py'))
-    paths += [root / 'suction20/metrics.py']
-    if route == 'a':
-        paths += [root / 'models/backbones/spconv_resunet14.py', root / 'models/heads.py']
-    return digest_json({str(p.relative_to(root)): file_digest(p) for p in sorted(set(paths))})
+def _check_available_definition(previous, current, path):
+    """Require every surviving legacy field; unknown teacher provenance stays unknown."""
+    if previous is None and path.rsplit('.', 1)[-1] in ('physics', 'teacher_spec'):
+        return
+    if isinstance(previous, dict):
+        if not isinstance(current, dict):
+            raise ValueError(f'Resume dataset definition differs: {path}')
+        for key, value in previous.items():
+            if key not in current:
+                raise ValueError(f'Resume dataset definition missing: {path}.{key}')
+            _check_available_definition(value, current[key], f'{path}.{key}')
+    elif previous != current:
+        raise ValueError(f'Resume dataset definition differs: {path}')
+
+
+def check_attempt_contract(target, selection):
+    """Keep task meaning and declared capture ownership aligned across manifests."""
+    left, right = getattr(target, 'identity', {}) or {}, getattr(selection, 'identity', {}) or {}
+    for key in ('success_definition', 'normal_spec', 'sampler_spec', 'precision_spec', 'pose_source'):
+        if left.get(key) != right.get(key):
+            raise ValueError(f'Target training/selection definitions differ: {key}')
+    a, b = getattr(target, 'observation_owners', {}), getattr(selection, 'observation_owners', {})
+    for capture in a.keys() & b.keys():
+        if a[capture] != b[capture]:
+            raise ValueError('Shared target observation crosses split/group declarations')
 
 
 def atomic_json(path, value):
@@ -418,15 +497,14 @@ class InstanceTrainer:
             raise ValueError('stage must be pretrain or finetune')
         if stage == 'finetune' and target_dataset is None:
             raise ValueError('Finetuning requires target training observations')
-        self.model, self.config = model, deepcopy(config)
+        self.model, self.config = model, clean_metadata(config)
         self.source, self.selection, self.target = source_dataset, selection_dataset, target_dataset
         if stage == 'pretrain':
             source_identity = getattr(self.source, 'identity', {}) or {}
             selection_identity = getattr(self.selection, 'identity', {}) or {}
-            for key in ('normal_spec', 'sampler_spec', 'precision_spec', 'quality_contract', 'teacher_identity'):
-                if source_identity.get(key) != selection_identity.get(key):
-                    raise ValueError(f'Source/test frozen data identity mismatch: {key}')
-            _check_shared_object_assets(source_identity, selection_identity)
+            check_data_contract(source_identity, selection_identity)
+        else:
+            check_attempt_contract(self.target, self.selection)
         self.stage, self.run_dir = stage, Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.allow_partial = bool(allow_partial)
@@ -453,10 +531,10 @@ class InstanceTrainer:
             [{'params': values, 'name': name, 'lr': 0.} for name, values in groups.items() if values],
             betas=(.9, .999), eps=1e-8, weight_decay=.01)
         self.identity = {
-            'route': config['route'], 'stage': stage, 'config_sha256': digest_json(config),
+            'route': config['route'], 'stage': stage, 'config_definition': clean_metadata(config),
             'source': _dataset_identity(self.source), 'selection': _dataset_identity(self.selection),
             'target': _dataset_identity(self.target) if self.target else None,
-            'quality_contract': QUALITY_CONTRACT, 'code_sha256': runtime_code_digest(config['route']),
+            'quality_contract': QUALITY_CONTRACT, 'runtime_contract': RUNTIME_CONTRACT,
             'partial_manifests_allowed': self.allow_partial,
             'torch_version': str(torch.__version__), 'numpy_version': str(np.__version__),
             'device_type': next(model.parameters()).device.type,
@@ -521,7 +599,7 @@ class InstanceTrainer:
         for _ in range(limit):
             item = self._observation(self.source[self.source_schedule.next()])
             obs = item['observation']
-            if len(obs['support_points']) < 100 or not len(obs['query_points']):
+            if len(obs['support_points']) < minimum_support_points(self.model) or not len(obs['query_points']):
                 self.skipped_no_supervision += 1
                 continue
             loss = source_loss(self.model(obs), item['labels'])
@@ -600,16 +678,32 @@ class InstanceTrainer:
 
     def resume(self, path):
         state = torch.load(path, map_location='cpu', weights_only=False)
-        if state.get('schema') != CHECKPOINT_SCHEMA or state.get('identity') != self.identity:
-            raise ValueError('Strict resume identity mismatch; no legacy migration or split override')
+        if state.get('schema') != CHECKPOINT_SCHEMA:
+            raise ValueError('Resume checkpoint schema mismatch')
+        if clean_metadata(state.get('config')) != clean_metadata(self.config):
+            raise ValueError('Resume configuration differs from the saved run')
+        old_identity = state.get('identity', {})
+        for key in ('route', 'stage', 'quality_contract', 'partial_manifests_allowed',
+                    'torch_version', 'numpy_version', 'device_type'):
+            if old_identity.get(key) != self.identity.get(key):
+                raise ValueError(f'Resume run identity mismatch: {key}')
+        if old_identity.get('runtime_contract') == RUNTIME_CONTRACT:
+            for key in ('source', 'selection', 'target'):
+                if clean_metadata(old_identity.get(key)) != self.identity.get(key):
+                    raise ValueError(f'Resume dataset definition differs: {key}')
+        else:
+            for key in ('source', 'selection', 'target'):
+                if key not in old_identity:
+                    raise ValueError(f'Resume dataset definition missing: {key}')
+                _check_available_definition(clean_metadata(old_identity[key]), self.identity[key], key)
         self.model.load_state_dict(state['model'], strict=True)
         self.optimizer.load_state_dict(state['optimizer'])
         self.step = int(state['global_step'])
         self.supervised_source_instances = int(state['supervised_source_instances'])
         self.supervised_target_observations = int(state['supervised_target_observations'])
         self.skipped_no_supervision = int(state['skipped_no_supervision'])
-        self.best = state['best']
-        self.initialization = deepcopy(state.get('initialization'))
+        self.best = clean_metadata(state['best'])
+        self.initialization = clean_metadata(state.get('initialization'))
         self.source_schedule.load_state_dict(state['source_schedule'])
         if self.target_schedule:
             self.target_schedule.load_state_dict(state['target_schedule'])
@@ -626,41 +720,67 @@ class InstanceTrainer:
                 or state['identity']['quality_contract'] != QUALITY_CONTRACT
                 or state['config'].get('model', {}) != self.config.get('model', {})):
             raise ValueError('Finetune initialization requires the same source instance architecture/quality')
-        if state['identity'].get('code_sha256') != self.identity['code_sha256']:
-            raise ValueError('Finetune initialization code identity changed; no implicit weight migration')
         old_data = state['identity']['source'].get('data_identity') or {}
         new_data = self.identity['source'].get('data_identity') or {}
-        for key in ('normal_spec', 'sampler_spec', 'precision_spec', 'quality_contract', 'teacher_identity'):
-            if old_data.get(key) != new_data.get(key):
-                raise ValueError(f'Finetune source preprocessing/teacher changed: {key}')
-        _check_shared_object_assets(old_data, new_data)
+        check_data_contract(old_data, new_data)
         self.model.load_state_dict(state['model'], strict=True)
         self.initialization = {
-            'kind': 'source_pretrain_checkpoint', 'checkpoint_sha256': file_digest(path),
+            'kind': 'source_pretrain_checkpoint', 'checkpoint_file_record': file_record(path),
             'checkpoint_file': Path(path).name, 'checkpoint_kind': state['checkpoint_kind'],
             'checkpoint_selection_role': state['checkpoint_selection_role'],
             'global_step': int(state['global_step']), 'selection_policy': deepcopy(state['policy']),
-            'source_identity_sha256': digest_json(state['identity']),
+            'source_definition': clean_metadata(state['identity']),
         }
         self._apply_phase()
 
     def evaluate(self):
-        if self.stage == 'pretrain':
-            metrics, rows = evaluate_instance_source(self.model, self.selection)
-            key = [metrics['InstTop1_INST20_at_0_4'], metrics['selected_Q_macro'], -self.step]
-        else:
-            metrics, rows = evaluate_instance_attempts(self.model, self.selection)
-            if metrics['attempt_AUROC'] is None or metrics['attempt_BCE'] is None:
-                raise ValueError('Target validation needs both classes and supported observations for AUROC selection')
-            key = [metrics['attempt_AUROC'], -metrics['attempt_BCE'], -self.step]
-        report = {'step': self.step, 'policy': self.policy, 'metrics': metrics,
-                  'initialization': deepcopy(self.initialization),
-                  'selection_key': key, 'identity': self.identity, 'records': rows}
-        atomic_json(self.run_dir/f'evaluation_step{self.step:06d}.json', report)
-        if self.best is None or tuple(key) > tuple(self.best['key']):
-            self.best = {'step': self.step, 'key': key, 'metrics': metrics, 'policy': self.policy}
-            self.save('best.pt')
-        return report
+        cfg = self.config[self.stage]
+        retention = cfg.get('evaluation_records', 'best_and_final')
+        if retention not in ('best_and_final', 'all', 'none'):
+            raise ValueError('evaluation_records must be best_and_final, all or none')
+        details = self.run_dir/f'evaluation_step{self.step:06d}.records.jsonl.gz'
+        temporary = details.with_name(details.name + '.tmp')
+        count = 0
+        def evaluate_with_sink(sink):
+            fn = evaluate_instance_source if self.stage == 'pretrain' else evaluate_instance_attempts
+            return fn(self.model, self.selection, collect_records=False, record_sink=sink)[0]
+        try:
+            if retention == 'none':
+                metrics = evaluate_with_sink(None)
+            else:
+                with gzip.open(temporary, 'wt', encoding='utf-8', compresslevel=1) as stream:
+                    def write_record(row):
+                        nonlocal count
+                        stream.write(json.dumps(row, ensure_ascii=False, separators=(',', ':'), allow_nan=False) + '\n')
+                        count += 1
+                    metrics = evaluate_with_sink(write_record)
+            if self.stage == 'pretrain':
+                key = [metrics['InstTop1_INST20_at_0_4'], metrics['selected_Q_macro'], -self.step]
+            else:
+                if metrics['attempt_AUROC'] is None or metrics['attempt_BCE'] is None:
+                    raise ValueError('Target validation needs both classes and supported observations for AUROC selection')
+                key = [metrics['attempt_AUROC'], -metrics['attempt_BCE'], -self.step]
+            improved = self.best is None or tuple(key) > tuple(self.best['key'])
+            final_step = self.step == int(cfg['steps'])
+            same_best_step = self.best is not None and self.best['step'] == self.step
+            keep = retention == 'all' or (retention == 'best_and_final' and (improved or final_step or same_best_step))
+            record_info = {'policy': retention, 'retained': keep, 'count': count,
+                           'path': details.name if keep else None, 'format': 'jsonl.gz'}
+            if keep:
+                temporary.replace(details)
+            else:
+                details.unlink(missing_ok=True)
+            report = {'step': self.step, 'policy': self.policy, 'metrics': metrics,
+                      'initialization': deepcopy(self.initialization), 'selection_key': key,
+                      'identity': self.identity, 'record_details': record_info,
+                      'best_updated': improved, 'final_step': final_step}
+            atomic_json(self.run_dir/f'evaluation_step{self.step:06d}.json', report)
+            if improved:
+                self.best = {'step': self.step, 'key': key, 'metrics': metrics, 'policy': self.policy}
+                self.save('best.pt')
+            return report
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def run(self, *, stop_after=None):
         cfg = self.config[self.stage]

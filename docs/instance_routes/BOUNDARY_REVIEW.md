@@ -13,7 +13,7 @@
 | 前64/128只覆盖bbox上部 | v2已使用位反转Morton，未发现row-major错误 | 保留原顺序和前缀，不把已实现保护记作新bug |
 | 稀疏mask一格一点选不满K | 成立，可直接复现 | 相同跨格顺序逐轮回填；格内2D FPS，不重复，先构造最多256再取前缀 |
 
-设计schema升级为 `suction20.instance_routes.design.v3`；物理质量仍为 `gt_INST20_pose_v2`，标签文件schema仍为 `suction20.instance_inst20.v2`。这是因为Seal/Wrench/target-self物理函数未变；观测法向和候选p/n变了，所以法向/采样/pose列表hash以及派生标签缓存必须更新，不能凭质量名称相同继续使用旧标签。
+设计schema升级为 `suction20.instance_routes.design.v3`；物理质量仍为 `gt_INST20_pose_v2`，标签文件schema仍为 `suction20.instance_inst20.v2`。这是因为Seal/Wrench/target-self物理函数未变；观测法向和候选p/n变了，所以法向/采样的显式版本、实际pose数组及其派生标签缓存必须更新，不能凭质量名称相同继续使用旧标签。
 
 ## 2. A：保留角向结构，同时避免恢复不连续坐标输入
 
@@ -130,6 +130,6 @@ python docs/instance_routes/reference/sampling_contract.py selftest
 python docs/instance_routes/reference/contact_boundary_contract.py self-test
 ```
 
-检查数为29+26+26+48=**129**；新增74项覆盖本页边界。两个旧参考文件保持原内容，其中v2法向/采样仅作回归和反例对照；共享固定坐标图、理想环投影与物理v2标签validator继续复用。新CLI返回逐项检查名、数值反例与作用范围，完整执行记录和源码SHA256见[VALIDATION.json](reference/VALIDATION.json)。依赖、demo、缓存接线与真实实施顺序见[复现说明](TRAIN_EVAL_REPRODUCE.md)。
+检查数为29+26+26+48=**129**；新增74项覆盖本页边界。当次验证的v2法向/采样仅作回归和反例对照；共享固定坐标图、理想环投影与物理v2标签validator继续复用。新CLI返回逐项检查名、数值反例与作用范围，当次完整执行记录见[VALIDATION.json](reference/VALIDATION.json)；其中旧源码校验和仅是历史档案字段，不再生成或验证，也不作为当前运行门槛。依赖、demo、缓存接线与真实实施顺序见[复现说明](TRAIN_EVAL_REPRODUCE.md)。
 
 当前验证没有覆盖生产CNN、真实深度读取和插值组合、完整物理teacher、真实数据有效率、训练/微调效果、导出引擎或端到端延迟。后续只需围绕这些尚未执行的链路验证，不把参考通过替代真实工程验收。

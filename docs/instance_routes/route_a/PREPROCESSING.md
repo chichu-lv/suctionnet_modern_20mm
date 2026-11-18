@@ -14,7 +14,7 @@
 
 query不要求属于主干点，原始支持不会因主干抽样而删除。历史动作是额外的直接姿态查询，不注入候选池。`source_point_id=v*W+u`稳定贯穿反投影、体素、抽样与输出。
 
-用原始米制深度和内参以float64构造 `P=Z*K^-1*[u,v,1]`，保留organized XYZ图。`mu_vis`在抽样前由全体有效支持求均值；只作平移归一化。原始有效支持少于100点时源训练记排除原因，验证/测试保留实例与无输出账本。网络特征在边界判定完成后转FP32；参考 `1e-12m`只处理float64舍入，不是传感器容差。
+用原始米制深度和内参以float64构造 `P=Z*K^-1*[u,v,1]`，保留organized XYZ图。`mu_vis`在抽样前由全体有效支持求均值；只作平移归一化。原始有效支持低于模型min_support_points（默认100）时源训练记排除原因，验证/测试保留实例与无输出账本。网络特征在边界判定完成后转FP32；参考 `1e-12m`只处理float64舍入，不是传感器容差。
 
 ## 2. 默认法向逐步操作
 
@@ -61,7 +61,13 @@ cx/cy的4bit交错为8bit Morton码（x占偶数bit、y占奇数bit），按该�
 
 找不到主干邻居时局部特征置零、feature_valid=false，原始RGB、几何和normal仍保留。投影MLP之后按mask再次清零，避免bias伪造有效特征。不要因第三个邻居超界而放弃前两个。
 
-canonical query组件来自原像素。历史动作以原记录p为中心，在目标实例raw支持内找最近且距离≤5mm的点作组件锚点；同分取最小source ID。锚点不修改p/n。无几何锚点记 `pose_geometry_invalid`；有锚点但Fq无10mm主干邻居时，以Fq=0、query_feature_valid=false继续评分。
+canonical query组件来自原像素。历史动作以原记录p为中心，在目标实例raw支持内找最近且 `distance <= 0.005 + BOUNDARY_ROUNDOFF_M` 的点作组件锚点，`BOUNDARY_ROUNDOFF_M=1e-12 m` 从共同几何模块导入，与目标数据集相同；同分取最小source ID。锚点不修改p/n。无几何锚点记 `pose_geometry_invalid`；有锚点但Fq无10mm主干邻居时，以Fq=0、query_feature_valid=false继续评分。
+
+`NeighborIndex.associate` 对每个组件批量调用 `cKDTree.query(k=min(4,N))`，以NumPy批量重算float64欧氏距离并在最多4项的短轴上稳定按距离/source ID排序。常规行的距离门控、1/d归一化和1/2/3邻居补位均向量化，不再对每个原始支撑点调用Python的norm/lexsort。仅第3/4邻居距离精确并列、可能影响三近邻截断的行回退 `query_ball_point` 和标量破同分；`nearest_anchor` 仅首两个距离精确并列时回退。闭边界、重复坐标、零距离和原组件约束保持原定义。
+
+CPU组件基准使用15000个原始支撑点、2048个主干点、seed=20261118、1轮预热/7轮计时、OMP/MKL各1线程，`associate` 中位数从 **187.740 ms降至17.473 ms（10.745×）**。环境为Python3.12.14、NumPy2.3.5、SciPy1.17.0；该数值只包含CPU关联函数，不含索引构建、FPS、I/O、网络或GPU，不能据此声称端到端15–30ms已达标。[原始基准记录](../../performance/INSTANCE_NEIGHBORS_CPU.json)
+
+`tests/test_instance_route_a_neighbors.py` 将输出与冻结旧循环逐字节对照，覆盖一般行、精确tie、重复坐标、1/2/3邻居、缺组件、非法query、±0、10mm与5mm闭边界及舍入。它证明已测合同内数值保持一致，不把用户预估的50×当作实测结果。
 
 诊断保存同组件最近距离d1与第三近距离d3的p50/p95/max、最大最近覆盖半径、10mm内有效关联率、无主干组件比例及不足3邻居比例。不存在的d3不补零。组件约束不等同完整薄壁识别，缺失比例高时先定位数据/采样原因，再评估显式主干预算。
 

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from suction20.instance_data import InstanceDataset, load_observation
 from suction20.instance_inference import (INFERENCE_REPORT_SCHEMA, PUBLIC_EVALUATION,
     infer_instance, load_instance_checkpoint, load_raw_observation, resolve_ranking)
-from suction20.instance_training import file_digest
+from suction20.instance_training import file_record
 
 
 def _stream_report(path, metadata, predictions):
@@ -91,14 +91,14 @@ def main(argv=None):
         if not limit:
             raise ValueError('The selected manifest contains no instances')
         inputs = {'mode': 'manifest', 'manifest': str(args.manifest),
-                  'manifest_sha256': file_digest(args.manifest), 'split': args.split,
+                  'manifest_file': file_record(args.manifest), 'split': args.split,
                   'available_instances': len(dataset), 'selected_instances': limit,
                   'partial_inference': limit < len(dataset), 'labels_read': False}
         items = (dataset[i] for i in range(limit))
     elif args.observation:
         observation = load_observation(args.observation)
         inputs = {'mode': 'observation', 'observation': str(args.observation),
-                  'observation_sha256': file_digest(args.observation), 'labels_read': False}
+                  'observation_file': file_record(args.observation), 'labels_read': False}
         items = ({'observation': observation, 'record': {}},)
     else:
         observation = load_raw_observation(rgb_path=args.rgb, depth_path=args.depth, mask_path=args.mask,
@@ -109,7 +109,7 @@ def main(argv=None):
                   'depth_scale_m': args.depth_scale_m, 'gravity': args.gravity,
                   'max_queries': args.max_queries, 'depth_min_m': args.depth_min_m,
                   'depth_max_m': args.depth_max_m,
-                  'assets': {name: {'path': str(path), 'sha256': file_digest(path)}
+                  'assets': {name: file_record(path)
                              for name, path in [('rgb', args.rgb), ('depth', args.depth),
                                                 ('mask', args.mask), ('intrinsics', args.intrinsics)]},
                   'labels_read': False}
@@ -122,7 +122,7 @@ def main(argv=None):
             record = item['record']
             result['input_record'] = {key: record[key] for key in
                 ('sample_id', 'instance_uid', 'scene_id', 'frame_id', 'instance_row',
-                 'camera', 'split', 'test_subset', 'observation_sha256') if key in record}
+                 'camera', 'split', 'test_subset') if key in record}
             yield result
 
     metadata = {'schema': INFERENCE_REPORT_SCHEMA, 'evaluation_protocol': 'native_instance_inference',

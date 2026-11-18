@@ -18,10 +18,10 @@ from PIL import Image
 import torch
 
 from .instance_geometry import (NORMAL_SPEC, SAMPLER_SPEC, PRECISION_SPEC,
-                                array_digest, prepare_instance)
+                                prepare_instance)
 from .instance_training import (CHECKPOINT_SCHEMA, QUALITY_CONTRACT,
-                                create_instance_model, digest_json, file_digest,
-                                runtime_code_digest)
+                                create_instance_model, clean_metadata, file_record,
+                                evaluation_mode, minimum_support_points)
 
 
 PREDICTION_SCHEMA = 'instance_suction_prediction_v2'
@@ -63,15 +63,13 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
         raise ValueError('Checkpoint INST20 quality contract mismatch')
     if identity.get('route') != route or identity.get('stage') != stage:
         raise ValueError('Checkpoint route/stage identity mismatch')
-    if identity.get('config_sha256') != digest_json(config):
-        raise ValueError('Checkpoint config hash mismatch')
+    if 'config_definition' in identity and clean_metadata(identity['config_definition']) != clean_metadata(config):
+        raise ValueError('Checkpoint config definition mismatch')
     source_identity = identity.get('source', {}).get('data_identity', {})
     expected_preprocessing = {'normal_spec': NORMAL_SPEC, 'sampler_spec': SAMPLER_SPEC,
                               'precision_spec': PRECISION_SPEC, 'quality_contract': QUALITY_CONTRACT}
     if any(source_identity.get(key) != value for key, value in expected_preprocessing.items()):
         raise ValueError('Checkpoint source normal/sampler/precision/quality identity differs from this runtime')
-    if identity.get('code_sha256') != runtime_code_digest(route):
-        raise ValueError('Checkpoint implementation hash differs from the current route; use its matching code revision')
     if (config.get('public_evaluation', {}).get('status') != 'deferred' or
         policy.get('public_evaluation_status') != 'deferred' or
         policy.get('paper_comparison_ready') is not False):
@@ -110,11 +108,11 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None):
     architecture = architecture() if callable(architecture) else architecture
     metadata = {
         'schema': 'instance_loaded_checkpoint_v1',
-        'checkpoint_sha256': file_digest(path), 'route': route, 'stage': stage,
+        'checkpoint_file': file_record(path), 'route': route, 'stage': stage,
         'quality_contract': QUALITY_CONTRACT, 'checkpoint_kind': kind,
         'global_step': step, 'selection_policy': deepcopy(policy),
-        'checkpoint_selection_role': role, 'checkpoint_identity': deepcopy(identity),
-        'initialization': deepcopy(state.get('initialization')),
+        'checkpoint_selection_role': role, 'checkpoint_identity': clean_metadata(identity),
+        'initialization': clean_metadata(state.get('initialization')),
         'public_evaluation': deepcopy(PUBLIC_EVALUATION),
         'runtime_model_config': runtime_config.get('model', {}),
         'architecture': architecture,
@@ -293,7 +291,7 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         'precision_spec': observation.get('precision_spec'),
         'query_identity': observation.get('query_identity'),
         'observation_identity': observation.get('observation_identity'),
-        'intrinsics_sha256': array_digest(np.asarray(observation['intrinsics'], np.float64)),
+        'intrinsics': np.asarray(observation['intrinsics'], np.float64).tolist(),
         'public_evaluation': deepcopy(PUBLIC_EVALUATION),
         'nms': {'distance_m': NMS_DISTANCE_M, 'angle_degrees': NMS_ANGLE_DEGREES,
                 'comparison': 'strict_less_than_both', 'directed_normals': True},
@@ -306,10 +304,17 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     if not count or not query_valid.any():
         result['timing_ms']['total'] = (time.perf_counter() - start) * 1000.
         return result
+    if len(observation.get('support_points', ())) < minimum_support_points(model):
+        result['reason'] = 'insufficient_support'
+        result['rejected_queries'] = [
+            {'query_id': int(query_ids[i]),
+             'reason': 'insufficient_support' if query_valid[i] else 'ineligible_query'}
+            for i in range(count)]
+        result['rejection_counts'] = dict(Counter(item['reason'] for item in result['rejected_queries']))
+        result['timing_ms']['total'] = (time.perf_counter() - start) * 1000.
+        return result
 
-    previous = model.training
-    model.eval()
-    try:
+    with evaluation_mode(model):
         _synchronize(model)
         begin_encode = time.perf_counter()
         encoded = model.encode_instance(observation)
@@ -318,8 +323,6 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
         prediction = model.score_at_pose(encoded, points, normals)
         _synchronize(model)
         begin_postprocess = time.perf_counter()
-    finally:
-        model.train(previous)
     if not isinstance(prediction, dict):
         raise ValueError('Model must return a prediction dictionary')
     valid = _aligned_vector(prediction, 'valid', count, boolean=True) & query_valid
@@ -372,7 +375,7 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
             'source_point_id': int(source_ids[row]) if source_ids is not None else None,
             'point_cam_m': points[row].tolist(), 'normal_out_cam': normal.tolist(),
             'tool_z_cam': transform[:3, 2].tolist(), 'T_cam_contact': transform.tolist(),
-            'pose_sha256': array_digest(points[row], normal),
+            'pose_id': f"{result['instance_uid']}:q{int(query_ids[row])}",
             'q_inst': float(vectors['q_inst'][row]), 'seal': float(vectors['seal'][row]),
             'wrench': float(vectors['wrench'][row]), 'ell': float(vectors['ell'][row]),
             'task_probability': float(task_probability[row]) if stage == 'finetune' else None,
@@ -386,7 +389,7 @@ def infer_instance(model, observation, *, stage, ranking='auto', alpha=None, top
     if result['poses']:
         result.update(status='ok', reason='ok')
     else:
-        result['reason'] = ('insufficient_support' if len(observation.get('support_points', ())) < 100
+        result['reason'] = ('insufficient_support' if len(observation.get('support_points', ())) < minimum_support_points(model)
                             else 'no_geometry_supported_queries')
     end = time.perf_counter()
     result['timing_ms'].update(encode=(begin_score-begin_encode)*1000.,

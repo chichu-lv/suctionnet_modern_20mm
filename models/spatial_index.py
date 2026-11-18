@@ -6,7 +6,6 @@ handles pin the XYZ exporter; every returned ball owns a separate immutable buff
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import importlib
 from pathlib import Path
 import sys
@@ -28,7 +27,7 @@ def _compiled_grid():
 
 
 def spatial_index_backend_identity(name='uniform_grid_cpu'):
-    """Startup-only native source/binary/build identity; no silent fallback."""
+    """Explicit native ABI/build metadata; no binary scan or silent fallback."""
     if name != 'uniform_grid_cpu':
         raise ValueError(f'Unsupported native spatial index backend: {name}')
     module = _compiled_grid()
@@ -36,8 +35,8 @@ def spatial_index_backend_identity(name='uniform_grid_cpu'):
                 python_cache_tag=sys.implementation.cache_tag,
                 compile_flags=module.COMPILE_FLAGS.split(), compiler=module.COMPILER,
                 link_flags=getattr(module, 'LINK_FLAGS', '').split(),
-                source_sha256=module.SOURCE_SHA256,
-                binary_sha256=hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest())
+                source_version=getattr(module, 'SOURCE_VERSION', 'legacy_abi1'),
+                binary_filename=Path(module.__file__).name)
 
 
 @dataclass

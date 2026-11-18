@@ -11,8 +11,9 @@ from scipy.spatial import cKDTree
 from suction20.eval_r20 import evaluate_poses, load_scene_eval_context, seal_at_pose
 from suction20.full_data import DEFAULT_CONFIG, collision_mask_for_instance, transform_points, voxel_filter
 from suction20.instance_data import (InstanceAttemptDataset, InstanceDataset, build_source_instances,
-    load_observation, save_observation, source_scene_ids, source_split)
-from suction20.instance_geometry import prepare_instance, stratified_queries_refill
+    load_observation, save_observation, source_scene_ids, source_split,
+    merge_source_manifests, _save_npz)
+from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M, prepare_instance, stratified_queries_refill
 from suction20.instance_teacher import InstanceTeacher, empty_labels, validate_labels
 
 
@@ -90,12 +91,15 @@ def test_raw_geometry_normals_queries_and_rgb_mask_roundtrip(tmp_path):
     assert np.all(obs['rgb'][~mask] == 0) and np.all(obs['xyz_map'][~mask] == 0)
     assert np.array_equal(obs['bbox_xyxy'], [5, 5, 60, 60])
     path = tmp_path / 'instance.npz'
-    sha = save_observation(path, obs)
-    restored = load_observation(path, expected_sha256=sha)
+    save_observation(path, obs)
+    restored = load_observation(path)
     for key in ('query_points', 'query_normals', 'support_points', 'support_rgb_valid', 'mask', 'rgb_valid'):
         assert np.array_equal(restored[key], obs[key])
-    with pytest.raises(ValueError, match='hash'):
-        load_observation(path, expected_sha256='0' * 64)
+    obs['query_points'] = obs['query_points'].copy()
+    obs['query_points'][0, 0] += 1e-5
+    save_observation(path, obs)
+    with pytest.raises(ValueError, match='raw source pixels'):
+        load_observation(path)
 
 
 def test_refill_prefix_and_hole_path_rejection():
@@ -197,33 +201,90 @@ def test_test_insufficient_support_is_retained(tmp_path):
     assert summary['visible_instance_count'] == 1 and not item['record']['has_supervision']
 
 
-def test_dataset_binds_frozen_teacher_physics_and_cache_identity(tmp_path):
+def test_dataset_compares_explicit_physics_and_ignores_old_integrity_metadata(tmp_path):
     root, release, _ = _assets(tmp_path)
     manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
         split='train', scenes=[0], frames=[0], train_queries=8)
     original = json.loads(manifest.read_text())
     dataset = InstanceDataset(manifest, training_queries=8)
-    assert dataset.identity['teacher_identity']['physics_sha256'] == original['label_identity']['physics_sha256']
-    assert 'dense_sha256' not in dataset.identity['teacher_identity']
+    assert dataset.identity['teacher_identity']['physics'] == original['label_identity']['physics']
     assert dataset.identity['object_assets'] == {'0': {key: original['label_identity'][key]
-        for key in ('dense_sha256', 'seal_candidates_sha256')}}
+        for key in ('dense_path', 'seal_candidates_path')}}
+    # Obsolete integrity metadata is deliberately ignored, even when nonsensical.
+    old = json.loads(json.dumps(original))
+    old['manifest_version'] = 'suction20.instance_manifest.v3'
+    old['observation_' + 'sha256'] = 'old-ignored-value'
+    old['label_' + 'sha256'] = 'different-old-ignored-value'
+    old['label_identity']['physics_' + 'sha256'] = 'not-a-digest'
+    manifest.write_text(json.dumps(old) + '\n')
+    assert InstanceDataset(manifest, training_queries=8)[0]['record']['has_supervision']
     changed = json.loads(json.dumps(original))
-    changed['label_identity']['physics_sha256'] = '0' * 64
+    changed['label_identity']['physics']['wrench_k'] *= 2
     manifest.write_text(json.dumps(changed) + '\n')
-    with pytest.raises(ValueError, match='cached label identity'):
+    with pytest.raises(ValueError, match='teacher contracts'):
         InstanceDataset(manifest, training_queries=8)[0]
     changed['sample_id'] += '_other'
     manifest.write_text(json.dumps(original) + '\n' + json.dumps(changed) + '\n')
-    with pytest.raises(ValueError, match='mixed frozen teacher'):
+    with pytest.raises(ValueError, match='mixed declared teacher'):
         InstanceDataset(manifest, training_queries=8)
-    changed['label_identity']['physics_sha256'] = original['label_identity']['physics_sha256']
-    changed['label_identity']['dense_sha256'] = '0' * 64
-    manifest.write_text(json.dumps(original) + '\n' + json.dumps(changed) + '\n')
-    with pytest.raises(ValueError, match='same object ID has mixed'):
+    unknown = json.loads(json.dumps(original))
+    unknown['sample_id'] += '_legacy'
+    unknown['label_identity'].pop('physics')
+    unknown['label_identity'].pop('teacher_spec')
+    manifest.write_text(''.join(json.dumps(row)+'\n' for row in (unknown, original, changed)))
+    with pytest.raises(ValueError, match='mixed declared teacher'):
         InstanceDataset(manifest, training_queries=8)
-    # Inference must not make teacher assets or even their identity mandatory.
     assert InstanceDataset(manifest, require_labels=False).identity['teacher_identity'] is None
     assert InstanceDataset(manifest, require_labels=False).identity['object_assets'] == {}
+
+
+def test_archive_load_opens_each_npz_once_without_preflight_scan(tmp_path, monkeypatch):
+    import builtins
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    dataset = InstanceDataset(manifest, training_queries=8, cache_size=0)
+    opened = []
+    original_open, original_path_open = builtins.open, Path.open
+    def record_open(file, *args, **kwargs):
+        if str(file).endswith('.npz'):
+            opened.append(str(Path(file).resolve()))
+        return original_open(file, *args, **kwargs)
+    def record_path_open(path, *args, **kwargs):
+        if str(path).endswith('.npz'):
+            opened.append(str(path.resolve()))
+        return original_path_open(path, *args, **kwargs)
+    monkeypatch.setattr(builtins, 'open', record_open)
+    monkeypatch.setattr(Path, 'open', record_path_open)
+    for _ in range(2):
+        dataset[0]
+    row = dataset.records[0]
+    expected = [str((manifest.parent/row[key]).resolve()) for key in ('observation_npz', 'label_cache')]
+    assert opened == expected * 2
+
+
+def test_legacy_label_cache_keeps_unknown_physics_without_rescoring(tmp_path, monkeypatch):
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    row = json.loads(manifest.read_text())
+    path = manifest.parent/row['label_cache']
+    with np.load(path, allow_pickle=False) as file:
+        content = {key: file[key] for key in file.files if key != 'metadata_json'}
+        content.update(json.loads(str(file['metadata_json'])))
+    content['identity'].pop('physics')
+    content['identity'].pop('teacher_spec')
+    _save_npz(path, content)
+    row['label_identity'] = content['identity']
+    row['manifest_version'] = 'suction20.instance_manifest.v3'
+    manifest.write_text(json.dumps(row)+'\n')
+    assert InstanceDataset(manifest, training_queries=8).identity['teacher_identity']['physics'] is None
+    monkeypatch.setattr(InstanceTeacher, 'evaluate', lambda *a, **k: pytest.fail('legacy cache must not require Teacher recomputation'))
+    build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    rewritten = json.loads(manifest.read_text())
+    assert rewritten['manifest_version'] == 'suction20.instance_manifest.v4'
+    assert rewritten['label_identity']['physics'] is None
 
 
 def test_attempt_pose_and_split_preserved(tmp_path):
@@ -249,7 +310,146 @@ def test_attempt_pose_and_split_preserved(tmp_path):
     assert item['attempts']['pose_source'] == 'planned_pipeline_contact'
     assert not item['attempts']['actual_execution_verified']
     Image.fromarray(np.full((65, 65, 3), 128, np.uint8)).save(base / 'rgb/0000.png')
-    with pytest.raises(ValueError, match='changed after dataset identity'):
-        dataset[0]
-    replacement = InstanceAttemptDataset(manifest, split='val')
-    assert replacement.identity['observation_assets_sha256'] != dataset.identity['observation_assets_sha256']
+    replacement = dataset[0]
+    assert not np.array_equal(replacement['observation']['rgb'], item['observation']['rgb'])
+    assert replacement['record']['sample_id'] == item['record']['sample_id']
+    assert dataset.identity['observation_ids'] == [item['record']['sample_id']]
+
+
+def test_attempt_support_uses_shared_closed_boundary(tmp_path):
+    root, _, _ = _assets(tmp_path)
+    base = root/'scenes/scene_0000/realsense'
+    observation = dict(format='rgbd', rgb_path=str(base/'rgb/0000.png'),
+        depth_path=str(base/'depth/0000.png'), instance_mask_path=str(base/'label/0000.png'),
+        depth_scale_m=.001, intrinsics=_camera().tolist(), g_cam=[0.,0.,-1.])
+    rows = [dict(schema_version='suction20.target.v1', label_kind='attempt_success',
+        sample_id=f'a{i}', group_id='g', split='train', observation=observation,
+        success_definition='pickup', attempt=dict(point_cam_m=[0.,0.,.6+.005+offset],
+            normal_out_cam=[0.,0.,-1.], instance_id=1, success=1, label_valid=True))
+        for i, offset in enumerate((.5*BOUNDARY_ROUNDOFF_M, 2*BOUNDARY_ROUNDOFF_M))]
+    manifest=tmp_path/'attempts.jsonl';manifest.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    attempts=InstanceAttemptDataset(manifest)[0]['attempts']
+    assert attempts['pose_support_valid'].tolist() == [True, False]
+
+
+@pytest.mark.parametrize('conflict', ['split', 'group', 'rgb_path', 'capture_uid'])
+def test_attempt_capture_owner_spans_instances_and_normalized_paths(tmp_path, conflict):
+    observation = dict(format='rgbd', rgb_path='rgb.png', depth_path='depth.png',
+        instance_mask_path='mask.png', depth_scale_m=.001,
+        intrinsics=_camera().tolist(), g_cam=[0., 0., -1.])
+    first = dict(schema_version='suction20.target.v1', label_kind='attempt_success',
+        sample_id='a', group_id='g1', split='train', observation=observation,
+        success_definition='pickup', attempt=dict(point_cam_m=[0., 0., .6],
+            normal_out_cam=[0., 0., -1.], instance_id=1, success=1, label_valid=True))
+    second = json.loads(json.dumps(first))
+    second.update(sample_id='b', group_id='g2', split='val' if conflict != 'group' else 'train')
+    second['attempt']['instance_id'] = 2
+    for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
+        second['observation'][field] = './' + second['observation'][field]
+    if conflict == 'rgb_path':
+        second['observation']['depth_path'] = 'other_depth.png'
+    if conflict == 'capture_uid':
+        first['capture_uid'] = second['capture_uid'] = 'capture-17'
+        for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
+            second['observation'][field] = 'other_' + Path(second['observation'][field]).name
+    manifest = tmp_path / 'attempts.jsonl'
+    manifest.write_text('\n'.join(json.dumps(row) for row in (first, second)))
+    with pytest.raises(ValueError, match='shared target observation/capture crosses split or group'):
+        InstanceAttemptDataset(manifest)
+
+
+def test_attempt_shared_capture_allows_instances_in_same_group_split(tmp_path):
+    observation = dict(format='rgbd', rgb_path='rgb.png', depth_path='depth.png',
+        instance_mask_path='mask.png', depth_scale_m=.001,
+        intrinsics=_camera().tolist(), g_cam=[0., 0., -1.])
+    rows = [dict(schema_version='suction20.target.v1', label_kind='attempt_success',
+        sample_id=f'a{i}', group_id='g', split='train', capture_uid='capture-17',
+        observation=dict(observation), success_definition='pickup',
+        attempt=dict(point_cam_m=[0., 0., .6], normal_out_cam=[0., 0., -1.],
+            instance_id=i, success=1, label_valid=True)) for i in (1, 2)]
+    for field in ('rgb_path', 'depth_path', 'instance_mask_path'):
+        rows[1]['observation'][field] = './' + rows[1]['observation'][field]
+    # A historical checksum difference must not become an indirect declaration check.
+    rows[0]['observation']['legacy'] = {'source_sha256': 'old-one', 'version': 1}
+    rows[1]['observation']['legacy'] = {'source_sha256': 'old-two', 'version': 1}
+    manifest = tmp_path / 'attempts.jsonl'
+    manifest.write_text('\n'.join(json.dumps(row) for row in rows))
+    dataset = InstanceAttemptDataset(manifest)
+    assert len(dataset) == 2
+    assert dataset.observation_owners[('capture_uid', 'capture-17')] == ('train', 'g')
+    assert dataset.observation_owners[('depth_path', str((tmp_path / 'depth.png').resolve()))] == ('train', 'g')
+    assert len(dataset.identity['observation_provenance']) == 3
+    assert dataset.records[0]['observation'] == dataset.records[1]['observation']
+    assert 'sha256' not in json.dumps(dataset.records)
+
+
+def test_teacher_and_new_archives_drop_nested_obsolete_metadata(tmp_path):
+    root, release, _ = _assets(tmp_path)
+    config_path = release / 'config_frozen.json'
+    config = json.loads(config_path.read_text())
+    config['source_sha256'] = 'not-verified'
+    config['provenance'] = {'version': 'legacy', 'nested': [{'artifact_sha256': 'ignored', 'retained': 7}]}
+    config_path.write_text(json.dumps(config))
+    teacher = InstanceTeacher(root, release)
+    assert teacher.config['provenance'] == {'version': 'legacy', 'nested': [{'retained': 7}]}
+    assert 'sha256' not in json.dumps(teacher.config)
+    assert 'sha256' not in json.dumps(teacher.identity)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    assert 'sha256' not in manifest.read_text()
+    row = json.loads(manifest.read_text())
+    label_path = manifest.parent / row['label_cache']
+    with np.load(label_path, allow_pickle=False) as archive:
+        original = {key: archive[key] for key in archive.files}
+    label_metadata = json.loads(str(original['metadata_json']))
+    assert 'sha256' not in json.dumps(label_metadata)
+    # Simulate an actual old archive, without using the new sanitized writer.
+    label_metadata['identity']['physics']['provenance']['old_sha256'] = 'changed-old-value'
+    original['metadata_json'] = np.asarray(json.dumps(label_metadata))
+    np.savez_compressed(label_path, **original)
+    item = InstanceDataset(manifest, training_queries=8)[0]
+    assert item['labels']['identity']['physics'] == row['label_identity']['physics']
+    assert 'sha256' not in json.dumps(item['labels']['identity'])
+    observation = _observation()
+    observation['provenance'] = {'nested': [{'old_sha256': 'ignored', 'retained': 8}]}
+    destination = tmp_path / 'clean_observation.npz'
+    save_observation(destination, observation)
+    with np.load(destination, allow_pickle=False) as archive:
+        saved_metadata = json.loads(str(archive['metadata_json']))
+    assert saved_metadata['provenance'] == {'nested': [{'retained': 8}]}
+    assert 'sha256' not in json.dumps(saved_metadata)
+
+
+def test_merge_scene_shards_relocates_paths_and_rejects_overlap_and_missing(tmp_path):
+    first_root, release, _ = _assets(tmp_path/'one', scene_id=0)
+    second_root, _, _ = _assets(tmp_path/'two', scene_id=1)
+    one, _ = build_source_instances(first_root, release, tmp_path/'shards/one',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    two, _ = build_source_instances(second_root, release, tmp_path/'shards/two',
+        split='train', scenes=[1], frames=[0], train_queries=8)
+    with pytest.raises(ValueError, match='incomplete'):
+        merge_source_manifests([one,two], tmp_path/'full', split='train')
+    merged, summary = merge_source_manifests([one,two], tmp_path/'merged', split='train', allow_partial=True)
+    assert summary['frame_count']==2 and not summary['complete_requested_split']
+    dataset = InstanceDataset(merged, training_queries=8)
+    assert len(dataset)==2 and all(dataset[i]['record']['has_supervision'] for i in range(2))
+    assert all(row['observation_npz'].startswith('../shards/') for row in dataset.records)
+    with pytest.raises(ValueError, match='overlapping'):
+        merge_source_manifests([one,merged], tmp_path/'overlap', split='train', allow_partial=True)
+    with pytest.raises(ValueError, match='crosses requested split'):
+        merge_source_manifests([one], tmp_path/'cross', split='test', allow_partial=True)
+    broken=json.loads(two.with_suffix('.summary.json').read_text())
+    broken['frame_ids']=[0,1];broken['frame_count']=2
+    two.with_suffix('.summary.json').write_text(json.dumps(broken))
+    with pytest.raises(ValueError, match='missing frames'):
+        merge_source_manifests([one,two], tmp_path/'bad', split='train', allow_partial=True)
+
+
+def test_merge_keeps_explicit_empty_gt_frames(tmp_path):
+    root, release, _ = _assets(tmp_path, scene_id=100)
+    base=root/'scenes/scene_0100/realsense'
+    Image.fromarray(np.zeros((65,65),np.uint8)).save(base/'label/0000.png')
+    source,_=build_source_instances(root,release,tmp_path/'shard',split='test',scenes=[100],frames=[0])
+    manifest,summary=merge_source_manifests([source],tmp_path/'merged',split='test',allow_partial=True)
+    assert manifest.read_text()==''
+    assert summary['empty_gt_frames']==[[100,0]] and summary['frame_count']==1

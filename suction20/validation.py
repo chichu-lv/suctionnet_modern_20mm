@@ -7,7 +7,7 @@ import torch
 
 from .datasets import collate_public
 from .runner import make_source_dataset
-from .training import EXPERIMENTS, content_digest, move_to_device
+from .training import EXPERIMENTS, configuration_identity, move_to_device
 from .precision import resolve_precision
 
 
@@ -19,8 +19,11 @@ def checkpoint_inference_config(config, state):
     """
     if state.get("format_version") != "suction20.checkpoint.v1":
         raise ValueError("Unsupported checkpoint format")
-    if content_digest(state["source_label_config"]) != state["source_label_config_sha256"]:
-        raise ValueError("Checkpoint source label configuration digest mismatch")
+    if not isinstance(state.get("source_label_config"), dict):
+        raise ValueError("Checkpoint source label configuration must be a mapping")
+    definition = state.get("source_label_definition")
+    if definition is not None and configuration_identity(definition) != configuration_identity(state["source_label_config"]):
+        raise ValueError("Checkpoint source label definitions disagree")
     saved = copy.deepcopy(state["model_config"])
     experiment = state.get("experiment") or saved.get("experiment", "E1")
     requested_experiment = config.get("experiment") or config["model"].get("experiment", experiment)

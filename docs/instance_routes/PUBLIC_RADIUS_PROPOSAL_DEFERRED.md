@@ -22,9 +22,9 @@
 | `get_smoothness_score` 局部 radius | 圆周、ideal lengths、内部 `rho < r`、检索环共同使用 r | 原始 Seal，不做项目 min/max 归一化；72 扇区；检索半宽 1 mm；自碰 h > 5 mm |
 | `collision_detection` 局部 radius | 柱体径向 `rho < r` 使用 r | 原场景/桌面碰撞；轴向起点 10 mm、终点 100 mm |
 
-参数传播链为 `SuctionNetEval → eval_scene → eval_suction → collision_detection / get_suction_score → get_smoothness_score / get_wrench_score`。保留上游原文件快照，适配代码独立存放并保存 patch SHA。不要原地覆写环境里的官方包或运行中修改全局 radius；导入时已算出的 `wrench_thre` 也必须消除过期 R10 值。数值运算沿用固定API的dtype、公式和顺序；半径作为常量参数的重构不得顺带向量化或改精度。
+参数传播链为 `SuctionNetEval → eval_scene → eval_suction → collision_detection / get_suction_score → get_smoothness_score / get_wrench_score`。保留上游原文件快照，适配代码独立存放，保存实际patch与版本/commit出处。不要原地覆写环境里的官方包或运行中修改全局 radius；导入时已算出的 `wrench_thre` 也必须消除过期 R10 值。数值运算沿用固定API的dtype、公式和顺序；半径作为常量参数的重构不得顺带向量化或改精度。
 
-不随吸盘尺寸缩放 NMS、环宽、轴向高度、阈值、模型体素或候选数量。阈值、严格/非严格边界、场景重力变换、稠密模型生成与采样顺序沿用固定 API；实际稠密几何文件/依赖/随机状态记 hash。原论文未披露历史 API SHA 或模型采样 hash 时写 `unreported`。**R10 一致性验收证明的是本适配层与本项目冻结 API 等价，不证明复原了作者未公开的历史环境。**
+不随吸盘尺寸缩放 NMS、环宽、轴向高度、阈值、模型体素或候选数量。阈值、严格/非严格边界、场景重力变换、稠密模型生成与采样顺序沿用固定 API；记录实际稠密几何出处路径、依赖版本、API版本/commit、采样配置和随机状态，不生成文件或数组校验和。原论文未披露历史API或模型采样版本时写 `unreported`。**R10 一致性验收证明的是本适配层与本项目冻结 API 等价，不证明复原了作者未公开的历史环境。**
 
 ### 3.3 R10 准入与可选同尺寸补充
 

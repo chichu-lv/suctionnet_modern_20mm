@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shlex
@@ -88,10 +87,10 @@ def main():
                       'supervisor_entries': {
                           'profiles': {config['runtime_profile']['host']: {config['experiment']: {
                               'config_path': str(train_file),
-                              'config_sha256': hashlib.sha256(train_file.read_bytes()).hexdigest()}}},
+                              'config_definition': config}}},
                           'performance_configs': {config['runtime_profile']['host']: {config['experiment']: {
                               'config_path': str(performance_file),
-                              'config_sha256': hashlib.sha256(performance_file.read_bytes()).hexdigest()}}}},
+                              'config_definition': performance}}}},
                       'precision': config['training']['precision'],
                       'resource_request': dict(config['runtime'],
                           hardware_preset=config['runtime_profile']['hardware_preset'],

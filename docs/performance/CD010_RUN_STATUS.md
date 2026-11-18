@@ -158,7 +158,7 @@ import json, sys
 m = json.load(open(sys.argv[1]))
 for role in ("current", "predecessor", "best"):
     ref = m.get(role)
-    print(role, None if ref is None else {k: ref.get(k) for k in ("global_step", "path", "sha256")})
+    print(role, None if ref is None else {k: ref.get(k) for k in ("global_step", "path", "generation", "size_bytes")})
 print("retained_nodes", sorted(map(int, m.get("nodes", {}))))
 PY
 ```
@@ -171,7 +171,7 @@ PYTHONPATH="$CD010_ROOT/repo" python "$CD010_ROOT/repo/scripts/export_training_l
   --resource-log "$CONTROL_DIR/resources.jsonl"
 ```
 
-可重复传入`--resource-log`纳入历史attempt的资源记录。exporter校验所选checkpoint文件SHA及提交日志前缀，输出`updates.csv`、`frames.csv`、`events.csv`、`validation_frames.csv`、`resources.csv`、`summary.json`和`export-manifest.json`；未提交/放弃的尾部单独分类。`--checkpoint-role`可选current/predecessor/best，默认current。`--live-attempt-id`只给尾部加标签，不证明进程存活。不要将多个attempt的raw尾部直接拼接计入正式成功步数。
+可重复传入`--resource-log`纳入历史attempt的资源记录。当前exporter检查所选checkpoint引用、预期长度、提交日志前缀和记录身份，不计算内容摘要，输出`updates.csv`、`frames.csv`、`events.csv`、`validation_frames.csv`、`resources.csv`、`summary.json`和`export-manifest.json`；未提交/放弃的尾部单独分类。`--checkpoint-role`可选current/predecessor/best，默认current。`--live-attempt-id`只给尾部加标签，不证明进程存活。不要将多个attempt的raw尾部直接拼接计入正式成功步数。
 
 ## 7. 验证、保存与恢复规则
 

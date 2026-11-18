@@ -15,7 +15,7 @@
 | test / similar | 130–159 | 每场景256个 |
 | test / novel | 160–189 | 每场景256个 |
 
-源manifest的 `split` 为 `train/test`，没有源val；测试另存 `test_subset=seen|similar|novel`。source test共90场景、23040帧，完整用于best选择，标签不进入梯度更新，但选择行为本身已使用test信息。同帧实例不跨 split，这也不等于 CAD 身份互斥划分。源训练有效原始支持不足100点的实例记录 `insufficient_support`；验证和测试保留其身份与无输出结果，计入主指标分母。
+源manifest的 `split` 为 `train/test`，没有源val；测试另存 `test_subset=seen|similar|novel`。source test共90场景、23040帧，完整用于best选择，标签不进入梯度更新，但选择行为本身已使用test信息。同帧实例不跨 split，这也不等于 CAD 身份互斥划分。源训练有效原始支持低于模型min_support_points（默认100）的实例记录 `insufficient_support`；验证和测试保留其身份与无输出结果，计入主指标分母。
 
 目标域继承现有动作清单：
 
@@ -33,21 +33,21 @@
 
 | 文件/字段 | 准备内容与校验 |
 |---|---|
-| 实例 manifest | `schema_version=instance_observation_v2`、`manifest_version=suction20.instance_manifest.v3`、sample/instance/capture/group ID、split、source_kind |
+| 实例 manifest | `schema_version=instance_observation_v2`、`manifest_version=suction20.instance_manifest.v4`、sample/instance/capture/group ID、split、source_kind |
 | 观测资产 | RGB、米制轴向 depth、实例 mask、K、完整 gravity_cam 及有效性；RGB/深度在同一校正网格 |
-| 身份 | observation/calibration/source/label实际字节SHA-256、normal/sampler/precision规范、精确query_identity与teacher身份 |
+| 身份 | 观测/标定来源路径与实际参数、normal/sampler/precision显式规范、有序query原像素ID、teacher_spec与小型physics字典 |
 | query 索引 | `query_cache`；source ID、原像素、格号、轮次、query_id、精确 p/n 与 query_valid |
 | label 索引 | 源域 `label_cache`；目标历史动作没有物理真值时为空，不能补零 |
 | 历史动作 | attempt/sample/group ID、原相机系 p/n、outcome、label_valid、pose_source、actual_execution_verified |
-| 支持和变换 | `pose_support_valid`、排除原因、`pose_transform_sha256`；与 outcome 有效性分开 |
+| 支持和变换 | `pose_support_valid`、排除原因、原始p/n及已提供的实际变换；与outcome有效性分开 |
 
 相机坐标采用 x向右、y向下、z向前；深度为相机 z 轴距离。使用更新后的 K 反投影，长度单位为米。历史姿态用原标定变换到相机系，以 float64 读取并保留有向轴；最近点只可验证支持，不能吸附记录中心。当前重力是负传送带平面法向近似，来源标记随样本保留。
 
-源builder在输出根目录写manifest/summary，观测与完整query数组在 `observations/`，实际求值的标签前缀在 `labels/`；目标动作沿用既有JSONL。路径相对manifest根解析，NPZ为数组和JSON元数据、`allow_pickle=False`加载，并核验真实文件SHA-256；产物路径与CLI见第7节。
+源builder在输出根目录写manifest/summary，观测与完整query数组在 `observations/`，实际求值的标签前缀在 `labels/`；目标动作沿用既有JSONL。路径相对manifest根解析，NPZ为数组和JSON元数据、`allow_pickle=False`加载，每次实际加载每份NPZ一次，核对结构、p/n与标签公式；产物路径与CLI见第7节。读取器同时接受旧v3，忽略旧校验和字段，不计算文件/数组校验和，不作内容篡改检测保证。
 
 ## 3. 按实际需要构建缓存
 
-1. 核对源资产及目标原始记录，固定 split/group/标定和规范化资产 hash；输出接受与排除清单。
+1. 核对源资产及目标原始记录，固定split/group、语义样本ID、标定与规范化来源路径；输出接受与排除清单。
 2. 按[预处理方案](PREPROCESSING.md)生成 v3 法向和完整最多256 query序列。源训练/回放取前128；验证、测试使用固定完整池；历史动作另存精确 p/n。
 3. builder按scene/frame清单生成可复用缓存。train默认对前128 query求值，test为完整最多256；重复draw不重算teacher。先构建明确标partial的分片核验成本，再完成100-train/90-test完整清单。
 4. 在约64–128个覆盖不同实例尺寸及 dense点数的真实样本上剖析 teacher成本；记录加载时间、Seal秒/query、self-envelope时间、秒/实例、缓存大小及命中率。
@@ -92,20 +92,22 @@ q_inst = q_sw * (NOT C_self)
 
 乘积一致性使用 `atol=1e-6, rtol=1e-5`。Inf禁止；mask=false行可存NaN，布尔false仅是占位。部分标签未知时保留诊断，不补成负例；全false结构文件须标 `has_supervision=false`，不能计入训练有效实例。
 
-缓存身份绑定：观测/实例、完整对象资产、物理配置、teacher代码commit、normal-spec、sampler-spec、精确p/n字节、split清单、质量合同与单位。几何正确性基线从原深度/内参构造float64，之后才转网络FP32；已经量化的FP32 XYZ升精度不能恢复原数值。光度增强不改变标签，任何p/n变更必须重新匹配缓存身份。
+缓存定义保存观测/实例语义ID、normal/sampler/precision、query原像素ID、质量/schema、teacher_spec与完整小型physics。加载时直接比较实际query/label的p/n和顺序；dense/Seal文件路径只记录出处，不证明文件内容相同。旧缓存缺physics时保留null，仅比较双方都已知的配置，不要求重算已通过真实数组校验的标签；加载不会重写旧NPZ。几何正确性基线从原深度/内参构造float64，之后才转网络FP32；已经量化的FP32 XYZ升精度不能恢复原数值。光度增强不改变标签，任何p/n变更必须重新匹配缓存身份。
 
 ## 6. 可运行检查与完成条件
 
-在仓库根目录对真实准备好的文件执行（尖括号为需要替换的路径）：
+生产缓存直接用真实加载器检查，替换下面manifest路径：
 
-```text
-python docs/instance_routes/reference/geometry_contract.py check-manifest <manifest.jsonl>
-python docs/instance_routes/reference/revision_contract.py check-labels <labels.npz>
+```python
+from suction20.instance_data import InstanceDataset
+source = InstanceDataset('/data/instance_v3/train/manifest_train.jsonl',
+                         split='train', training_queries=128)
+item = source[0]  # 真实数组、p/n顺序、标签公式与已知配置；无校验和读取
 ```
 
-这两个参考入口核对其声明的数学/schema关系；生产缓存读入器另外核验原资产、query和teacher身份。builder/teacher已实现，命令见下节；合成检查不替代真实完整dense资产上的同姿态核验。
+`geometry_contract.py check-manifest` 只检查其sample/group/capture声明；`revision_contract.py check-labels` 只读取其顶层schema参考demo，不能用于生产metadata_json版NPZ。生产标签用 `load_labels` / `InstanceDataset`。合成检查不替代真实完整dense资产上的同姿态核验；builder/teacher命令见下节。
 
-完成本阶段需有：固定清单及排除账本；scene/group/hash不跨split；标定与原姿态回读报告；真实同p/n的S/W对齐；self两分项与原目标部分对齐；独立外部项与self合并可重建旧总C；错误法向/姿态/teacher身份的缓存被拒绝；正式训练所需缓存预算与实测成本报告。
+完成本阶段需有：固定清单及排除账本；scene/group/sample/规范化观测路径不跨split；标定与原姿态回读报告；真实同p/n的S/W对齐；self两分项与原目标部分对齐；独立外部项与self合并可重建旧总C；错误法向/姿态/teacher身份的缓存被拒绝；正式训练所需缓存预算与实测成本报告。
 
 ## 7. 可执行的源数据构建
 
@@ -115,15 +117,27 @@ python docs/instance_routes/reference/revision_contract.py check-labels <labels.
 DATASET=/data/SuctionNet
 R20_LABELS=/data/suction20_r20
 CACHE=/data/instance_v3
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train" --split train --camera realsense
-python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/test" --split test --camera realsense
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train" --split train --camera realsense --workers 4
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/test" --split test --camera realsense --workers 4
 ```
 
 默认train=scene 0–99、test=100–189，均包含frame 0–255。默认深度范围沿用0.2–1.2m，可显式传 `--depth-min-m` / `--depth-max-m`；修改后会进入观测身份，必须对train与selection保持一致。可选 `--camera kinect` 使用对应相机资产，不能把两个相机的结果混成一项。若场景同类对象重复，提供 `--instance-mask-root` 中按instance row标记的真实掩码；类别ID不能充当重复实例的唯一身份。
 
-产物为 `train/manifest_train.jsonl`、`train/manifest_train.summary.json` 和test对应文件；每个根目录下有 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`。summary记录实际scene/frame覆盖、空GT帧、实例状态和 `complete_requested_split`；不能通过改文件名把分片升级为完整数据。
+产物为 `train/manifest_train.jsonl`、`train/manifest_train.summary.json` 和test对应文件；单进程在根目录下写 `observations/<camera>_s0000_f0000_i000.npz` 及 `labels/`；多进程分别写 `shards/part_XXXX/`，合并清单以相对路径引用它们。summary记录实际scene/frame覆盖、空GT帧、实例状态和 `complete_requested_split`；不能通过改文件名把分片升级为完整数据。
 
 小规模构建可加入 `--scenes 0-1 --frames 0,8`，test分片则使用100–189范围内的scene。`--train-queries 64` 是独立预算配置，后续训练配置必须同步；test仍求值最多256。`--without-labels` 可以不传label-root，只生成观测缓存，适用于推理或输入检查，不能用于源监督或完整选模。
+
+`--workers 4` 按scene分派4个独立进程；各进程独占 `shards/part_XXXX/`，完成后自动合并。默认 `--workers 1` 串行；多进程需显式train或test。外部分片也可分别构建到不同目录，再合并完整训练集：
+
+```bash
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train_parts/part_00" --split train --scenes 0-49
+python scripts/build_instance_dataset.py --dataset-root "$DATASET" --label-root "$R20_LABELS" --output "$CACHE/train_parts/part_01" --split train --scenes 50-99
+python scripts/merge_instance_manifests.py --manifests "$CACHE/train_parts/part_00/manifest_train.jsonl" "$CACHE/train_parts/part_01/manifest_train.jsonl" --output "$CACHE/train" --split train
+```
+
+合并器重定位NPZ相对路径并保留全部 `empty_gt_frames`；拒绝重叠、重复实例、跨split/相机、缺失文件、漏帧和已知physics冲突。默认要求整个split的全部scene×256帧。仅小规模接线可用 `--allow-partial`，训练时仍需另传 `--allow-partial-manifests`，不能据此声明完整覆盖。不要并发写同一个分片目录。
+
+builder的 `--min-support-points` 默认100，写入观测、清单与summary；训练/评价实际读取模型的 `model.min_support_points`，默认同为100。数据的 `has_supervision` 只看有效标签，构建时 `trainable` 只作诊断；变更阈值应同时记录两者，不能用缓存布尔值阻止模型使用新的阈值。
 
 Teacher的可调用接口为：
 
@@ -137,7 +151,7 @@ labels = teacher.evaluate(scene_id, frame_id, instance_row, points, normals, que
 
 ## 8. 目标域RGB-D资产接线
 
-`InstanceAttemptDataset` 直接读取既有 `schema_version=suction20.target.v1`、`label_kind=attempt_success` JSONL。其 `observation` 必须是RGB-D来源，含真实 `rgb_path`、`depth_path`、`instance_mask_path`、`depth_scale_m`、`intrinsics`、`g_cam`，以及原动作姿态、标签和split/group。相对路径以manifest目录为根解析，数据集绑定实际资产字节。
+`InstanceAttemptDataset` 直接读取既有 `schema_version=suction20.target.v1`、`label_kind=attempt_success` JSONL。其 `observation` 必须是RGB-D来源，含真实 `rgb_path`、`depth_path`、`instance_mask_path`、`depth_scale_m`、`intrinsics`、`g_cam`，以及原动作姿态、标签和split/group。相对路径以manifest目录为根解析，记录来源路径及sample/group/观测语义ID，不扫描文件字节生成校验和。
 
 旧pointcloud-only记录不具备共同organized法向、候选及RGB接线所需的信息，会明确报错；需补回该次观测的原RGB-D和mask，不能反向渲染点云伪造原相机纹理。当前未新增一个自动补齐缺失资产的目标builder，也未改动1676/399/87划分。可用历史 `planned_pipeline_contact` 直接评分，不能以最近canonical query替代动作。
 

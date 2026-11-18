@@ -1,5 +1,7 @@
 # CD-009 P3：整合优化与正常续训
 
+本页包含历史性能设计和实测记录。项目当前已移除 SHA-256 计算与核验，历史摘要字段不再作为运行条件；当前操作以 [MODEL_USAGE](MODEL_USAGE.md)、[CHECKPOINT_POLICY](CHECKPOINT_POLICY.md) 和[无内容校验和规则](NO_CONTENT_CHECKSUMS.md)为准。下面的历史数值不重算、不改写。
+
 > **归档提示（2026-11-18）**：本报告中的 CD-009 checkpoint 迁移命令与 supervisor 例外流程仅为历史证据。当前分支已移除迁移工具；不要据此在最新代码上恢复旧运行。请参见 [Checkpoint 兼容性政策](CHECKPOINT_POLICY.md)。
 
 2026-11-13 更新。依据 [H20 / E5 诊断](performance/H20_P2_BATCH_DIAGNOSIS.md)、[L20 / E5 诊断](performance/L20_P2_BATCH_DIAGNOSIS.md) 及随后完成的[真实 checkpoint 配对与续训结果](performance/P3_INTEGRATED_RESULTS.md)调整方案。**H20/E5 的 64k + split + native 与 L20/E3 的 16k + split + native 已通过四帧配对；H20/E5 及 L20/E0、E1、E3 均已完成迁移并取得首 25 次正常更新窗口。** L20 原 64k 组合未通过原梯度门槛，现予延后，原失败报告保留。
@@ -178,7 +180,7 @@ L20 的 `PROFILE` 及获准 candidate 的实际执行值均保留原 16k；此�
 
 **可选的性能比较：** 如果需要在切换前补充独立墙钟，用已有 [benchmark_batch_cpu.py](../scripts/benchmark_batch_cpu.py) 只跑实际 baseline 与 candidate 各一组 **B1A4、CPU8、workers2**；已有相同执行身份的可比测量可直接复用。它固定一块预热、三块测量，fresh seed42、零 optimizer 更新，不能代替后续真实训练窗口。无 sidecar 的 original 起点可省略该可选工具，直接观察原预算内窗口。
 
-以下是单个候选的现有参数模板；`BENCH_REPO`、`BENCH_PERFORMANCE_CONFIG` 及两个源码身份变量必须描述本次实际运行的 checkout，输出目录在 checkout 和正式 run 外。`CPUSET` 使用原 8 个逻辑核，`GPU_LOCK` 使用 supervisor 对应 GPU UUID 的已有锁，测试使用正常暂停后释放的同卡。H20 cap 沿原 112 GiB，L20 沿原 36 GiB。
+以下是单个候选的现有参数模板；`BENCH_REPO`、`BENCH_PERFORMANCE_CONFIG` 及 Git revision 必须描述本次实际运行的 checkout，输出目录在 checkout 和正式 run 外。`CPUSET` 使用原 8 个逻辑核，`GPU_LOCK` 使用 supervisor 对应 GPU UUID 的已有锁，测试使用正常暂停后释放的同卡。H20 cap 沿原 112 GiB，L20 沿原 36 GiB。
 
 ```bash
 CUDA_VISIBLE_DEVICES="$GPU_UUID" \
@@ -188,7 +190,6 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   --repo-root "$BENCH_REPO" --config "$PROFILE" \
   --performance-config "$BENCH_PERFORMANCE_CONFIG" \
   --expected-code-revision "$BENCH_CODE_REVISION" \
-  --expected-worktree-sha256 "$BENCH_WORKTREE_SHA256" \
   --gpu-uuid "$GPU_UUID" --gpu-lock "$GPU_LOCK" \
   --microbatch 1 --accumulation 4 --cpu-threads 8 --workers 2 \
   --sampler-epoch 0 --gpu-memory-limit-gib "$GPU_CAP_GIB" \
@@ -197,43 +198,11 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   --backbone-root "$BACKBONE_ROOT" --out "$BENCH_OUT"
 ```
 
-### 5.2 一次正常保存、迁移与续训
+### 5.2 历史正常保存、迁移与续训
 
-沿用 supervisor 正常暂停，不新建恢复系统。同一主机共用 checkout / editable venv 的运行先一起到正常保存边界暂停，再统一切换公共代码和扩展；不在其他任务仍使用该目录时原地替换。原实现快照保留供配对读取。安装依赖沿已有训练环境，原生扩展使用该主机已有编译器构建。
+该阶段已经完成的 P2→P3 迁移和首 25 次正常更新记录继续保留；一次性迁移工具及摘要验收流程现已退役。本节不再提供迁移 CLI 或历史摘要变量。当前训练使用 v4 配方，同版本续训保留模型、optimizer、RNG、游标和样本预算，直接比较实际配置及运行字段。不要对旧 checkpoint 删收据或重置身份后强行恢复。
 
-正常暂停命令在原协调器上执行：
-
-```bash
-python -m suction20.run_supervisor --config "$SUPERVISOR_CONFIG" \
-  pause "$EXPERIMENT" --reason "P3 integrated performance transition"
-```
-
-等待该次正常暂停、保存和既有备份完成。`SOURCE_CHECKPOINT_SHA256` 与 `PAUSED_ATTEMPT_DIR` 取自当前 manifest/attempt，**不是从诊断文档复制 `e73d62e` 或历史步数**。迁移允许批准的 original/P1/P2 直接到目标 v3，无需先正式启用 P2。原 P1/P2 档案沿现有 receipt 引用保留；直接从 P2 开始的 run 允许没有更早 receipt。
-
-在拥有该 run 的主机、目标 checkout 中执行：
-
-本轮实际执行代码固定在已验证的 `f4f7f0d6de0bd3bd27107d8be09885fed700e48b`。L20 将批准的 16k sidecar 独立放在运行根目录的 `performance/` 下，以其实际 SHA 选择；本次配置与文档入库不改变正在部署的代码身份。`TARGET_PERFORMANCE_CONFIG` 指向该独立固定文件。
-
-```bash
-python scripts/migrate_performance_checkpoint.py \
-  --config "$PROFILE" \
-  --performance-config "$TARGET_PERFORMANCE_CONFIG" \
-  --run-dir "$RUN_DIR" --control-dir "$PAUSED_ATTEMPT_DIR" \
-  --expected-source-sha256 "$SOURCE_CHECKPOINT_SHA256" \
-  --source-root "$SOURCE_ROOT" --label-root "$LABEL_ROOT" \
-  --backbone-root "$BACKBONE_ROOT"
-```
-
-在原 supervisor 配置的相应 host/experiment `performance_configs` 中选择整合 sidecar 的路径和实际 SHA256，再正常接续：
-
-```bash
-python -m suction20.run_supervisor --config "$SUPERVISOR_CONFIG" \
-  resume "$EXPERIMENT"
-```
-
-现有迁移只切换批准的 code/worktree/performance 身份，保留模型、Adam moments/step、AMP scaler、RNG、已消费采样器游标、成功步、有效帧预算、LR、best、验证节点与日志前缀。源 checkpoint 硬链接、原 manifest 和历史 receipt 继续归档。冻结 profile/raw hash 和普通 resume 检查保持；不使用 `--init-checkpoint` 代替续训，也不重新 warmup。
-
-通过条件是既有迁移和普通 resume 正常完成，下一批及成功步继续原进度。无需再独立建立状态 tensor 审计、故障注入或迁移矩阵。
+当前支持路径见 [CHECKPOINT_POLICY.md](CHECKPOINT_POLICY.md)，全项目读取与备份遵守[无内容校验和规则](NO_CONTENT_CHECKSUMS.md)。
 
 ### 5.3 读取原预算内 20–30 次正常更新
 

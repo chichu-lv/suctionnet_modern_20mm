@@ -5,7 +5,6 @@
   "label_root": "/data/suctionnet/output",
   "backup_root": "/backup/cd009-pretraining-v3",
   "backbone_root": "/srv/cd009-pretraining-v3/repo/external/graspness_modern",
-  "manifest_sha256": "37c4336b839b9621fa8317ec6f701846b9e8c073a494c8fa7a66b13cb62ae6a8",
   "hosts": {
     "H20": {
       "machine_id": "REPLACE_FROM_HOST_ETC_MACHINE_ID",
@@ -107,30 +106,24 @@
   "profiles": {
     "H20": {
       "E5": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/H20-E5.json",
-        "config_sha256": "55e98e4d1adc6038590414ee92d15e8ad36152cd4ca0012128f25e7a19fab7c9"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/H20-E5.json"
       }
     },
     "L20": {
       "E0": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E0.json",
-        "config_sha256": "22299a521be8ee000ef90e240307926f2424c32de53a1428fab125b866e0134e"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E0.json"
       },
       "E1": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E1.json",
-        "config_sha256": "5dc5ed7648d63f4362afd49537d8c6a552548405348a47c212bc18b80bcc80c9"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E1.json"
       },
       "E2": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E2.json",
-        "config_sha256": "d67bf34afb0801ed057194527fcd173bd708b58cb141fa6a41767f5e06a31329"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E2.json"
       },
       "E3": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E3.json",
-        "config_sha256": "ca7540840777c8e2223fae61098b5414082b65a98e9ebffb5fa4e6e16e5aa85a"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E3.json"
       },
       "E4": {
-        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E4.json",
-        "config_sha256": "207b5c854c1b4cea477a646270d0888645d8d1cd0772bdf8bdb4b3cb1ea5cc8c"
+        "config_path": "/srv/cd009-pretraining-v3/repo/configs/runtime_profiles/cd009-v3/L20-E4.json"
       }
     }
   },

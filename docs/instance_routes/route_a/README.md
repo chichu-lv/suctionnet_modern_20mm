@@ -1,6 +1,6 @@
 # 路线 A 实施卷宗：单物体稀疏 3D + RGB
 
-本目录是 `route-a-3d-rgb` 分支的开发入口，按数据到实验的顺序整理 `InstanceSuction3D`。共同设计基线为 [a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71)，其中已包含 v3 几何修订和方法架构图。A新模型、共同实例builder/teacher、训练器和原生推理评价已实现。13项CPU几何/模型测试使用显式注入的测试backbone，真实SpConv/GPU、真实完整训练和时延尚未验证；不会自动以CPU替代骨干生成A结果。
+本目录是 `route-a-3d-rgb` 分支的开发入口，按数据到实验的顺序整理 `InstanceSuction3D`。共同设计基线为 [a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71)，其中已包含 v3 几何修订和方法架构图。A新模型、共同实例builder/teacher、训练器和原生推理评价已实现。CPU几何/模型测试使用显式注入的测试backbone，并新增向量化邻居对照；真实SpConv/GPU、真实完整训练和端到端时延尚未验证，不会自动以CPU替代骨干生成A结果。
 
 ![路线 A 方法架构](../../figures/instance-route-a-architecture.svg)
 
@@ -46,8 +46,8 @@
 |---|---|---|
 | 数据与查询 | `suction20/instance_geometry.py`、`suction20/instance_data.py`、`scripts/build_instance_dataset.py` | 合成资产接线已验证，真实完整缓存待构建 |
 | 同姿态teacher | `suction20/instance_teacher.py` | S/W与目标self接线已实现，真实完整dense一致性/成本待测 |
-| A模型/几何 | `models/instance_route_a.py`、`models/instance_route_a_geometry.py` | 13项CPU测试；网络使用注入测试backbone，真实SpConv未运行 |
-| 稀疏wrapper | `models/backbones/spconv_resunet14.py` | 可选in_channels，默认8保持旧E5，A显式12；外部源码blob校验保留 |
+| A模型/几何 | `models/instance_route_a.py`、`models/instance_route_a_geometry.py` | CPU前后向与向量化近邻/旧循环一致性测试；网络使用注入测试backbone，真实SpConv未运行 |
+| 稀疏wrapper | `models/backbones/spconv_resunet14.py` | 可选in_channels，默认8保持旧E5，A显式12；原固定Git blob SHA-1源码核验保持不变，数据校验和不迁移到该算法 |
 | 训练 | `suction20/instance_training.py`、`scripts/train_instance.py`、`configs/instance_a.yaml` | 成功步预算、阶段冻结、严格恢复已实现；正式GPU训练待跑 |
 | 原生推理评价 | `suction20/instance_inference.py`、`scripts/infer_instance.py`、`scripts/evaluate_instance.py` | 原p/n、稳定NMS、实例/动作评价；不包括公开半径评价器 |
 
@@ -60,10 +60,10 @@
 已安装PyTorch/pytest/SciPy的CPU环境，在仓库根目录运行：
 
 ```bash
-python -m pytest -q tests/test_instance_route_a.py
+python -m pytest -q tests/test_instance_route_a.py tests/test_instance_route_a_neighbors.py
 ```
 
-当前13项通过，覆盖体素/FPS、邻居/组件、谐波、各头维度、A接触/头部反向、异轴/chunk、缺Fq、空输入与singleton BN。前后向通过显式注入测试backbone；wrapper测试mock外部加载检查8/12通道，不是实际SpConv成功运行。已有Python/NumPy数学参考继续可运行：
+测试覆盖体素/FPS、邻居/组件、谐波、各头维度、A接触/头部反向、异轴/chunk、缺Fq、空输入与singleton BN；近邻回归逐字节对照冻结旧循环的距离、权重、source-ID破同分及边界。前后向通过显式注入测试backbone；wrapper测试mock外部加载检查8/12通道，不是实际SpConv成功运行。15000-support/2048-backbone的CPU关联函数基准为187.740→17.473ms；完整范围见[预处理页](PREPROCESSING.md#5-连通组件与特征关联)。已有Python/NumPy数学参考继续可运行：
 
 ```bash
 python docs/instance_routes/reference/geometry_contract.py selftest

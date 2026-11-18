@@ -19,7 +19,7 @@ def config(tmp_path):
     return {"root": str(root), "backup_root": str(backup), "python": sys.executable,
             "source_root": str(tmp_path / "dataset/input_raw"),
             "label_root": str(tmp_path / "dataset/output"), "backbone_root": str(root / "external"),
-            "manifest_sha256": "manifest", "hosts": {
+            "manifest_metadata": {"size_bytes": 2}, "hosts": {
                 name: {"machine_id": "test", "hostname": name, "ssh": name, "gpus": {
                     str(i): {"uuid": f"GPU-{name}-{i}", "cpus": list(range(i * 8, i * 8 + 8))}
                     for i in range(count)}} for name, count in (("H20", 2), ("L20", 4))}}
@@ -206,14 +206,14 @@ def test_trainer_cli_resume_and_runtime_caps(coordinator):
     assert assignment["token"] == command[command.index("--attempt-id") + 1]
 
 
-def test_backup_checks_hash_deduplicates_and_keeps_two_hourlies(coordinator, monkeypatch):
+def test_backup_reuses_generations_checks_sizes_and_keeps_two_hourlies(coordinator, monkeypatch):
     assignment = coordinator.assign("E5", "H20", 0)
     config = coordinator.config
     run, _ = s.assignment_paths(config, assignment)
     (run / "checkpoints").mkdir(parents=True)
     checkpoint = run / "checkpoints/a.pt"
     checkpoint.write_bytes(b"immutable-checkpoint")
-    entry = {"path": "checkpoints/a.pt", "sha256": s.digest(checkpoint), "size_bytes": checkpoint.stat().st_size}
+    entry = {"path": "checkpoints/a.pt", "generation": "a" * 32, "size_bytes": checkpoint.stat().st_size}
     s.atomic_json(run / "checkpoint-manifest.json", {"current": entry, "predecessor": None, "best": entry, "nodes": {}})
     (run / "attempts").mkdir()
     (run / "attempts/attempt.jsonl").write_text('{"step":1}\n')
@@ -230,8 +230,8 @@ def test_backup_checks_hash_deduplicates_and_keeps_two_hourlies(coordinator, mon
     checkpoint.write_bytes(b"corruption")
     backup = Path(s.backup_snapshot(config, assignment, {"request_id": "cached"}))
     assert (backup / "checkpoints/a.pt").read_bytes() == b"immutable-checkpoint"
-    (Path(config["backup_root"]) / "objects" / entry["sha256"]).unlink()
-    with pytest.raises(s.Refused, match="truncated|checksum"):
+    (Path(config["backup_root"]) / "objects" / entry["generation"]).unlink()
+    with pytest.raises(s.Refused, match="truncated|size"):
         s.backup_snapshot(config, assignment, {"request_id": "bad"})
 
 
@@ -299,12 +299,12 @@ def test_committed_manifest_recovery_ignores_stale_status_and_reports_fallback(t
     current, predecessor = run / "checkpoints/current.pt", run / "checkpoints/predecessor.pt"
     current.write_bytes(b"current")
     predecessor.write_bytes(b"previous")
-    entries = {role: {"path": str(path.relative_to(run)), "sha256": s.digest(path), "global_step": step}
+    entries = {role: {"path": str(path.relative_to(run)), "size_bytes": path.stat().st_size, "generation": role, "global_step": step}
                for role, path, step in (("current", current, 200), ("predecessor", predecessor, 100))}
     s.atomic_json(run / "checkpoint-manifest.json", entries)
-    assert s.checkpoint_verified(run, {"durable_checkpoint": {"path": "pruned.pt", "sha256": "bad"}})
+    assert s.checkpoint_verified(run, {"durable_checkpoint": {"path": "pruned.pt", "generation": "old"}})
     assert s.committed_checkpoint(run)["global_step"] == 200
-    current.write_bytes(b"corrupt")
+    current.write_bytes(b"short")
     assert s.committed_checkpoint(run)["recovery_role"] == "predecessor"
     assert s.committed_checkpoint(run)["global_step"] == 100
 
@@ -316,7 +316,7 @@ def test_backup_pins_survive_pruning_and_include_only_selected_control(coordinat
     control.mkdir(parents=True)
     original = run / "checkpoints/current.pt"
     original.write_bytes(b"pinned")
-    entry = {"path": "checkpoints/current.pt", "sha256": s.digest(original), "size_bytes": 6}
+    entry = {"path": "checkpoints/current.pt", "generation": "b" * 32, "size_bytes": 6}
     s.atomic_json(run / "checkpoint-manifest.json", {"current": entry})
     (control / "resources.jsonl").write_text('{"rss":42}\n')
     (control / "transport_ed25519").write_text('private key must never be backed up')
@@ -341,7 +341,7 @@ def test_atomic_control_replacement_does_not_truncate_backup_json(coordinator, m
     control.mkdir(parents=True)
     checkpoint = run / "checkpoints/current.pt"
     checkpoint.write_bytes(b"pinned")
-    entry = {"path": "checkpoints/current.pt", "sha256": s.digest(checkpoint), "size_bytes": 6}
+    entry = {"path": "checkpoints/current.pt", "generation": "a" * 32, "size_bytes": 6}
     s.atomic_json(run / "checkpoint-manifest.json", {"current": entry})
     s.atomic_json(control / "status.json", {"original": True})
     original_pin = s.pin_file
@@ -369,7 +369,7 @@ def test_worker_final_backup_grant_and_bounded_copy_failure(coordinator, monkeyp
     label = Path(config["label_root"])
     label.mkdir(parents=True)
     (label / "manifest.json").write_text('{}')
-    config["manifest_sha256"] = s.digest(label / "manifest.json")
+    config["manifest_metadata"] = s.file_metadata(label / "manifest.json")
     monkeypatch.setattr(s, "host_guard", lambda *a: None)
     monkeypatch.setattr(s.os, "sched_getaffinity", lambda pid: set(range(8)))
     monkeypatch.setattr(s.time, "sleep", lambda seconds: None)
@@ -391,7 +391,7 @@ def test_worker_final_backup_grant_and_bounded_copy_failure(coordinator, monkeyp
         (run / "checkpoints").mkdir()
         checkpoint = run / "checkpoints/current.pt"
         checkpoint.write_bytes(b"checkpoint")
-        entry = {"path": "checkpoints/current.pt", "sha256": s.digest(checkpoint), "global_step": 100}
+        entry = {"path": "checkpoints/current.pt", "generation": "a" * 32, "size_bytes": checkpoint.stat().st_size, "global_step": 100}
         s.atomic_json(run / "checkpoint-manifest.json", {"current": entry})
         s.atomic_json(control / "status.json", {"phase": "paused", "global_step": 100, "durable_checkpoint": entry})
         return FinishedTrainer()
@@ -443,7 +443,7 @@ def test_only_h20_snapshots_include_allocator_and_sanitized_config(coordinator, 
     control.mkdir(parents=True)
     checkpoint = run / 'checkpoints/current.pt'
     checkpoint.write_bytes(b'checkpoint')
-    entry = {'path': 'checkpoints/current.pt', 'sha256': s.digest(checkpoint), 'size_bytes': 10}
+    entry = {'path': 'checkpoints/current.pt', 'generation': 'c' * 32, 'size_bytes': 10}
     s.atomic_json(run / 'checkpoint-manifest.json', {'current': entry})
     s.atomic_json(Path(config['root']) / 'control/coordinator.json', coordinator.state)
     config['private_key'] = 'excluded-root-secret'
@@ -459,7 +459,7 @@ def test_only_h20_snapshots_include_allocator_and_sanitized_config(coordinator, 
     if host == 'H20':
         assert s.read_json(ledger)['assignments']['E5']['token'] == assignment['token']
         saved = s.read_json(safe_config)
-        assert saved['manifest_sha256'] == config['manifest_sha256']
+        assert saved['manifest_metadata'] == config['manifest_metadata']
         assert saved['hosts']['H20']['gpus'] == config['hosts']['H20']['gpus']
         assert saved['extra_authorized_gpus'] == config['extra_authorized_gpus']
         assert saved['control_repo'] == config['control_repo']
@@ -588,7 +588,7 @@ def selected_v3(config, effective=32):
            'runtime': {'cpu_threads': 4, 'gpu_memory_limit_gib': 110}}
     s.atomic_json(path, raw)
     config.update(contract_version=s.CONTRACT_VERSION, lock_root=str(Path(config['root']) / 'common-locks'),
-                  profiles={'H20': {'E5': {'config_path': str(path), 'config_sha256': s.digest(path)}}})
+                  profiles={'H20': {'E5': {'config_path': str(path), 'config_definition': json.loads(path.read_text())}}})
     return path, raw
 
 
@@ -615,9 +615,9 @@ def test_from_scratch_profile_passes_v4_sidecar_to_trainer(config, coordinator):
     s.atomic_json(path, fresh)
     sidecar = path.with_name('fresh-performance.json')
     s.atomic_json(sidecar, performance)
-    config['profiles']['H20']['E5']['config_sha256'] = s.digest(path)
+    config['profiles']['H20']['E5']['config_definition'] = json.loads(path.read_text())
     config['performance_configs'] = {'H20': {'E5': {
-        'config_path': str(sidecar), 'config_sha256': s.digest(sidecar)}}}
+        'config_path': str(sidecar), 'config_definition': json.loads(sidecar.read_text())}}}
     assignment = coordinator.assign('E5', 'H20', 0)
     command = s.trainer_command(config, assignment)
     assert assignment['runtime_profile']['selection_status'] == 'from_scratch'
@@ -637,9 +637,9 @@ def test_changed_profile_or_budget_rejected(config, coordinator):
     assignment = coordinator.assign('E5', 'H20', 0)
     raw['runtime']['cpu_threads'] = 8
     s.atomic_json(path, raw)
-    with pytest.raises(s.Refused, match='hash'):
+    with pytest.raises(s.Refused, match='configuration changed'):
         s.trainer_command(config, assignment)
-    config['profiles']['H20']['E5']['config_sha256'] = s.digest(path)
+    config['profiles']['H20']['E5']['config_definition'] = json.loads(path.read_text())
     with pytest.raises(s.Refused, match='changed'):
         s.trainer_command(config, assignment)
     config.pop('contract_version')
@@ -651,13 +651,13 @@ def test_selected_wrong_host_and_cpu_pool_rejected(config, coordinator):
     path, raw = selected_v3(config)
     raw['runtime_profile']['host'] = 'L20'
     s.atomic_json(path, raw)
-    config['profiles']['H20']['E5']['config_sha256'] = s.digest(path)
+    config['profiles']['H20']['E5']['config_definition'] = json.loads(path.read_text())
     with pytest.raises(s.Refused, match='host/experiment'):
         coordinator.assign('E5', 'H20', 0)
     raw['runtime_profile']['host'] = 'H20'
     raw['runtime']['cpu_threads'] = 12
     s.atomic_json(path, raw)
-    config['profiles']['H20']['E5']['config_sha256'] = s.digest(path)
+    config['profiles']['H20']['E5']['config_definition'] = json.loads(path.read_text())
     with pytest.raises(s.Refused, match='affinity pool'):
         coordinator.assign('E5', 'H20', 0)
     assert not coordinator.state['assignments']
@@ -680,14 +680,14 @@ def test_resume_release_requires_matching_unchanged_sidecar(coordinator):
     selected_v3(config, effective=4)
     sidecar = Path(__file__).parents[1] / 'configs/performance/cd009-p1.json'
     config['performance_configs'] = {'H20': {'E5': {
-        'config_path': str(sidecar), 'config_sha256': s.digest(sidecar)}}}
+        'config_path': str(sidecar), 'config_definition': json.loads(sidecar.read_text())}}}
     assignment = coordinator.assign('E5', 'H20', 0)
     checkpoint = v3_checkpoint(assignment)
-    checkpoint['analysis']['identity']['performance'] = {'config_sha256': s.digest(sidecar)}
+    checkpoint['analysis']['identity']['performance'] = {'settings': json.loads(sidecar.read_text())}
     coordinator.transport.view = {'state': 'exited', 'locks_free': True, 'checkpoint_verified': True,
                                   'worker': {'exit_code': 75}, 'committed_checkpoint': checkpoint}
     released = coordinator.release('E5', {'command': 'resume'})
-    assert released['performance_config_sha256'] == s.digest(sidecar)
+    assert released['performance_settings'] == json.loads(sidecar.read_text())
     assert 'E5' not in coordinator.state['assignments']
 
 
@@ -697,22 +697,22 @@ def test_resume_release_rejects_obsolete_transition_and_receipts(coordinator):
     sidecars = Path(__file__).parents[1] / 'configs/performance'
     old, new = sidecars / 'cd009-p1.json', sidecars / 'cd009-p2.json'
     config['performance_configs'] = {'H20': {'E5': {
-        'config_path': str(old), 'config_sha256': s.digest(old)}}}
+        'config_path': str(old), 'config_definition': json.loads(old.read_text())}}}
     assignment = coordinator.assign('E5', 'H20', 0)
     checkpoint = v3_checkpoint(assignment)
-    checkpoint['analysis']['identity']['performance'] = {'config_sha256': s.digest(new)}
+    checkpoint['analysis']['identity']['performance'] = {'settings': json.loads(new.read_text())}
     coordinator.transport.view = {'state': 'exited', 'locks_free': True, 'checkpoint_verified': True,
                                   'worker': {'exit_code': 75}, 'committed_checkpoint': checkpoint}
     config['performance_configs']['H20']['E5'] = {
-        'config_path': str(new), 'config_sha256': s.digest(new)}
+        'config_path': str(new), 'config_definition': json.loads(new.read_text())}
     with pytest.raises(s.Refused, match='sidecar changed'):
         coordinator.release('E5', {'command': 'resume'})
     assert 'E5' in coordinator.state['assignments']
 
     # Historical receipts must not bypass removed verification/archive checks.
     config['performance_configs']['H20']['E5'] = {
-        'config_path': str(old), 'config_sha256': s.digest(old)}
-    checkpoint['analysis']['identity']['performance'] = {'config_sha256': s.digest(old)}
+        'config_path': str(old), 'config_definition': json.loads(old.read_text())}
+    checkpoint['analysis']['identity']['performance'] = {'settings': json.loads(old.read_text())}
     checkpoint['analysis']['performance_migration'] = {'path': 'migrations/old/receipt.json'}
     with pytest.raises(s.Refused, match='Historical migrated checkpoint'):
         coordinator.release('E5', {'command': 'resume'})
@@ -763,7 +763,7 @@ def test_completion_requires_exact_samples_and_full_nodes(config, coordinator):
 def test_prefix_evidence_scoped_to_v3_assignment(config, coordinator):
     selected_v3(config)
     assignment = coordinator.assign('E5', 'H20', 0)
-    evidence = {'attempt_id': assignment['token'], 'profile_sha256': assignment['profile_sha256'],
+    evidence = {'attempt_id': assignment['token'], 'profile_definition': assignment['profile_definition'],
                 'contract_version': s.CONTRACT_VERSION, 'paused_step': 13, 'resumed_step': 14,
                 'identity_and_sampler_passed': True}
     s.check_evidence(assignment, 'prefix', evidence)
@@ -810,9 +810,9 @@ def test_v3_cannot_reinterpret_existing_legacy_ledger(config, coordinator):
 def test_v3_complete_evidence_needs_committed_full_validation(config, coordinator):
     selected_v3(config)
     assignment = coordinator.assign('E5', 'H20', 0)
-    evidence = {'attempt_id': assignment['token'], 'profile_sha256': assignment['profile_sha256'],
+    evidence = {'attempt_id': assignment['token'], 'profile_definition': assignment['profile_definition'],
         'contract_version': s.CONTRACT_VERSION, 'global_step': 7200, 'validation_nodes': 10,
-        'effective_samples_completed': 230400, 'hashes_passed': True, 'ledger_passed': True, 'backup_passed': True}
+        'effective_samples_completed': 230400, 'file_sizes_passed': True, 'ledger_passed': True, 'backup_passed': True}
     with pytest.raises(s.Refused, match='checkpoint profile'):
         s.check_evidence(assignment, 'complete', evidence)
     assignment['view'] = {'committed_checkpoint': v3_checkpoint(assignment)}
@@ -821,29 +821,29 @@ def test_v3_complete_evidence_needs_committed_full_validation(config, coordinato
         s.check_evidence(assignment, 'complete', dict(evidence, effective_samples_completed=230399))
 
 
-def test_retirement_backup_checks_matching_bytes_and_attempt(config):
+def test_retirement_backup_checks_sizes_generation_and_attempt(config):
     assignment = {'token': 'old', 'host': 'H20', 'experiment': 'E5'}
     destination = Path(config['backup_root']) / 'old/final'
     destination.mkdir(parents=True)
     checkpoint_path = destination / 'weights.pt'
     checkpoint_path.write_bytes(b'committed model')
-    checkpoint = {'path': 'weights.pt', 'sha256': s.digest(checkpoint_path)}
+    checkpoint = {'path': 'weights.pt', 'size_bytes': checkpoint_path.stat().st_size, 'generation': 'd' * 32}
     request = {'attempt_id': 'old', 'final': True}
     s.atomic_json(destination / 'checkpoint-manifest.json', {'current': checkpoint})
-    files = {'weights.pt': {'size_bytes': checkpoint_path.stat().st_size, 'sha256': checkpoint['sha256']}}
+    files = {'weights.pt': {'size_bytes': checkpoint_path.stat().st_size}}
     for name in ('resolved_config.json', 'source_config_frozen.json', 'runtime.json', 'supervisor/assignment.json',
                  'supervisor/command.json', 'supervisor/status.json', 'supervisor/resources.jsonl',
                  'attempts/old/identity.json', 'attempts/old/updates.jsonl'):
         path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{}\n')
-        files[name] = {'size_bytes': path.stat().st_size, 'sha256': s.digest(path)}
+        files[name] = {'size_bytes': path.stat().st_size}
     s.atomic_json(destination / 'backup-complete.json', {'request': request, 'files': files})
     done = dict(request, destination=str(destination))
     assert s.final_backup_verified(config, assignment, checkpoint, done)
     assert not s.final_backup_verified(config, assignment, checkpoint, dict(done, attempt_id='other'))
     log = destination / 'attempts/old/updates.jsonl'
-    log.write_text('bad')
+    log.write_text('truncated-log')
     assert not s.final_backup_verified(config, assignment, checkpoint, done)
     log.unlink()
     assert not s.final_backup_verified(config, assignment, checkpoint, done)
@@ -1030,3 +1030,19 @@ def test_control_override_preserves_exact_selected_trainer_command(config, coord
     s.validate_config(config)
     assert s.trainer_command(config, assignment) == before
     assert before[1] == str(Path(config["root"]) / "repo/scripts/train_pretrain.py")
+
+
+def test_legacy_checkpoint_performance_uses_schema_pending_trainer_config_check(coordinator):
+    config = coordinator.config
+    selected_v3(config, effective=4)
+    sidecar = Path(__file__).parents[1] / 'configs/performance/cd009-p1.json'
+    settings = json.loads(sidecar.read_text())
+    config['performance_configs'] = {'H20': {'E5': {'config_path': str(sidecar), 'config_definition': settings}}}
+    assignment = coordinator.assign('E5', 'H20', 0)
+    checkpoint = v3_checkpoint(assignment)
+    checkpoint['analysis']['identity']['performance'] = {'schema_version': settings['schema_version'],
+                                                        'config_sha256': 'retired-value-ignored'}
+    s.verify_checkpoint_contract(assignment, checkpoint)
+    checkpoint['analysis']['identity']['performance']['schema_version'] = 'incompatible'
+    with pytest.raises(s.Refused, match='performance schema mismatch'):
+        s.verify_checkpoint_contract(assignment, checkpoint)

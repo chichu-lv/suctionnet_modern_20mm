@@ -8,7 +8,7 @@ A模型及共同训练/推理链路已实现，13项CPU几何/模型测试通过
 |---|---|
 | 源训练 | scene 0–99全部100场景、全部256视角可抽样；从头训练，不再90/10开发后final refit |
 | 预算 | 140000个成功受监督实例、8750次成功更新；128-query训练前缀 |
-| best选择 | 每875成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
+| best选择 | 每1750成功步在source test scene 100–189完整256视角上评价，最多256-query；保留best与预算终点last |
 | 成绩身份 | `test_selected` / `independent_test_estimate=false`；源test只评价、不反传，但已参与模型选择 |
 | 目标域 | 1676 train、399 val选best、87 test冻结后评价；保留既有group和规划动作语义 |
 | 本轮评价 | INST20实例Top1/selected-Q/coverage，以及目标固定动作AUROC/AP/BCE/Brier |
@@ -86,7 +86,7 @@ source test完整集为RealSense Seen 100–129、Similar 130–159、Novel 160�
 | E0 数学/CPU模型回归 | 数学/schema与A几何、接触、五头、BN检查 | 既有129项参考；A13项CPU测试通过，模型使用测试backbone |
 | E1 真实数据和teacher | 固定约64–128个实例作成本/同姿态核验 | 代码已接线；真实标定、S/W、self和成本仍待测 |
 | E2 真实SpConv短链路 | 实际稀疏编码、少量反向、保存恢复、历史异轴查询 | GPU/spconv、loss/梯度、BN/参数组和下一批恢复；尚未运行 |
-| E3 A-source100 | 全100场景train，140000实例/8750更新，每875步完整source test选best | test_selected best、预算last、完整分母及逐实例结果 |
+| E3 A-source100 | 全100场景train，140000实例/8750更新，每1750步完整source test选best | test_selected best、预算last、完整分母及逐实例结果 |
 | E4 A-target-ft | E3 best初始化，200+800更新、2 target+2 source回放 | 399 val按AUROC/BCE/早步选best，最终87 test |
 | E5 A公开方法比较 | 每方法单独pair，论文值保留 | 协议deferred，不阻塞E3/E4；A六指标待测 |
 | E6 实际部署与计时 | 固定权重/硬件/输入边界，真实CPU几何+GPU模型 | p50/p95、显存、raw几何/稀疏编码成本；尚未运行 |
@@ -109,7 +109,7 @@ E1需报告normal有效率、候选覆盖及主干关联缺失；有可靠参考
 | 历史动作 | AUROC、AP、BCE、Brier | 保存总数/有效数/正负数；BCE/Brier仅使用task概率 |
 | 成本 | model-only及instance端到端p50/p95 | batch1、固定输入边界、实际M/N/K、峰值显存 |
 
-实例主指标先在每frame内对可见GT实例平均，再对同scene的有效frame平均，最后scene等权平均；另外报告实例微平均。少于100点、无法向或无输出实例仍在主分母；没有GT实例的frame单独计数，不进入平均。
+实例主指标先在每frame内对可见GT实例平均，再对同scene的有效frame平均，最后scene等权平均；另外报告实例微平均。低于模型min_support_points（默认100）、无法向或无输出实例仍在主分母；没有GT实例的frame单独计数，不进入平均。
 
 次级所选Q_inst使用相同的三级宏平均，no_pose为0；有输出条件下Q微平均单列，不能替代次级选模指标。以上细化与共同协议同源，不更改Q_inst物理含义。teacher未知不是质量0：若所选姿态或Coverage所需query标签未知/非法，相应评价不完整，先修复标签；不得补负例或删分母后形成看似完整的结果。
 

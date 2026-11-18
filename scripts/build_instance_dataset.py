@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import json
+import multiprocessing
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from suction20.instance_data import build_source_instances
+from suction20.instance_data import build_source_instances, merge_source_manifests, source_scene_ids
 
 
 def _range(value):
@@ -43,14 +45,39 @@ def main(argv=None):
     parser.add_argument('--without-labels', action='store_true', help='Unlabeled observation caches only')
     parser.add_argument('--depth-min-m', type=float, default=.2)
     parser.add_argument('--depth-max-m', type=float, default=1.2)
+    parser.add_argument('--min-support-points', type=int, default=100)
+    parser.add_argument('--workers', type=int, default=1,
+                        help='Parallel scene shards, each owning a separate output directory; train/test split required')
     args = parser.parse_args(argv)
     if not args.without_labels and args.label_root is None:
         parser.error('--label-root is required unless --without-labels is set')
-    path, summary = build_source_instances(args.dataset_root, args.label_root, args.output,
-        split=args.split, camera=args.camera, scenes=args.scenes, frames=args.frames,
+    if args.workers < 1:
+        parser.error('--workers must be positive')
+    if args.workers > 1 and args.split == 'all':
+        parser.error('parallel builds require --split train or --split test; run the two splits separately')
+    options = dict(split=args.split, camera=args.camera, frames=args.frames,
         with_labels=not args.without_labels, train_queries=args.train_queries,
         instance_mask_root=args.instance_mask_root, depth_min_m=args.depth_min_m,
-        depth_max_m=args.depth_max_m)
+        depth_max_m=args.depth_max_m, min_support_points=args.min_support_points)
+    if args.workers == 1:
+        path, summary = build_source_instances(args.dataset_root, args.label_root, args.output,
+            scenes=args.scenes, **options)
+    else:
+        scenes = list(args.scenes if args.scenes is not None else source_scene_ids(args.split))
+        if not scenes:
+            parser.error('parallel builds require at least one scene')
+        workers = min(args.workers, len(scenes))
+        # Spawn keeps inherited spatial-index/library state out of workers.
+        with ProcessPoolExecutor(max_workers=workers,
+                mp_context=multiprocessing.get_context('spawn')) as pool:
+            jobs = [pool.submit(build_source_instances, args.dataset_root, args.label_root,
+                        args.output/'shards'/f'part_{i:04d}', scenes=scenes[i::workers], **options)
+                    for i in range(workers)]
+            manifests = [job.result()[0] for job in jobs]
+        partial = (set(scenes) != set(source_scene_ids(args.split)) or
+                   (args.frames is not None and set(args.frames) != set(range(256))))
+        path, summary = merge_source_manifests(manifests, args.output,
+            split=args.split, allow_partial=partial)
     print(json.dumps({'manifest': str(path), **summary}, ensure_ascii=False, indent=2))
     return 0
 

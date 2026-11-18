@@ -11,7 +11,6 @@ import argparse
 import json
 from pathlib import Path
 import platform
-import re
 import tempfile
 
 import numpy as np
@@ -253,8 +252,8 @@ def validate_label_npz(path):
 
 
 def validate_manifest(path):
-    """Validate declared IDs/hashes, not underlying file bytes or temporal independence."""
-    samples, group_split, hash_split, hash_group = set(), {}, {}, {}
+    """Validate declared capture/group IDs, without content checksums."""
+    samples, group_split, capture_split, capture_group = set(), {}, {}, {}
     totals = {"train": 0, "val": 0, "test": 0}
     for number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
@@ -262,29 +261,28 @@ def validate_manifest(path):
         row = json.loads(line)
         if not isinstance(row, dict):
             raise ValueError(f"Line {number}: expected a JSON object")
-        for key in ("sample_id", "group_id", "observation_sha256", "split"):
+        for key in ("sample_id", "group_id", "capture_uid", "split"):
             if not isinstance(row.get(key), str) or not row[key].strip():
                 raise ValueError(f"Line {number}: missing/non-string {key}")
-        sid, group, sha, split = (row[k] for k in ("sample_id", "group_id", "observation_sha256", "split"))
-        if split not in totals or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
-            raise ValueError(f"Line {number}: invalid split or SHA-256")
-        sha = sha.lower()
+        sid, group, capture, split = (row[k] for k in ("sample_id", "group_id", "capture_uid", "split"))
+        if split not in totals:
+            raise ValueError(f"Line {number}: invalid split")
         if sid in samples:
             raise ValueError(f"Duplicate sample_id: {sid}")
         if group in group_split and group_split[group] != split:
             raise ValueError(f"Group crosses splits: {group}")
-        if sha in hash_split and hash_split[sha] != split:
-            raise ValueError(f"Observation SHA-256 crosses splits: {sha}")
-        if sha in hash_group and hash_group[sha] != group:
-            raise ValueError("The same observation SHA-256 has inconsistent group_id")
+        if capture in capture_split and capture_split[capture] != split:
+            raise ValueError(f"Capture crosses splits: {capture}")
+        if capture in capture_group and capture_group[capture] != group:
+            raise ValueError("The same capture_uid has inconsistent group_id")
         samples.add(sid)
-        group_split[group], hash_split[sha], hash_group[sha] = split, split, group
+        group_split[group], capture_split[capture], capture_group[capture] = split, split, group
         totals[split] += 1
     if not samples:
         raise ValueError("Manifest is empty")
     return {"ok": True, "rows": len(samples), "groups": len(group_split),
-            "observations": len(hash_split), "splits": totals,
-            "scope": "declared_hash_and_group_consistency; file bytes are not read"}
+            "observations": len(capture_split), "splits": totals,
+            "scope": "declared_capture_and_group_consistency; file bytes are not read"}
 
 
 def _synthetic():
@@ -311,7 +309,7 @@ def demo(output_dir):
     np.savez_compressed(output / "synthetic_labels.npz", **labels)
     np.savez_compressed(output / "tangent_raster.npz", **raster)
     rows = [{"sample_id": f"synthetic-{i}", "group_id": f"group-{i}",
-             "observation_sha256": str(i + 1) * 64, "split": split,
+             "capture_uid": f"synthetic-capture-{i}", "split": split,
              "synthetic_only": True} for i, split in enumerate(("train", "val", "test"))]
     (output / "synthetic_manifest.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     coverage = angular_coverage(raster["X"][7], raster["X"][8], raster["valid_mask"])
@@ -396,13 +394,13 @@ def selftest():
             broken[field][0] = value
             np.savez(path, **broken)
             rejects(lambda: validate_label_npz(path), name)
-        rows = [{"sample_id": "a", "group_id": "g1", "observation_sha256": "a" * 64, "split": "train"},
-                {"sample_id": "b", "group_id": "g2", "observation_sha256": "b" * 64, "split": "val"}]
+        rows = [{"sample_id": "a", "group_id": "g1", "capture_uid": "capture-a", "split": "train"},
+                {"sample_id": "b", "group_id": "g2", "capture_uid": "capture-b", "split": "val"}]
         def write_rows(value):
             manifest.write_text("".join(json.dumps(r) + "\n" for r in value), encoding="utf-8")
         write_rows(rows)
         check(validate_manifest(manifest)["rows"] == 2, "valid_disjoint_manifest")
-        for key, name in (("group_id", "cross_split_group_rejected"), ("observation_sha256", "cross_split_observation_hash_rejected"),
+        for key, name in (("group_id", "cross_split_group_rejected"), ("capture_uid", "cross_split_capture_rejected"),
                           ("sample_id", "duplicate_sample_id_rejected")):
             changed = [dict(r) for r in rows]
             changed[1][key] = changed[0][key]

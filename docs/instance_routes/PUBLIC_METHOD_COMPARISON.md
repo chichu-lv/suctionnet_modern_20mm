@@ -41,15 +41,15 @@
 
 [paper_baselines.json](reference/paper_baselines.json)保留逐方法原表页码、版本、相机、缺失字段与数字；`result_kind=paper_reported_not_reproduced`。当前运行元数据另写 `source_training_policy`，公开 `our_protocol` 为deferred。旧协议数值集中保存于 `deferred_radius_proposal`，不是有效运行配置。
 
-后续本方法若形成公开结果，至少需保存checkpoint和代码hash、实际训练/选模划分、完整测试manifest、前端/工作区资产、预测和precision文件hash、评价器版本、吸盘半径、六指标及失败覆盖。只有可比性边界明确且有真实测量后才能计算 `ours−本表参考` 的百分点差值；不计算第三方之间的排名或差值。
+后续本方法若形成公开结果，至少需保存checkpoint路径/大小、代码版本出处、实际训练/选模划分、完整测试manifest、前端/工作区资产路径与配置、预测和precision文件及语义ID、评价器版本、吸盘半径、六指标及失败覆盖。只有可比性边界明确且有真实测量后才能计算 `ours−本表参考` 的百分点差值；不计算第三方之间的排名或差值。
 
 ## 5. 论文值的来源与可比性状态
 
 | 方法 | 原始表定位 | 上轮取证状态 | 仍需随结果说明的限制 |
 |---|---|---|---|
 | S1B | arXiv:2103.12311v2，Table IV，PDF第6页；斜杠右侧RealSense | 上轮直接核对原论文 | 采用最终表的28.31/38.56等值；不混其他版本或后续转引的小数差异 |
-| Diffusion-Suction | arXiv:2502.07238v2，Table I，PDF第7页；斜杠右侧RealSense | 上轮直接核对原论文；作者声明沿用SuctionNet评价 | 输入为场景点云；完整SuctionNet训练recipe、checkpoint、mask过滤、历史API SHA未披露充分；不拿Parcel配置替代 |
-| UISN两种完整配置 | DOI:10.1109/LRA.2024.3385609，Table I，PDF第6页/刊页4939 | 沿用仓库已有原PDF核验转录；上轮直接核验作者代码，未重新取得全文 | 表注为Kinect/RealSense，与§IV-B一处反写冲突；沿用表注和S1B交叉核对；历史API SHA未锁定 |
+| Diffusion-Suction | arXiv:2502.07238v2，Table I，PDF第7页；斜杠右侧RealSense | 上轮直接核对原论文；作者声明沿用SuctionNet评价 | 输入为场景点云；完整SuctionNet训练recipe、checkpoint、mask过滤、历史API版本未披露充分；不拿Parcel配置替代 |
+| UISN两种完整配置 | DOI:10.1109/LRA.2024.3385609，Table I，PDF第6页/刊页4939 | 沿用仓库已有原PDF核验转录；上轮直接核验作者代码，未重新取得全文 | 表注为Kinect/RealSense，与§IV-B一处反写冲突；沿用表注和S1B交叉核对；历史API版本未锁定 |
 | MultiGraspNet-vac. / joint | arXiv:2602.06504v2，Table I Vacuum，PDF第5页，明确RealSense | 上轮直接核对原论文 | 只报告Top50三列；文中称seal coefficient，未确认等同S×W；完整实现仍未公开。joint额外使用平行夹爪监督 |
 
 UISN 数值来源链：固定仓库版本的[既有转录](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/a9f4a8451c6bc42cfd8867dd96c051398644ad71/docs/experiments/COMPARISON-20261118/method_metrics.csv)及[逐表说明](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/a9f4a8451c6bc42cfd8867dd96c051398644ad71/docs/SUCTIONNET_METHOD_COMPARISON.md)；DOI/机构条目只证明论文身份，不能代替表格证据。若后续拿到原PDF，更新核验记录，不静默更改列值。

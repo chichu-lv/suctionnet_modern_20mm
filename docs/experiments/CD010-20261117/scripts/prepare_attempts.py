@@ -8,18 +8,22 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import copy
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-from prepare_index import atomic_json, canonical, read_json
+from infer_target import atomic_json, clean_metadata, file_record
 
 
-def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def read_json(path):
+    return clean_metadata(json.loads(Path(path).read_text(encoding='utf-8')))
+
+
+def canonical(value):
+    return json.dumps(clean_metadata(value), sort_keys=True, ensure_ascii=False,
+                      separators=(',', ':'), allow_nan=False).encode('utf-8')
 
 
 def exclusion(row):
@@ -91,12 +95,12 @@ def pixel_anchor(row, prepared):
 def prepare(release, output, remote_release):
     prepared = release / 'prepared'
     inventory = prepared / 'geometry_observations.jsonl'
-    rows = [json.loads(line) for line in inventory.read_text().splitlines() if line.strip()]
+    rows = [clean_metadata(json.loads(line)) for line in inventory.read_text().splitlines() if line.strip()]
     output.mkdir(parents=True, exist_ok=True)
-    reviews, review_hashes = {}, {}
+    reviews, review_sources = {}, {}
     for day in sorted({r['day'] for r in rows}):
         path = release / 'raw' / day / 'commit/result.json'
-        reviews[day], review_hashes[day] = read_json(path), digest(path)
+        reviews[day], review_sources[day] = read_json(path), file_record(path)
     accepted, excluded, counts, anchors = [], [], Counter(), Counter()
     group_split = {}
     for row in rows:
@@ -143,13 +147,13 @@ def prepare(release, output, remote_release):
             original_sample_id=sid,
             object_id=pc['object_id'],
             review_path=f"raw/{row['day']}/commit/result.json",
-            review_sha256=review_hashes[row['day']], review_key=sid,
+            review_source=review_sources[row['day']], review_key=sid,
             suction_result_path=str(raw_path.resolve().relative_to(release)),
-            suction_result_sha256=digest(raw_path),
+            suction_result_source=file_record(raw_path),
             frame_stamp_ns=str(raw['frame_stamp_ns']),
             request_id=raw.get('request_id'), identity_checks=raw['identity_checks'],
-            mask_sha256=row['instance_masks']['png_sha256'],
-            source_depth_encoded_sha256=row['source']['record']['depth_encoded_sha256'],
+            mask_source=file_record(prepared / row['observation']['instance_mask_path']),
+            depth_source=file_record(depth),
             geometry=row['geometry_provenance'],
             limitation='Human outcome is linked to the sole published plan by frame key; no independent robot acknowledgement, executed TCP/contact measurement or tool calibration.')
         accepted.append(dict(schema_version='suction20.target.v1', sample_id=sid+'/attempt0',
@@ -173,10 +177,10 @@ def prepare(release, output, remote_release):
                    inventory_frames=len(rows), accepted_attempts=len(accepted), excluded_frames=len(excluded),
                    counts=dict(sorted(counts.items())), anchor_counts=dict(anchors),
                    exclusion_counts=dict(sorted(Counter(r['reason'] for r in excluded).items())),
-                   source_inventory_sha256=digest(inventory),
-                   frozen_groups_sha256=digest(prepared/'manifest_groups.json'),
-                   source_reviews_sha256=review_hashes,
-                   output_sha256={p.name:digest(p) for p in sorted(output.glob('*.jsonl'))},
+                   source_inventory=file_record(inventory),
+                   frozen_groups=file_record(prepared/'manifest_groups.json'),
+                   source_reviews=review_sources,
+                   outputs={p.name:file_record(p) for p in sorted(output.glob('*.jsonl'))},
                    success_definition='completed_pick_and_transfer',
                    association='inferred_unique_published_command_plus_frame_keyed_human_review',
                    measured_endpoint_available=False,

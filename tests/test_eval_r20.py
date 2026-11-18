@@ -1,5 +1,4 @@
 """Synthetic contracts plus an explicitly enabled bounded frozen-release check."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -73,7 +72,7 @@ def test_frozen_32_candidate_consistency():
     release = Path(os.environ["R20_RELEASE_ROOT"])
     cfg = json.loads((release / "output/config_frozen.json").read_text())
     evidence = {"scene_ids": [0, 1], "tolerance": 1e-5, "candidates": [], "rotations": [],
-                "release_manifest_sha256": hashlib.sha256((release / "output/manifest.json").read_bytes()).hexdigest()}
+                "release_manifest_metadata": {"size_bytes": (release / "output/manifest.json").stat().st_size}}
     begin = time.monotonic()
     for scene_id in (0, 1):
         context = load_scene_eval_context(release / "input_raw", release / "output", scene_id, "realsense", cfg)

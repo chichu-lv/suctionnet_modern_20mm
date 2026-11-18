@@ -66,14 +66,13 @@ def test_prefetched_trainer_preserves_ordinary_sequence_and_resume(tmp_path, har
 def test_supervisor_binds_sidecar_independently_of_profile(coordinator, tmp_path):
     path = sidecar(tmp_path)
     coordinator.config['performance_configs'] = {'H20': {'E5': {
-        'config_path': str(path), 'config_sha256': runtime.file_digest(path)}}}
+        'config_path': str(path), 'config_definition': json.loads(path.read_text())}}}
     assignment = coordinator.assign('E5', 'H20', 0)
     command = supervisor.trainer_command(coordinator.config, assignment)
     assert command[command.index('--performance-config') + 1] == str(path)
     assert assignment['performance_settings'] == json.loads(path.read_text())
-    assert assignment['performance_config_sha256'] == runtime.file_digest(path)
     old = dict(assignment)
-    for key in ('performance_config_path', 'performance_config_sha256', 'performance_settings'):
+    for key in ('performance_config_path', 'performance_settings'):
         del old[key]
     with pytest.raises(supervisor.Refused, match='sidecar changed'):
         supervisor.verify_assignment_performance(coordinator.config, old)
@@ -100,11 +99,11 @@ def test_loader_worker_resources_measure_owned_child():
         child.wait()
 
 
-def test_scalar_and_batched_sidecars_preserve_profile_and_bind_distinct_hashes(tmp_path):
+def test_scalar_and_batched_sidecars_preserve_profile_and_bind_actual_settings(tmp_path):
     default = Path(__file__).parents[1] / 'configs/performance/cd009-p1.json'
     settings = load_performance_config(default)
     assert settings['query_chunk_size'] is None and settings['query_workers'] == 1
-    profile = {'runtime': {'raw_config_sha256': 'frozen-profile-sha'},
+    profile = {'runtime': {'raw_config_metadata': {'size_bytes': 123}},
                'runtime_profile': {'profile_id': 'unchanged'}}
     original = copy.deepcopy(profile)
     scalar = attach_performance(profile, default)
@@ -115,9 +114,9 @@ def test_scalar_and_batched_sidecars_preserve_profile_and_bind_distinct_hashes(t
     assert profile == original
     assert scalar['runtime']['performance']['query_chunk_size'] is None
     assert batched['runtime']['performance']['query_chunk_size'] == 64
-    assert scalar['runtime']['performance_config_sha256'] != batched['runtime']['performance_config_sha256']
+    assert scalar['runtime']['performance'] != batched['runtime']['performance']
     for resolved in (scalar, batched):
-        assert resolved['runtime']['raw_config_sha256'] == 'frozen-profile-sha'
+        assert resolved['runtime']['raw_config_metadata'] == {'size_bytes': 123}
         assert resolved['runtime_profile'] == original['runtime_profile']
 
 
@@ -135,14 +134,14 @@ def test_v2_schema_is_explicit_and_v1_identity_stays_unchanged(tmp_path, monkeyp
             performance.validate_performance_config(value)
     from models import geometry_ops, spatial_index
     monkeypatch.setattr(geometry_ops, 'fps_backend_identity', lambda name: {'backend': name})
-    monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity', lambda name: {'backend': name, 'binary_sha256': 'grid-build'})
+    monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity', lambda name: {'backend': name, 'abi_version': 1})
     old = performance.performance_identity(attach_performance({}, base / 'cd009-p1.json'))
     assert old == {'schema_version': performance.SCHEMA_VERSION,
-                   'config_sha256': runtime.file_digest(base / 'cd009-p1.json'),
+                   'settings': p1,
                    'backend_builds': {'fps': {'backend': 'compiled'}}}
     new = performance.performance_identity(attach_performance({}, base / 'cd009-p2.json'))
     assert new['schema_version'] == performance.SCHEMA_VERSION_V2
-    assert new['backend_builds']['spatial_index'] == {'backend': 'uniform_grid_cpu', 'binary_sha256': 'grid-build'}
+    assert new['backend_builds']['spatial_index'] == {'backend': 'uniform_grid_cpu', 'abi_version': 1}
 
 
 def test_v3_sidecar_binds_native_contact_abi_without_changing_v2(monkeypatch):
@@ -157,7 +156,7 @@ def test_v3_sidecar_binds_native_contact_abi_without_changing_v2(monkeypatch):
     assert performance.validate_performance_config(reference) == reference
     monkeypatch.setattr(geometry_ops, 'fps_backend_identity', lambda name: {'backend': name})
     monkeypatch.setattr(spatial_index, 'spatial_index_backend_identity',
-                        lambda name: {'backend': name, 'binary_sha256': 'grid-build'})
+                        lambda name: {'backend': name, 'abi_version': 1})
     monkeypatch.setattr(spatial_index, '_compiled_grid', lambda: SimpleNamespace(CONTACT_ABI_VERSION=1))
     old = performance.performance_identity(attach_performance({}, base / 'cd009-p2.json'))
     new = performance.performance_identity(attach_performance({}, base / 'cd009-p3.json'))
@@ -175,9 +174,9 @@ def test_v3_optional_execution_fields_preserve_profile_and_payload_identity(tmp_
                      contact_query_backend='native_cpu')
     profile_path = base / 'runtime_profiles/cd009-v3/L20-E1.json'
     profile = training.load_config(profile_path)
-    profile['runtime']['raw_config_sha256'] = runtime.file_digest(profile_path)
+    profile['runtime']['raw_config_metadata'] = runtime.file_metadata(profile_path)
     original = copy.deepcopy(profile)
-    digests = []
+    definitions = []
     variants = [legacy_v3, dict(legacy_v3, dense_chunk_size_override=None),
                 dict(legacy_v3, chunk_input_mode='slice'),
                 dict(legacy_v3, dense_chunk_size_override=65536, chunk_input_mode='split')]
@@ -186,16 +185,42 @@ def test_v3_optional_execution_fields_preserve_profile_and_payload_identity(tmp_
         path.write_text(json.dumps(settings))
         attached = attach_performance(profile, path)
         assert attached['runtime']['performance'] == settings
-        assert attached['runtime']['performance_config_sha256'] == runtime.file_digest(path)
-        assert attached['runtime']['raw_config_sha256'] == original['runtime']['raw_config_sha256']
+        assert attached['runtime']['performance_config_metadata'] == runtime.file_metadata(path)
+        assert attached['runtime']['raw_config_metadata'] == original['runtime']['raw_config_metadata']
         assert training.semantic_config(attached) == training.semantic_config(original)
         assert attached['model']['dense_chunk_size'] == 16384
-        digests.append(attached['runtime']['performance_config_sha256'])
+        definitions.append(attached['runtime']['performance'])
     assert profile == original
-    assert len(set(digests)) == len(variants)
+    assert len({json.dumps(value, sort_keys=True) for value in definitions}) == len(variants)
     for invalid in (dict(legacy_v3, dense_chunk_size_override=0),
                     dict(legacy_v3, dense_chunk_size_override=True),
                     dict(legacy_v3, chunk_input_mode='unsupported'),
                     dict(p1, dense_chunk_size_override=None), dict(p2, chunk_input_mode='split')):
         with pytest.raises(ValueError):
             performance.validate_performance_config(invalid)
+
+
+def test_historical_runtime_compares_available_structure_and_execution_settings():
+    current = {'source_label_definition': {'radius_m': .02},
+               'semantic_config': {'experiment': 'E5'},
+               'worktree_snapshot': {'revision': 'revision'}, 'code_revision': 'revision',
+               'budget_contract': 'contract', 'runtime_profile': {'profile_id': 'tiny'},
+               'dependencies': {'torch': 'version'}, 'math_settings': {'tf32_matmul': False},
+               'performance': {'schema_version': 'version', 'settings': {'query_workers': 1},
+                               'backend_builds': {'fps': {'backend': 'numpy', 'abi_version': 1}}}}
+    saved = {key: copy.deepcopy(value) for key, value in current.items()
+             if key not in ('source_label_definition', 'semantic_config', 'worktree_snapshot')}
+    saved['source_label_config_sha256'] = 'retired-value-ignored'
+    saved['performance'].pop('settings')
+    saved['performance']['config_sha256'] = 'retired-value-ignored'
+    config = {'runtime': {'performance': {'query_workers': 1}}}
+    performance.validate_runtime_identity(saved, current, config, copy.deepcopy(config))
+    changed = copy.deepcopy(saved)
+    changed['code_revision'] = 'other-revision'
+    with pytest.raises(ValueError, match='identity differs'):
+        performance.validate_runtime_identity(changed, current, config, config)
+    with pytest.raises(ValueError, match='execution settings'):
+        performance.validate_runtime_identity(saved, current, config,
+                                              {'runtime': {'performance': {'query_workers': 2}}})
+    with pytest.raises(ValueError, match='lacks required'):
+        performance.validate_runtime_identity({}, current, config, config)

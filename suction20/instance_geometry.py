@@ -4,8 +4,6 @@ This module owns its implementation and never imports executable documentation.
 Float64 raw positions are immutable; only the normal-estimation copy is smoothed.
 """
 from __future__ import annotations
-import hashlib
-import json
 import numpy as np
 from scipy.ndimage import label as connected_labels
 
@@ -16,6 +14,7 @@ DEPTH_JUMP_M = .010
 MIN_SMOOTHING_SUPPORT = 5
 SPAN_PIXELS = 3
 CROSS_NORM_MIN_M2 = 1e-8
+BOUNDARY_ROUNDOFF_M = 1e-12
 
 
 def _cell_order(x, y):
@@ -229,15 +228,21 @@ def stratified_queries_refill(instance_mask, eligible, max_candidates=256):
     return np.asarray(selected_ids, dtype=np.int64), diagnostics
 
 
-def array_digest(*arrays):
-    """Content identity includes dtype and shape, not machine-specific paths."""
-    digest = hashlib.sha256()
-    for value in arrays:
-        a = np.ascontiguousarray(value)
-        digest.update(a.dtype.str.encode())
-        digest.update(json.dumps(a.shape).encode())
-        digest.update(a.tobytes())
-    return digest.hexdigest()
+def query_descriptor(source_point_ids):
+    """Small declared query identity; no content checksum or asset scan."""
+    ids = np.asarray(source_point_ids)
+    return {'sampler_spec': SAMPLER_SPEC, 'count': int(len(ids)),
+            'source_point_ids': ids.tolist()}
+
+
+def observation_descriptor(observation):
+    """Record interpretation of the observation, not a claim about its bytes."""
+    return {'normal_spec': NORMAL_SPEC, 'sampler_spec': SAMPLER_SPEC,
+            'precision_spec': PRECISION_SPEC,
+            'image_shape': np.asarray(observation['image_shape']).tolist(),
+            'intrinsics': np.asarray(observation['intrinsics']).tolist(),
+            'gravity': np.asarray(observation['gravity']).tolist(),
+            'min_support_points': int(observation.get('min_support_points', 100))}
 
 
 def prepare_instance(rgb, depth_m, mask, intrinsics, gravity, *,
@@ -322,7 +327,7 @@ def prepare_instance(rgb, depth_m, mask, intrinsics, gravity, *,
         query_rounds=np.asarray(query_diagnostics['selected_round_index'], np.int16),
         centroid=mu, intrinsics=K.copy(), gravity=g / np.linalg.norm(g),
         bbox_xyxy=bbox, bbox_pixel_edges=edges,
-        image_shape=np.array([h, w], np.int64), trainable=bool(len(points) >= min_support and len(source_ids)),
+        image_shape=np.array([h, w], np.int64), min_support_points=int(min_support), trainable=bool(len(points) >= min_support and len(source_ids)),
         normal_spec=NORMAL_SPEC, sampler_spec=SAMPLER_SPEC, precision_spec=PRECISION_SPEC,
         diagnostics=dict(normal=normal_diagnostics, sampling=query_diagnostics,
                          support_count=len(points), component_count=int(component_count),
@@ -330,6 +335,6 @@ def prepare_instance(rgb, depth_m, mask, intrinsics, gravity, *,
                          status='ok' if len(points) >= min_support and len(source_ids) else
                          ('insufficient_support' if len(points) < min_support else 'no_valid_normal')),
     )
-    result['query_identity'] = array_digest(result['query_points'], result['query_normals'], source_ids)
-    result['observation_identity'] = array_digest(colors, rgb_valid, z, instance_mask, K, result['gravity'])
+    result['query_identity'] = query_descriptor(source_ids)
+    result['observation_identity'] = observation_descriptor(result)
     return result

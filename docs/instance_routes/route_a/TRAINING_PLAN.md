@@ -6,7 +6,7 @@ A新训练器已实现在 `scripts/train_instance.py` / `suction20/instance_trai
 
 A优先沿用仓库已记录的Python3.10、PyTorch2.5.1+cu124、spconv-cu120 2.3.6组合，安装依据见[既有运行指南](../../MODEL_USAGE.md)。新12通道架构从头初始化；旧E5的8通道或跨路线checkpoint不能改键、补零后伪装为正常resume。数学参考及CPU测试使用独立Python3.12.14/NumPy2.3.5环境；13项A测试显式注入测试backbone，不代表上述真实GPU环境已验证，不为执行参考工具升级GPU环境。
 
-每次真实运行保存完整运行配置、environment.txt、代码commit、GPU/CPU线程、Torch/CUDA/cuDNN/spconv版本、真实microbatch、数据/标签/标定hash、normal/sampler/精确query身份及随机种子。初始化和同身份resume互斥，保持当前checkpoint政策。
+每次真实运行保存完整运行配置、environment.txt、代码commit、GPU/CPU线程、Torch/CUDA/cuDNN/spconv版本、真实microbatch、数据/标签来源路径、实际标定参数、normal/sampler/precision和query语义ID及随机种子。初始化和同身份resume互斥，保持当前checkpoint政策。
 
 ## 2. 源域损失与有效归约
 
@@ -36,9 +36,9 @@ source train为scene 0–99全部100场景、frame 0–255，模型从头初始�
 | 优化器 | AdamW，betas(.9,.999)、eps1e-8、weight_decay .01 |
 | 学习率 | peak3e-4，前438个成功更新线性warmup，之后cosine至1e-5 |
 | 精度 | 网络FP32；从原数据构造float64接触几何与边界判定，冻结teacher保留原算术 |
-| 选模评价 | 每875个成功更新，875至8750共10次；每次完整source test，不抽帧 |
+| 选模评价 | 每1750个成功更新，1750至8750共5次；每次完整source test，不抽帧 |
 | 选模 | scene-macro InstTop1_INST20@0.4最大，再按所选Q_inst宏平均最大，仍平局选更早步 |
-| 保存 | test-selected best.pt，训练进度/预算终点last.pt及完整状态 |
+| 保存 | test-selected best.pt；每875成功步保存last.pt，最终步记录预算完成；完整状态 |
 
 训练与回放的raw支持、主干点采用同一实例级RGB变换：brightness/contrast/saturation=.2、hue=.05、灰度概率.2；mean/std依预处理合同。首版不做几何缩放。验证保持固定实例/query顺序和归一化。
 
@@ -49,6 +49,10 @@ best及其source test成绩标记 `selection_role=test_selected`、`independent_
 默认 `singleton_bn_policy=running_stats` 仅在训练时某BN每通道输入值数≤1时使用已有running mean/variance，不更新该次统计/计数；其余源训练输入保持普通BN路径，不将源预训练全部BN设eval。微调冻结规则见下一节。此策略进入架构身份，不用增加伪造活动点避免BN退化。
 
 140000是新工程预算，不由旧E5的场景更新步数证明最优。成功步、成功实例暴露和已消费样本分别记录；后续AMP发生skip时不能消耗了数据却增加成功预算。microbatch×累积须为16，但不同microbatch会改变BN前向统计，不宣称逐位等价。PyTorch/CUDA仍需记录实际确定性限制。
+
+周期评价每次遍历完整90场景，`evaluation_stepXXXXXX.json` 仅保存指标/选择键和 `record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；不内嵌records数组，也不把全量明细常驻内存。可选 `all` 保留各节点、`none` 完全不写明细。该策略减少长期存储，仍有一次临时压缩流写入。
+
+实际源训练/评价阈值来自 `model.min_support_points`，默认100；无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算。builder的准备阈值另存于metadata，不在训练器内硬编码100。
 
 ## 4. 1000步目标域微调
 
@@ -67,9 +71,9 @@ Lft = (Lt1 + Lt2)/2 + 0.5*(Ls1 + Ls2)/2
 | 201–1000 | 上述头 + decoder、接触编码、query融合及对象池化投影 | heads1e-4，其余1e-5 |
 | 全程 | encoder冻结；所有BatchNorm running stats与affine冻结 | — |
 
-新增层的实际成员必须与参数组清单/hash一致；不能直接照搬E5组名。第201步切换保留head的Adam moments，只新增/解冻既定组，不重建优化器丢失状态。
+新增层的实际成员必须与checkpoint中的参数组名称、完整成员清单一致；不能直接照搬E5组名。第201步切换保留head的Adam moments，只新增/解冻既定组，不重建优化器丢失状态。
 
-每次 `model.train()`之后重新将所有有running stats的BN设eval并冻结affine；仅requires_grad=false不足以冻结统计。拒绝不具备tracked running stats却声称执行同一冻结策略的实现。微调前后比较running_mean、running_var、num_batches_tracked及affine保持不变；梯度累积不等于BN看到了batch16。
+每次 `model.train()`之后重新将所有有running stats的BN设eval并冻结affine；仅requires_grad=false不足以冻结统计。拒绝不具备tracked running stats却声称执行同一冻结策略的实现。微调前后比较running_mean、running_var、num_batches_tracked及affine保持不变；梯度累积不等于BN看到了batch16。 两个评价入口都逐模块保存 `.training`，正常返回或异常退出均直接恢复各层原状态；不以根模块 `train(True)` 覆盖冻结BN，也不等待下一训练步修复。
 
 ## 5. 目标验证与可选姿态一致性
 
@@ -81,13 +85,13 @@ Lft = (Lt1 + Lt2)/2 + 0.5*(Ls1 + Ls2)/2
 
 ## 6. Checkpoint和恢复验收
 
-checkpoint至少保存：架构/12通道/531融合/谐波与singleton BN身份，normal/sampler，精确p/n列表hash，物理self/INST配置，RGB归一化，ranking模式，模型/优化器/scaler，成功步及成功/消费暴露数，参数组成员，loader/sampler/RNG，源/目标manifest和代码身份。
+checkpoint保存架构/12通道/531融合/谐波与singleton BN配置，normal/sampler/precision，query/label数组对齐合同，物理self/INST与已知physics，RGB归一化与ranking，模型/优化器、成功步和成功/消费暴露数、完整参数组成员、sampler/RNG、源/目标manifest路径与采样ID序列，以及完整config_definition/显式runtime_contract。旧校验和字段忽略；不计算文件或数组校验和。physics缺失记null，不伪称来源已知；模型、配置、已知物理与预处理不符仍拒绝恢复。
 
 短链路必须证明：物理/任务loss实际反向且相应目标可下降；保存恢复后的下一批实例/query、学习率和采样RNG一致；第201步参数组正确、head moments保留；无监督项不伪装成功曝光；BN冻结真实生效。完成后才运行正式8750/1000步预算，不用旧迁移白名单绕过身份错误。
 
 ## 7. 可执行命令与运行产物
 
-按[数据准备](DATA_PREPARATION.md)生成完整train/test缓存。真实A运行需要兼容PyTorch/CUDA/spconv环境及固定外部骨干文件；`backbone_root`不是可选的测试替代入口。已有下载/校验命令如下：
+按[数据准备](DATA_PREPARATION.md)生成完整train/test缓存。真实A运行需要兼容PyTorch/CUDA/spconv环境及固定外部骨干文件；`backbone_root`不是可选的测试替代入口。已有下载与固定Git blob源码核验命令如下：
 
 ```bash
 python scripts/setup_backbone.py --output /data/backbones/graspness_modern

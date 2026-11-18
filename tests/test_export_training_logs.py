@@ -1,16 +1,11 @@
 """Commit/rollback/tail analysis without checkpoint deserialization."""
 import csv
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from suction20.training_telemetry import export_training_logs
-
-
-def digest(raw):
-    return hashlib.sha256(raw).hexdigest()
 
 
 def write_json(path, value):
@@ -36,7 +31,7 @@ def write_log(root, attempt, rows, tail=b""):
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = b"".join((json.dumps(r) + "\n").encode() for r in rows)
     path.write_bytes(raw + tail)
-    return dict(path=str(path.relative_to(root)), attempt_id=attempt, end_offset=len(raw), sha256=digest(raw))
+    return dict(path=str(path.relative_to(root)), attempt_id=attempt, end_offset=len(raw))
 
 
 def checkpoint(root, name, step, segments, *, skipped=0, frames=None, attempt="a", validations=None):
@@ -44,7 +39,7 @@ def checkpoint(root, name, step, segments, *, skipped=0, frames=None, attempt="a
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = b"Deliberately not a pickle checkpoint: " + name.encode()
     path.write_bytes(raw)
-    return dict(path=str(path.relative_to(root)), size_bytes=len(raw), sha256=digest(raw),
+    return dict(path=str(path.relative_to(root)), size_bytes=len(raw),
         generation=name, global_step=step, attempt_id=attempt,
         analysis=dict(schema_version=1, global_step=step, attempt_id=attempt,
             identity={"budget_contract": "test", "runtime_profile": "tiny"}, budget={"target_samples": 20},
@@ -62,7 +57,7 @@ def read_csv(path):
         return list(csv.DictReader(stream))
 
 
-def test_committed_and_live_tail_separate_and_outputs_hashed(tmp_path):
+def test_committed_and_live_tail_separate_and_outputs_record_sizes(tmp_path):
     root, out = tmp_path / "run", tmp_path / "export"
     segment = write_log(root, "a", [update(1)], (json.dumps(update(2)) + "\n").encode())
     manifest(root, checkpoint(root, "current", 1, [segment]))
@@ -73,7 +68,8 @@ def test_committed_and_live_tail_separate_and_outputs_hashed(tmp_path):
     assert len(read_csv(out / "frames.csv")) == 4
     exported = json.loads((out / "export-manifest.json").read_text())
     for entry in exported["outputs"]:
-        assert digest((out / entry["path"]).read_bytes()) == entry["sha256"]
+        assert (out / entry["path"]).stat().st_size == entry["size_bytes"]
+        assert set(entry) == {"path", "size_bytes"}
     assert any(s["role"] == "committed_update_prefix" for s in exported["sources"])
     with pytest.raises(ValueError, match="already exists"):
         export_training_logs(root, out)
@@ -85,7 +81,7 @@ def test_replayed_steps_never_double_count_abandoned_tail(tmp_path):
     old_raw = (root / segment["path"]).read_bytes()
     resumed = write_log(root, "b", [update(2, "b", 2)])
     write_json(root / "attempts/b/identity.json", dict(abandoned_tails=[dict(path=segment["path"],
-        start_offset=segment["end_offset"], end_offset=len(old_raw), sha256=digest(old_raw))]))
+        start_offset=segment["end_offset"], end_offset=len(old_raw))]))
     manifest(root, checkpoint(root, "current", 2, [segment, resumed], attempt="b"))
     summary = export_training_logs(root, tmp_path / "export")
     assert summary["categories"]["committed"]["successful_updates"] == 2
@@ -101,7 +97,7 @@ def test_predecessor_requires_explicit_selection_and_labels_rollback(tmp_path):
     current = checkpoint(root, "current", 2, [second])
     manifest(root, current, predecessor)
     (root / current["path"]).write_bytes(b"corrupt")
-    with pytest.raises(ValueError, match="Checkpoint checksum mismatch"):
+    with pytest.raises(ValueError, match="Checkpoint size mismatch"):
         export_training_logs(root, tmp_path / "refused")
     summary = export_training_logs(root, tmp_path / "export", checkpoint_role="predecessor")
     assert summary["checkpoint_role"] == "predecessor"
@@ -156,20 +152,24 @@ def test_malformed_committed_refused_but_tail_is_reported_gap(tmp_path, bad):
     assert len(summary["gaps"]) == 1
     assert summary["categories"]["committed"]["successful_updates"] == 1
     raw = (root / segment["path"]).read_bytes()
-    segment.update(end_offset=len(raw), sha256=digest(raw))
+    segment.update(end_offset=len(raw))
     manifest(root, current)
     with pytest.raises(ValueError, match="Invalid committed update"):
         export_training_logs(root, tmp_path / "refused")
 
 
-def test_committed_hash_mismatch_refused_even_if_json_valid(tmp_path):
+def test_equal_length_content_is_not_scanned_but_truncation_is_rejected(tmp_path):
     root = tmp_path / "run"
     segment = write_log(root, "a", [update(1)])
     manifest(root, checkpoint(root, "current", 1, [segment]))
     path = root / segment["path"]
     path.write_bytes(path.read_bytes().replace(b'0.25', b'0.75'))
-    with pytest.raises(ValueError, match="checksum mismatch"):
-        export_training_logs(root, tmp_path / "export")
+    summary = export_training_logs(root, tmp_path / "export")
+    assert summary["categories"]["committed"]["successful_updates"] == 1
+    assert any("same-size" in item for item in summary["limitations"])
+    path.write_bytes(path.read_bytes()[:-1])
+    with pytest.raises(ValueError, match="shorter|Truncated"):
+        export_training_logs(root, tmp_path / "refused")
 
 
 def test_validation_and_resource_observations_remain_separate(tmp_path):
@@ -178,7 +178,7 @@ def test_validation_and_resource_observations_remain_separate(tmp_path):
     val = root / "validations/one.json"
     write_json(val, dict(global_step=1, metrics=dict(split="val", AP_R20=.2,
         frames=[dict(scene_id=9, frame_id=0, AP_R20=.2)])))
-    refs = {"1": dict(path="validations/one.json", sha256=digest(val.read_bytes()))}
+    refs = {"1": dict(path="validations/one.json", file_metadata={"size_bytes": val.stat().st_size})}
     manifest(root, checkpoint(root, "current", 1, [segment], validations=refs))
     monitor = tmp_path / "resources.jsonl"
     monitor.write_text(json.dumps(dict(status=dict(global_step=999), telemetry=dict(gpu=dict(power_watts=None)))) + "\n")
@@ -214,12 +214,14 @@ def test_event_prefix_is_verified_and_tail_remains_uncommitted(tmp_path):
     second = (json.dumps(dict(event_id="two", attempt_id="a", kind="checkpoint_committed")) + "\n").encode()
     event.write_bytes(first + second)
     current["analysis"]["ledger"]["events_lineage"] = [dict(path="attempts/a/events.jsonl",
-        attempt_id="a", end_offset=len(first), sha256=digest(first))]
+        attempt_id="a", end_offset=len(first))]
     manifest(root, current)
     export_training_logs(root, tmp_path / "export")
     assert [r["classification"] for r in read_csv(tmp_path / "export/events.csv")] == ["committed_event", "uncommitted_event"]
     event.write_bytes(first.replace(b"one", b"bad") + second)
-    with pytest.raises(ValueError, match="checksum mismatch"):
+    export_training_logs(root, tmp_path / "same-size-edit")
+    event.write_bytes(first.replace(b'"attempt_id": "a"', b'"attempt_id": "b"') + second)
+    with pytest.raises(ValueError, match="Event lineage/attempt identity"):
         export_training_logs(root, tmp_path / "refused")
 
 
@@ -233,14 +235,14 @@ def test_credited_counters_cannot_disagree_with_logged_frames(tmp_path):
         export_training_logs(root, tmp_path / "refused")
 
 
-def test_validation_hash_mismatch_does_not_publish_partial_export(tmp_path):
+def test_validation_size_mismatch_does_not_publish_partial_export(tmp_path):
     root = tmp_path / "run"
     segment = write_log(root, "a", [update(1)])
     val = root / "validations/one.json"
     write_json(val, dict(global_step=1, metrics=dict(split="val", frames=[dict(scene_id=9, frame_id=0)])))
-    refs = {"1": dict(path="validations/one.json", sha256="wrong")}
+    refs = {"1": dict(path="validations/one.json", file_metadata={"size_bytes": val.stat().st_size + 1})}
     manifest(root, checkpoint(root, "current", 1, [segment], validations=refs))
-    with pytest.raises(ValueError, match="committed_validation checksum mismatch"):
+    with pytest.raises(ValueError, match="committed_validation size metadata mismatch"):
         export_training_logs(root, tmp_path / "export")
     assert not (tmp_path / "export").exists()
 
@@ -260,7 +262,7 @@ def test_formal_validation_cannot_claim_completion_with_short_result(tmp_path):
     segment = write_log(root, "a", [update(1)])
     val = root / "validations/one.json"
     write_json(val, dict(global_step=1, metrics=dict(split="val", frames=[dict(scene_id=9, frame_id=0)])))
-    refs = {"1": dict(path="validations/one.json", sha256=digest(val.read_bytes()))}
+    refs = {"1": dict(path="validations/one.json", file_metadata={"size_bytes": val.stat().st_size})}
     current = checkpoint(root, "current", 1, [segment], validations=refs)
     current["analysis"]["budget"]["formal"] = True
     current["budget"] = current["analysis"]["budget"]
@@ -268,3 +270,18 @@ def test_formal_validation_cannot_claim_completion_with_short_result(tmp_path):
     manifest(root, current)
     with pytest.raises(ValueError, match="exactly 320"):
         export_training_logs(root, tmp_path / "export")
+
+
+def test_historical_checksums_are_ignored_and_omitted_from_new_exports(tmp_path):
+    root, out = tmp_path / 'run', tmp_path / 'export'
+    segment = write_log(root, 'a', [update(1)])
+    segment['sha256'] = 'retired-value-ignored'
+    entry = checkpoint(root, 'current', 1, [segment])
+    entry['sha256'] = 'retired-value-ignored'
+    entry['analysis']['identity']['source_label_config_sha256'] = 'retired-value-ignored'
+    manifest(root, entry)
+    summary = export_training_logs(root, out)
+    assert 'sha256' not in summary['checkpoint']
+    assert 'source_label_config_sha256' not in summary['identity']
+    assert 'sha256' not in (out / 'summary.json').read_text()
+    assert summary['categories']['committed']['successful_updates'] == 1

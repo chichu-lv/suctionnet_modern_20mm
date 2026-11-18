@@ -35,7 +35,7 @@ duplicate = (distance < 0.010) AND (angle < 15 degrees)
 
 选择后的输出中心就是被评分query的原始p；不使用5×5深度中位数或最近主干点再次移动它。输出n也是同一有向轴。若以后采用深度修正，应在query生成时完成并绑定缓存身份，或在修正后重新构造特征并评分。
 
-canonical查询由原始像素反投影给出p，v3法向给出n。历史动作的p/n来自记录，支持锚点不替换姿态。输出另保存source_point_id（存在时）、query_id、normal/sampler版本及精确pose hash，使实际评分条件可回读。
+canonical查询由原始像素反投影给出p，v3法向给出n。历史动作的p/n来自记录，支持锚点不替换姿态。输出另保存source_point_id（存在时）、query_id、normal/sampler版本及语义pose_id及原始p/n，使实际评分条件可回读。
 
 ## 4. 构造相机系接触位姿
 
@@ -49,7 +49,7 @@ canonical查询由原始像素反投影给出p，v3法向给出n。历史动作�
 T_base_tcp = T_base_cam @ T_cam_contact @ T_contact_tcp
 ```
 
-`T_contact_tcp`来自工具标定；唇口中心不直接等于法兰/TCP原点。部署接口保留相机/工具标定hash、坐标系和roll策略。模型结果送交下游时，外部场景碰撞、机器人约束与轨迹检查属于独立规划步骤。
+`T_contact_tcp`来自工具标定；唇口中心不直接等于法兰/TCP原点。部署接口保留实际相机/工具标定参数及来源、坐标系和roll策略。模型结果送交下游时，外部场景碰撞、机器人约束与轨迹检查属于独立规划步骤。
 
 ## 5. 结果与错误账本
 
@@ -60,7 +60,7 @@ T_base_tcp = T_base_cam @ T_cam_contact @ T_contact_tcp
 | 实例/查询身份 | instance_uid、query_id、source_point_id（可用时）、状态和原因 |
 | 精确姿态 | point_cam_m、normal_out_cam、tool_z_cam、4×4相机系contact变换、roll_policy |
 | 分数 | q_inst、seal、wrench、ell、task_probability（已适配时）、ranking_score、ranking_alpha |
-| 合同身份 | quality_contract、checkpoint/代码/data/normal/sampler/标定hash、精度配置 |
+| 合同身份 | quality_contract、checkpoint路径/大小、显式运行/normal/sampler版本、数据/标定定义和精度配置 |
 | 支持诊断 | pose_support_valid、query_feature_valid、三区域raw数、lip缺口/harmonic_valid |
 | 计时与数量 | 原始/有效query数、过滤/NMS数量、编码/评分/后处理时间 |
 
@@ -68,7 +68,7 @@ T_base_tcp = T_base_cam @ T_cam_contact @ T_contact_tcp
 
 ## 6. 验收与当前可运行范围
 
-现有 `geometry_contract.py selftest`覆盖基础SE(3)数学；共同生产后处理已实现，相关原生推理/评价测试核验：分阶段排序身份正确；同分顺序稳定；NMS严格边界及有向轴正确；Top5/无输出行为明确；返回p/n与实际评分字节身份一致；相机/TCP变换可回读；错误候选和历史动作分别记账。延迟统计计入候选过滤、NMS和序列化边界，见[实验方案](EXPERIMENT_PLAN.md)。
+现有 `geometry_contract.py selftest`覆盖基础SE(3)数学；共同生产后处理已实现，相关原生推理/评价测试核验：分阶段排序身份正确；同分顺序稳定；NMS严格边界及有向轴正确；Top5/无输出行为明确；返回p/n与实际评分数组逐元素一致；相机/TCP变换可回读；错误候选和历史动作分别记账。延迟统计计入候选过滤、NMS和序列化边界，见[实验方案](EXPERIMENT_PLAN.md)。
 
 ## 7. 公开比较导出与半径评价：待定
 
