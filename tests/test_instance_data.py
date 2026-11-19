@@ -17,7 +17,8 @@ from suction20.instance_data import (InstanceAttemptDataset, InstanceDataset, bu
     load_observation, save_observation, source_scene_ids, source_split,
     merge_source_manifests, _save_npz)
 from suction20.instance_data import (source_build_output, source_output_lock,
-                                    _read_npz, _COMPACT_SOURCE_UNUSED_ARRAYS)
+                                    _read_npz, _COMPACT_SOURCE_UNUSED_ARRAYS,
+                                    SOURCE_TRAIN_ARRAYS, QUERY_FIELDS, LABEL_ALIASES)
 from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M, prepare_instance, stratified_queries_refill
 from suction20.instance_teacher import InstanceTeacher, empty_labels, validate_labels
 
@@ -235,6 +236,107 @@ def test_compact_source_hint_does_not_narrow_test_observations(tmp_path):
         split='test', scenes=[100], frames=[0], with_labels=False)
     dataset = InstanceDataset(manifest, require_labels=False)
     assert _COMPACT_SOURCE_UNUSED_ARRAYS <= dataset.load_uncached(0, _compact_source=True)['observation'].keys()
+    full = dataset.load_uncached(0)['observation']
+    for route in ('a', 'b'):
+        actual = dataset.load_uncached(0, _compact_source=True, source_route=route)['observation']
+        assert actual.keys() == full.keys()
+
+
+@pytest.mark.parametrize('route', ['a', 'b'])
+@pytest.mark.parametrize('storage', ['npz', 'mmap'])
+def test_route_source_member_protocol_reads_only_consumers_and_canonical_checks(tmp_path, monkeypatch, route, storage):
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    dataset = InstanceDataset(manifest, training_queries=8)
+    expected = dataset.load_uncached(0)
+    path = dataset.root / dataset.records[0]['observation_npz']
+    with np.load(path, allow_pickle=False) as archive:
+        original_arrays = {key: archive[key] for key in archive.files}
+        archive_type = type(archive)
+    # Unknown, non-consumed arrays do not silently become new worker inputs.
+    original_arrays['unconsumed_extension'] = np.zeros((13, 17), np.float64)
+    np.savez_compressed(path, **original_arrays)
+    mirror_instance = None
+    if storage == 'mmap':
+        mirror = tmp_path / 'mirror'
+        mirror_instance = mirror / path.parent.name / path.stem
+        mirror_instance.mkdir(parents=True)
+        (mirror / 'cache.json').write_text(json.dumps({
+            'format': 'instance-selection-npy-v1', 'source_root': str(dataset.root)}))
+        stat = path.stat()
+        (mirror_instance / 'members.json').write_text(json.dumps({
+            'source': [str(path), stat.st_size, stat.st_mtime_ns], 'members': list(original_arrays)}))
+        for key, value in original_arrays.items():
+            np.save(mirror_instance / (key + '.npy'), value, allow_pickle=False)
+        monkeypatch.setenv('SUCTION_INSTANCE_SELECTION_CACHE', str(mirror))
+    original = archive_type.__getitem__
+    original_load = np.load
+    requested, decoded = [], {}
+
+    def record(key, value):
+        requested.append(key)
+        assert key in SOURCE_TRAIN_ARRAYS[route] or key == 'metadata_json'
+        decoded[key] = value
+
+    def read_required(self, key):
+        value = original(self, key)
+        if str(self.zip.filename) == str(path):
+            assert storage == 'npz', 'valid local mirror unexpectedly fell back to NPZ'
+            record(key, value)
+        return value
+
+    def map_required(source, *args, **kwargs):
+        value = original_load(source, *args, **kwargs)
+        if mirror_instance is not None and Path(source).parent == mirror_instance:
+            assert kwargs.get('mmap_mode') == 'c'
+            record(Path(source).stem, value)
+        return value
+
+    monkeypatch.setattr(archive_type, '__getitem__', read_required)
+    monkeypatch.setattr(np, 'load', map_required)
+    actual = dataset.load_uncached(0, _compact_source=True, source_route=route)
+    assert set(requested) == (set(original_arrays) & SOURCE_TRAIN_ARRAYS[route]) | {'metadata_json'}
+    assert {'xyz_map', 'normal_map'} <= set(requested)
+    assert actual['record'] == expected['record']
+    for group in ('observation', 'labels'):
+        for key, value in actual[group].items():
+            if key == 'source_support_count':
+                assert value == len(expected['observation']['support_points'])
+                continue
+            reference = expected[group][key]
+            if isinstance(value, np.ndarray):
+                assert value.dtype == reference.dtype
+                np.testing.assert_array_equal(value, reference)
+            else:
+                assert value == reference
+    for key in QUERY_FIELDS:
+        assert np.shares_memory(actual['observation'][key], decoded[key])
+        if storage == 'mmap':
+            assert isinstance(actual['observation'][key], np.memmap)
+    for alias, source in LABEL_ALIASES.items():
+        assert actual['labels'][alias] is actual['labels'][source]
+    if route == 'a':
+        assert not {'xyz_map', 'normal_map'} & actual['observation'].keys()
+        assert 'support_points' in actual['observation']
+    else:
+        assert not any(key.startswith('support_') for key in actual['observation'])
+        assert {'xyz_map', 'normal_map', 'instance_mask', 'normal_valid'} <= actual['observation'].keys()
+
+
+def test_route_b_source_gate_retains_flattened_support_count(tmp_path):
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    dataset = InstanceDataset(manifest, training_queries=8)
+    path = dataset.root / dataset.records[0]['observation_npz']
+    observation = load_observation(path)
+    observation['support_points'] = observation['support_points'][:7].copy()
+    save_observation(path, observation)
+    full = dataset.load_uncached(0)['observation']
+    actual = dataset.load_uncached(0, _compact_source=True, source_route='b')['observation']
+    assert actual['source_support_count'] == len(full['support_points']) == 7
+    assert int(np.count_nonzero(actual['mask'])) > 7
 
 
 @pytest.mark.parametrize('corruption, expected_error', [
@@ -257,9 +359,11 @@ def test_compact_source_read_keeps_geometry_schema_and_label_checks(tmp_path, co
     else:
         arrays['points' if corruption == 'label_pose' else 'query_points'][0, 0] += 1e-5
     np.savez_compressed(path, **arrays)
-    for compact in (False, True):
+    for options in ({}, {'_compact_source': True},
+                    {'_compact_source': True, 'source_route': 'a'},
+                    {'_compact_source': True, 'source_route': 'b'}):
         with pytest.raises(ValueError, match=expected_error):
-            dataset.load_uncached(0, _compact_source=compact)
+            dataset.load_uncached(0, **options)
 
 
 @pytest.mark.parametrize('excluded', [(), ('depth_m',)])
@@ -269,6 +373,8 @@ def test_excluded_array_still_collides_with_metadata(tmp_path, excluded):
                         metadata_json=np.asarray(json.dumps({'depth_m': 'ambiguous'})))
     with pytest.raises(ValueError, match='array/metadata key collision'):
         _read_npz(path, exclude_arrays=excluded)
+    with pytest.raises(ValueError, match='array/metadata key collision'):
+        _read_npz(path, needed_arrays=())
 
 
 def test_test_insufficient_support_is_retained(tmp_path):

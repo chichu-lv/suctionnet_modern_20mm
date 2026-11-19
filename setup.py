@@ -11,6 +11,7 @@ setup(ext_modules=[Extension('models._fps_cpu', sources=['models/csrc/fps_cpu.c'
     define_macros=[('FPS_SOURCE_VERSION', json.dumps('fps_cpu_v1')),
                    ('FPS_COMPILE_FLAGS', json.dumps(' '.join(flags)))]),
     Extension('models._spatial_index_cpu', sources=['models/csrc/spatial_index_cpu.cpp'],
+        depends=['models/csrc/instance_route_a_contact.h'],
         extra_compile_args=grid_flags, extra_link_args=grid_link_flags,
         optional=True, language='c++',
         define_macros=[('GRID_SOURCE_VERSION', json.dumps('spatial_index_cpu_v1')),

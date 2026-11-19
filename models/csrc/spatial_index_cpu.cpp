@@ -730,12 +730,16 @@ static PyObject *contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
     return nullptr;
 }
 
+#include "instance_route_a_contact.h"
+
 static PyMethodDef methods[] = {
     {"create", create, METH_VARARGS, "Build legacy FP64 grid(xyz64, start, stop, cell_size_m)."},
     {"create_float32", create_float32, METH_VARARGS, "Build fresh-training FP32 all-point grid."},
     {"ball", ball, METH_VARARGS, "Owned native int64 bytes for ball(grid, x, y, z, radius)."},
     {"contact_query", reinterpret_cast<PyCFunction>(contact_query), METH_VARARGS | METH_KEYWORDS,
      "Fill full-point contact outputs using configurable native candidate workers."},
+    {"route_a_contact_query", reinterpret_cast<PyCFunction>(route_a_contact_query), METH_VARARGS | METH_KEYWORDS,
+     "Fill Route-A FP64 three-region contacts with source-ID-ordered sampling."},
     {nullptr, nullptr, 0, nullptr}
 };
 static PyModuleDef module = {PyModuleDef_HEAD_INIT, "_spatial_index_cpu", nullptr, -1, methods};
@@ -744,6 +748,8 @@ PyMODINIT_FUNC PyInit__spatial_index_cpu() {
     if (!m) return nullptr;
     if (PyModule_AddIntConstant(m, "GRID_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "CONTACT_ABI_VERSION", 1) < 0 ||
+        PyModule_AddIntConstant(m, "ROUTE_A_CONTACT_ABI_VERSION", 1) < 0 ||
+        PyModule_AddStringConstant(m, "ROUTE_A_CONTACT_SOURCE_VERSION", "route_a_contact_v1") < 0 ||
         PyModule_AddIntConstant(m, "GEOMETRY_FLOAT32_VERSION", 1) < 0 ||
         PyModule_AddStringConstant(m, "SOURCE_VERSION", GRID_SOURCE_VERSION) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", GRID_COMPILE_FLAGS) < 0 ||

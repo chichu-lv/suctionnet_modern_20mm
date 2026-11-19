@@ -1,5 +1,29 @@
 # 模型验证与当前训练状态
 
+## 2026-11-19 第二轮：补齐性能能力适配与静态准备
+
+基线：A `4264e4d14319fcf230bb43a43d27ef582da94ae8`、B `f7a3ffc83f4993e3543dcc8ece7080b3dc905596`。上一轮不是完整性能能力继承验收；本轮逐项结果、启用条件、原始逐轮数据和剩余项见 [定向适配报告](instance_routes/E5_PERFORMANCE_MIGRATION.md)。
+
+实现 A 专用原生三区接触（复用现有空间网格/线程/缓冲管理）、完整候选一次准备、静态几何与当前 RGB 分离，以及默认关闭的接触并集按需插值/投影。B 将静态图像几何与当前 RGB 分开，几何 ROI 保留到 consumer，不再恢复完整相机零图。共同 reader 使用路线白名单、验证后释放不用的整图、prefix view/label alias 少拷贝，并保留原 flattened support 训练计数。每 worker 缓存默认64 MiB计费上限/16条目，包含底层owner计费、来源读取前后key复核、冷恢复验证。没有新增文件内容校验。
+
+本地 Python3.12.14、Torch2.5.1+cpu、NumPy2.3.5，gcc/g++构建可选扩展，Torch/BLAS单线程。核心回归：
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest -q --ignore=tests/test_prefetch.py
+```
+
+结果：**A 889 passed / 5 skipped（101.44s）**，**B 897 passed / 6 skipped（111.76s）**。末轮针对性组另有 **A 90 passed / 2 skipped**、**B 81 passed / 4 skipped**；最后串行/worker共用选定record读取、来源替换和禁止内容校验门禁，两路线各 **63 passed**。这些与核心套件重叠，不累加为独立覆盖。新增 skip 为另一条路线专属用例；未通过跳过来掩盖新增实现失败。新原生头文件也已验证包含在 source distribution 中。
+
+本地仍排除已知在当前执行环境阻塞的旧 `tests/test_prefetch.py` 三项；该文件和旧 DataLoader 实现未修改，前一轮已单独定位 `_try_get_data` 等待。GitHub CI 继续执行不排除文件的完整 `python -m pytest -q`，最终提交的状态与日志以 [A PR #9](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/9)、[B PR #10](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/10) 的 checks 为准。本地结果不记为未排除的完整套件。
+
+关键验证包括：当前A参考 vs native离散采样/边界/FP64量，单/多原生线程确定性、handle不入IPC，A/B不同曝光预测和梯度，缓存owner内存预算、读取期间文件原子替换、serial/spawn与选定record顺序；compact路径下pretrain/finetune各3步连续与暂停冷恢复，模型、优化器、采样、augmentation RNG、pending ticket及source/target trace一致。A并集路径额外验证FP32/BF16、BN buffers、空并集的零梯度关系、公开encode/eval完整特征和任意姿态惰性补齐autograd。
+
+合成CPU分段：A完整接触178.411→115.960ms；整体prepare冷路径266.474→215.250ms，已有static仅绑定当前RGB为2.455ms。B prepare+compact 125.235→12.424ms，理想缓存命中3.602ms，CPU consumer转换10.412→0.173ms。A并集示例插值/投影131072→24538行，FP32/BF16预测误差0，梯度最大绝对差分别1.746e-9/5.960e-8。路线白名单进一步少物化数组，但读取中位数没有超过上一轮四字段方案，未宣称额外读取加速。
+
+所有计时均为明确固定的CPU合成输入；warm数字不代表正式训练命中率，也不含完整I/O/增强/IPC/H2D/网络。真实SpConv/CUDA数值、L20吞吐、实际缓存命中和资源分段仍待同配置配对。A接触并集默认关闭，pinned/H2D完整链路本轮未新增；没有切换正式训练、改变模型参数/标签/batch/学习率或训练预算。
+
+
 ## 2026-11-19 按 E5 历史问题审查新 A/B 路线
 
 检查基线：A `59e05c0934bf07ea5c6fb47818c61966b3c8bb02`，B `e6d9578f5fb39174cf9a81c769672800c06a9306`。审查结果、适用边界、逐项证据和复现命令见 [E5问题检查报告](instance_routes/E5_PROBLEM_AUDIT.md)，原始 CPU 数值见 [机器可读记录](../research/instance_runs/20261119/e5-problem-audit-cpu.json)。

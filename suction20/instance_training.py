@@ -14,6 +14,7 @@ from copy import deepcopy
 import gzip
 import json
 import math
+from numbers import Integral
 from pathlib import Path
 import random
 import time
@@ -33,6 +34,20 @@ QUALITY_CONTRACT = 'gt_INST20_pose_v2'
 
 
 RUNTIME_CONTRACT = 'instance_runtime_semantic_checks_v2'
+
+
+def source_support_count(observation):
+    """Preserve the original flattened-support gate in compact source packets.
+
+    Route B's image-valid support can differ, so its model support_count cannot
+    substitute for this reader-provided count of the original support rows.
+    """
+    if 'support_points' in observation:
+        return len(observation['support_points'])
+    value = observation['source_support_count']
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+        raise ValueError('source_support_count must be a nonnegative integer')
+    return int(value)
 
 
 def clean_metadata(value):
@@ -960,7 +975,7 @@ class InstanceTrainer:
             while group := list(islice(items, microbatch)):
                 draws += len(group)
                 supported = [item for item in group if
-                             len(item['observation']['support_points']) >= minimum_support_points(self.model)
+                             source_support_count(item['observation']) >= minimum_support_points(self.model)
                              and len(item['observation']['query_points'])]
                 losses = []
                 if supported:
@@ -1002,7 +1017,7 @@ class InstanceTrainer:
                 obs = item['observation']
                 if target:
                     loss = attempt_loss(self.model, item)
-                elif len(obs['support_points']) >= minimum_support_points(self.model) and len(obs['query_points']):
+                elif source_support_count(obs) >= minimum_support_points(self.model) and len(obs['query_points']):
                     loss = source_loss(self.model(obs), item['labels'])
                 else:
                     loss = None

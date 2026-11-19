@@ -37,7 +37,8 @@ def test_selection_mirror_private_and_stale_fallback(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('metadata_collision', [False, True])
-def test_selection_mirror_excludes_arrays_without_losing_inventory(tmp_path, monkeypatch, metadata_collision):
+@pytest.mark.parametrize('selection', ['exclude', 'needed'])
+def test_selection_mirror_excludes_arrays_without_losing_inventory(tmp_path, monkeypatch, metadata_collision, selection):
     source = tmp_path/'selection'/'observations'/'instance.npz'
     source.parent.mkdir(parents=True)
     metadata = {'version': 3, **({'depth_m': 'ambiguous'} if metadata_collision else {})}
@@ -65,11 +66,13 @@ def test_selection_mirror_excludes_arrays_without_losing_inventory(tmp_path, mon
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(np, 'load', read_required)
+    options = ({'exclude_arrays': _COMPACT_SOURCE_UNUSED_ARRAYS} if selection == 'exclude'
+               else {'needed_arrays': {'rgb'}})
     if metadata_collision:
         with pytest.raises(ValueError, match='array/metadata key collision'):
-            _read_npz(source, exclude_arrays=_COMPACT_SOURCE_UNUSED_ARRAYS)
+            _read_npz(source, **options)
     else:
-        actual = _read_npz(source, exclude_arrays=_COMPACT_SOURCE_UNUSED_ARRAYS)
+        actual = _read_npz(source, **options)
         assert actual.keys() == {'rgb', 'version'} and actual['version'] == 3
         assert isinstance(actual['rgb'], np.memmap)
         np.testing.assert_array_equal(actual['rgb'], values['rgb'])

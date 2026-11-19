@@ -15,11 +15,12 @@ def _source_root(root):
     return Path(config['source_root'])
 
 
-def read_cached_arrays(path, root, *, exclude_arrays=()):
+def read_cached_arrays(path, root, *, exclude_arrays=(), needed_arrays=None):
     """Return selected arrays and the full member inventory, or fall back.
 
     The inventory lets the caller retain metadata collision checks without
-    opening arrays unused by the compact source-training path.
+    opening arrays unused by the compact source-training path. A route-specific
+    allowlist uses the same member selection as the authoritative NPZ reader.
     """
     source = Path(os.path.abspath(path))
     try:
@@ -32,7 +33,8 @@ def read_cached_arrays(path, root, *, exclude_arrays=()):
             return None
         members = tuple(receipt['members'])
         arrays = {key: np.load(location/(key+'.npy'), allow_pickle=False, mmap_mode='c')
-                  for key in members if key not in exclude_arrays}
+                  for key in members if key not in exclude_arrays
+                  and (needed_arrays is None or key in needed_arrays)}
         return arrays, members
     except (ValueError, KeyError, TypeError, OSError, EOFError):
         return None
