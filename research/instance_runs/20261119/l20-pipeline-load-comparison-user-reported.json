@@ -1,0 +1,230 @@
+{
+  "schema": "instance_l20_load_comparison_user_report_v1",
+  "report_date": "2026-11-19",
+  "timezone": "Asia/Shanghai",
+  "provenance": {
+    "source": "User messages reporting parallel and subsequent solo L20 windows.",
+    "raw_artifacts_independently_read": false,
+    "remote_server_access_available": false,
+    "exact_runtime_commits_independently_confirmed": false,
+    "independent_gpu_rerun_by_implementation_agent": false
+  },
+  "common": {
+    "window_seconds_per_route": 180,
+    "effective_batch_instances": 32,
+    "source_manifest_records": 1088,
+    "cache_pilot_records": 128,
+    "source_npy_enabled": true,
+    "static_geometry_enabled": true,
+    "route_cache_directories_independent_user_reported": true,
+    "route_cache_directories_independently_verified": false
+  },
+  "user_reported_controls": {
+    "same_code": true,
+    "same_cache": true,
+    "same_input_manifest": true,
+    "same_seed": true,
+    "same_effective_batch": true
+  },
+  "parallel": {
+    "window_start": "2026-11-19T18:20:00+08:00",
+    "window_end": "2026-11-19T18:23:00+08:00",
+    "benchmark_concurrency": "A and B simultaneous",
+    "other_active_jobs": "Exact process inventory was not independently recorded; the later solo run paused both formal training jobs.",
+    "routes": {
+      "a": {
+        "gpu": "L20 GPU2",
+        "workers": 6,
+        "complete_updates": 59,
+        "effective_instances": 1888,
+        "instances_per_second_reported": 10.49,
+        "step_seconds_mean": 3.03,
+        "step_seconds_p95": 4.442,
+        "gpu_utilization_percent_mean": 4.95,
+        "gpu_memory_mib_peak": 5660,
+        "main_process_seconds_per_update": {
+          "data_wait": 2.708,
+          "forward": 0.181,
+          "loss_backward": 0.121,
+          "clip_optimizer_metrics": 0.008,
+          "other_sync": 0.013
+        },
+        "worker_ms_per_complete_instance_all_paths": {
+          "compressed_member_read": 130.3,
+          "zlib": 40.3,
+          "source_npy_lookup_mapping": 6.9,
+          "other_arrays_parse_metadata": 128,
+          "validation_alignment": 4.2,
+          "rgb_augmentation": 8.2,
+          "geometry_inputs_including_lookup": 157,
+          "compact_serialize_send": 21.2
+        },
+        "compressed_member_read_ms_per_npz_fallback_instance": 147.8,
+        "gpu_samples": 360,
+        "gpu_utilization_percent_peak": 91,
+        "gpu_memory_mib_mean": 5639,
+        "source_request_hit_fraction": 0.119
+      },
+      "b": {
+        "gpu": "L20 GPU3",
+        "workers": 8,
+        "complete_updates": 123,
+        "effective_instances": 3936,
+        "instances_per_second_reported": 21.87,
+        "step_seconds_mean": 1.453,
+        "step_seconds_p95": 1.932,
+        "gpu_utilization_percent_mean": 9.85,
+        "gpu_memory_mib_peak": 4294,
+        "main_process_seconds_per_update": {
+          "data_wait": 1.018,
+          "forward": 0.343,
+          "loss_backward": 0.077,
+          "clip_optimizer_metrics": 0.006,
+          "other_sync": 0.009
+        },
+        "worker_ms_per_complete_instance_all_paths": {
+          "compressed_member_read": 105.1,
+          "zlib": 35.9,
+          "source_npy_lookup_mapping": 8.7,
+          "other_arrays_parse_metadata": 122.6,
+          "validation_alignment": 4,
+          "rgb_augmentation": 7.4,
+          "geometry_inputs_including_lookup": 23,
+          "compact_serialize_send": 11.6
+        },
+        "compressed_member_read_ms_per_npz_fallback_instance": 118.5,
+        "gpu_samples": 360,
+        "gpu_utilization_percent_peak": 74,
+        "gpu_memory_mib_mean": 4293,
+        "source_request_hit_fraction": 0.114
+      }
+    },
+    "remote_artifact_references": {
+      "report": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-window180-20261119/report.md",
+      "summary": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-window180-20261119/summary.json",
+      "a_steps": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-window180-20261119/a/step-times.csv",
+      "b_steps": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-window180-20261119/b/step-times.csv"
+    },
+    "warmup_updates": 2
+  },
+  "solo": {
+    "window_start": null,
+    "window_end": null,
+    "benchmark_concurrency": "A then B, each alone for 180 seconds",
+    "formal_training_paused_during_measurement_user_reported": true,
+    "os_page_cache_warmth_controlled": false,
+    "source_request_hit_fraction_range_reported": [
+      0.11,
+      0.12
+    ],
+    "routes": {
+      "a": {
+        "gpu": "L20 GPU2",
+        "workers": 6,
+        "complete_updates": 95,
+        "effective_instances": 3040,
+        "instances_per_second_reported": 16.89,
+        "step_seconds_mean": 1.877,
+        "step_seconds_p95": 2.515,
+        "gpu_utilization_percent_mean": 8.47,
+        "gpu_memory_mib_peak": 6732,
+        "main_process_seconds_per_update": {
+          "data_wait": 1.563,
+          "forward": 0.175,
+          "loss_backward": 0.12,
+          "clip_optimizer_metrics": 0.007,
+          "other_sync": 0.011
+        },
+        "worker_ms_per_complete_instance_all_paths": {
+          "compressed_member_read": 9.1,
+          "zlib": 35.7,
+          "source_npy_lookup_mapping": 2.5,
+          "other_arrays_parse_metadata": 76.8,
+          "validation_alignment": 3.4,
+          "rgb_augmentation": 7.6,
+          "geometry_inputs_including_lookup": 154.4,
+          "compact_serialize_send": 20.3
+        },
+        "compressed_member_read_ms_per_npz_fallback_instance": 10.3
+      },
+      "b": {
+        "gpu": "L20 GPU3",
+        "workers": 8,
+        "complete_updates": 198,
+        "effective_instances": 6336,
+        "instances_per_second_reported": 35.2,
+        "step_seconds_mean": 0.907,
+        "step_seconds_p95": 1.038,
+        "gpu_utilization_percent_mean": 14.83,
+        "gpu_memory_mib_peak": 4300,
+        "main_process_seconds_per_update": {
+          "data_wait": 0.459,
+          "forward": 0.365,
+          "loss_backward": 0.07,
+          "clip_optimizer_metrics": 0.005,
+          "other_sync": 0.008
+        },
+        "worker_ms_per_complete_instance_all_paths": {
+          "compressed_member_read": 8.8,
+          "zlib": 32.9,
+          "source_npy_lookup_mapping": 2.3,
+          "other_arrays_parse_metadata": 73.7,
+          "validation_alignment": 3.4,
+          "rgb_augmentation": 7.1,
+          "geometry_inputs_including_lookup": 21.9,
+          "compact_serialize_send": 12.1
+        },
+        "compressed_member_read_ms_per_npz_fallback_instance": 10
+      }
+    },
+    "formal_training_restored_user_reported": {
+      "a": {
+        "later_observed_step": 3440,
+        "reported_progress_from_step": 3434
+      },
+      "b": {
+        "later_observed_step": 3666,
+        "reported_progress_from_step": 3657
+      }
+    },
+    "remote_artifact_references": {
+      "report": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-solo180-20261119/report.md",
+      "comparison": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-solo180-20261119/comparison.json",
+      "a_steps": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-solo180-20261119/a/step-times.csv",
+      "b_steps": "/home/databeyond/work/pose_model/artifacts/l20-pipeline-solo180-20261119/b/step-times.csv"
+    },
+    "warmup_updates": null,
+    "warmup_updates_note": "Not explicitly stated in the solo-result message; no raw runtime record was independently read."
+  },
+  "derived_from_reported_rounded_values": {
+    "a": {
+      "throughput_gain_fraction_from_complete_updates": 0.6101694915254237,
+      "step_seconds_saved": 1.1529999999999998,
+      "data_wait_seconds_saved": 1.1450000000000002,
+      "parallel_non_wait_seconds": 0.3219999999999996,
+      "solo_non_wait_seconds": 0.31400000000000006,
+      "solo_wait_fraction": 0.8327117741076185,
+      "npz_fallback_read_speed_ratio": 14.349514563106796
+    },
+    "b": {
+      "throughput_gain_fraction_from_complete_updates": 0.6097560975609757,
+      "step_seconds_saved": 0.546,
+      "data_wait_seconds_saved": 0.5589999999999999,
+      "parallel_non_wait_seconds": 0.43500000000000005,
+      "solo_non_wait_seconds": 0.448,
+      "solo_wait_fraction": 0.5060639470782801,
+      "npz_fallback_read_speed_ratio": 11.85
+    }
+  },
+  "interpretation_limits": [
+    "The comparison jointly pauses formal training jobs and changes benchmark concurrency; OS page-cache warmth is uncontrolled.",
+    "It supports load-sensitive slowdown of the shared compressed-data read path, but does not isolate a particular job, filesystem component, page cache, or physical bandwidth saturation.",
+    "Both compared windows enable the same caches with similar low coverage; this is not a cache-on/cache-off comparison.",
+    "The earlier 17:30 pre-change window differs in implementation and resource conditions and is not a causal baseline for a code or cache speedup claim.",
+    "Worker timings average complete instances including mirror hits and NPZ fallbacks; fallback-only reads are separate conditional means.",
+    "Worker service times must not be added directly to main-process per-update times; timings may include scheduling and synchronization effects.",
+    "Forward/backward are host wall-clock spans, not isolated CUDA kernel durations; low sampled utilization does not prove a particular GPU bottleneck.",
+    "Full-cache throughput, end-to-end gains from cache coverage, and production A+B throughput remain unmeasured here.",
+    "Post-resume step progression was reported by the user; checkpoint files and exact-state recovery were not independently inspected."
+  ]
+}

@@ -18,6 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from suction20.instance_config import B_FEATURE_FRAME, B_LEGACY_FEATURE_FRAME
+from .instance_route_b_preparation import (bilinear_validity_map, combine_source_images,
+                                           prepare_source_static_inputs)
 
 
 RADII_M = (0., .005, .009, .010, .014, .017, .018, .020, .022)
@@ -25,6 +27,7 @@ ANGLES = 72
 BOUNDARY_EPS_M = 1e-12
 GEOMETRY_CONTRACT = "b_v3_supported_projected_rings_float64"
 CPU_INPUTS_SPEC = "route_b_cpu_inputs_fp32_geometry64_v1"
+TRAINING_INPUTS_SPEC = "route_b_training_roi_fp32_geometry64_quad_v3"
 _IMAGE_SOURCE_KEYS = ("xyz_map", "mask", "instance_mask", "rgb", "rgb_valid",
                       "normal_map", "normal_valid", "gravity", "intrinsics")
 
@@ -159,15 +162,17 @@ def ring_directions(normals, phase, *, feature_frame=B_FEATURE_FRAME):
     e1, e2, chart = fixed_z_frames(normals, feature_frame=feature_frame)
     theta = 2 * math.pi * (torch.arange(ANGLES, device=normals.device, dtype=torch.float64) + .5) / ANGLES
     theta = theta[None, :] + phase[:, None]
-    radial = e1[:, None, :] * theta.cos()[..., None] + e2[:, None, :] * theta.sin()[..., None]
-    tangent = -e1[:, None, :] * theta.sin()[..., None] + e2[:, None, :] * theta.cos()[..., None]
+    cosine, sine = theta.cos()[..., None], theta.sin()[..., None]
+    radial = e1[:, None, :] * cosine + e2[:, None, :] * sine
+    tangent = -e1[:, None, :] * sine + e2[:, None, :] * cosine
     return radial, tangent, chart
 
 
 def projected_ring_gate(observed_points, observed_valid, points, normals, phase,
-                        *, feature_frame=B_FEATURE_FRAME):
+                        *, feature_frame=B_FEATURE_FRAME, _directions=None):
     """Float64 v3 contact gates, with raw observations retained independently."""
-    radial, angular, chart = ring_directions(normals, phase, feature_frame=feature_frame)
+    radial, angular, chart = (ring_directions(normals, phase, feature_frame=feature_frame)
+                              if _directions is None else _directions)
     delta = torch.where(observed_valid[..., None], observed_points, points[:, None, None, :]) - points[:, None, None, :]
     height = (delta * normals[:, None, None, :]).sum(-1)
     tangent = delta - height[..., None] * normals[:, None, None, :]
@@ -247,6 +252,50 @@ def _nearest_map(image, uv):
     inside = finite & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
     values = image[iy.clamp(0, h - 1), ix.clamp(0, w - 1)]
     return values, inside, iy * w + ix, torch.stack((ix, iy), dim=-1)
+
+
+def _geometry_at_pixels_many(encoded, keys, iy, ix):
+    """Reuse camera/ROI indices when reading several maps at the same pixels."""
+    image = encoded[keys[0]]
+    h, w = encoded.get("geometry_image_hw", image.shape[:2])
+    cy, cx = iy.clamp(0, h - 1), ix.clamp(0, w - 1)
+    y0, x0 = encoded.get("geometry_top_left", (0, 0))
+    rh, rw = image.shape[:2]
+    if (rh, rw) == (h, w) and (y0, x0) == (0, 0):
+        return {key: encoded[key][cy, cx] for key in keys}
+    if not rh or not rw:
+        return {key: encoded[key].new_zeros((*iy.shape, *encoded[key].shape[2:])) for key in keys}
+    ly, lx = cy - y0, cx - x0
+    inside_roi = (ly >= 0) & (ly < rh) & (lx >= 0) & (lx < rw)
+    ly, lx = ly.clamp(0, rh - 1), lx.clamp(0, rw - 1)
+    result = {}
+    for key in keys:
+        values = encoded[key][ly, lx]
+        mask = inside_roi.reshape((*inside_roi.shape, *((1,) * (encoded[key].ndim - 2))))
+        result[key] = torch.where(mask, values, torch.zeros_like(values))
+    return result
+
+
+def _geometry_at_pixels(encoded, key, iy, ix):
+    """Read compact geometry using ORIGINAL camera indices and edge clamping."""
+    return _geometry_at_pixels_many(encoded, (key,), iy, ix)[key]
+
+
+def _nearest_geometry_many(encoded, keys, uv):
+    """Nearest original pixel, independent of the stored geometry rectangle."""
+    h, w = encoded.get("geometry_image_hw", encoded[keys[0]].shape[:2])
+    finite = torch.isfinite(uv).all(-1)
+    safe_uv = torch.where(finite[..., None], uv, torch.zeros_like(uv))
+    ix = torch.floor(safe_uv[..., 0] + .5).long()
+    iy = torch.floor(safe_uv[..., 1] + .5).long()
+    inside = finite & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    return (_geometry_at_pixels_many(encoded, keys, iy, ix), inside,
+            iy * w + ix, torch.stack((ix, iy), -1))
+
+
+def _nearest_geometry(encoded, key, uv):
+    values, inside, source_id, nearest_uv = _nearest_geometry_many(encoded, (key,), uv)
+    return values[key], inside, source_id, nearest_uv
 
 
 def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=torch.float32,
@@ -382,7 +431,8 @@ def prepare_source_phase_cpu(observation):
     return result
 
 
-def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_image_channels=False):
+def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_image_channels=False,
+                              static_inputs=None):
     """Prepare a single immutable loader ticket using only CPU/NumPy outputs.
 
     The original arrays remain read-only for this ticket's lifetime. A copied
@@ -391,12 +441,18 @@ def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_ima
     spawned workers. No update or model weights are captured here.
     """
     result = prepare_source_phase_cpu(observation)
-    prepared = prepare_shared_images(result, device="cpu", feature_dtype=torch.float32,
-                                     min_support_points=min_support_points,
-                                     sample_image_channels=sample_image_channels)
-    prepared.pop("observation")
-    prepared = {key: value.numpy() if torch.is_tensor(value) else value
-                for key, value in prepared.items()}
+    if sample_image_channels:
+        if static_inputs is None:
+            static_inputs = prepare_source_static_inputs(result, min_support_points=min_support_points)
+        prepared = combine_source_images(result, static_inputs, min_support_points=min_support_points)
+    else:
+        if static_inputs is not None:
+            raise ValueError("Static route-B inputs require sampled image channels")
+        prepared = prepare_shared_images(result, device="cpu", feature_dtype=torch.float32,
+                                         min_support_points=min_support_points)
+        prepared.pop("observation")
+        prepared = {key: value.numpy() if torch.is_tensor(value) else value
+                    for key, value in prepared.items()}
     result["_route_b_inputs"] = {
         "spec": CPU_INPUTS_SPEC, "min_support_points": min_support_points,
         "sources": {key: result[key] for key in _IMAGE_SOURCE_KEYS if key in result},
@@ -408,6 +464,11 @@ def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_ima
 # Prepared geometry is exactly zero outside the valid instance. Preserve the
 # camera pixel indices (including off-image and invalid pixels) when decoding.
 _GEOMETRY_MAPS = ("xyz_map", "mask", "normal_map", "normal_valid")
+_TRAINING_ENCODED_KEYS = frozenset((
+    "context", "texture", "xyz_map", "mask", "normal_map", "normal_valid", "bilinear_valid_map", "intrinsics", "gravity",
+    "centroid", "extent", "support_points", "context_affine", "context_affine_inverse", "intrinsics_context",
+    "texture_origin_uv", "texture_roi_hw", "texture_padded_hw", "bbox_xyxy", "support_count",
+    "support_sufficient", "instance_valid", "sample_uid"))
 
 
 def compact_prepared_source_item(item):
@@ -415,33 +476,103 @@ def compact_prepared_source_item(item):
     obs = item["observation"]
     prepared = obs["_route_b_inputs"]
     encoded = dict(prepared["encoded"])
-    mask = encoded["mask"]
-    ys = np.flatnonzero(mask.any(axis=1))
-    xs = np.flatnonzero(mask.any(axis=0))
-    y0, y1 = (int(ys[0]), int(ys[-1])+1) if len(ys) else (0, 0)
-    x0, x1 = (int(xs[0]), int(xs[-1])+1) if len(xs) else (0, 0)
-    for key in _GEOMETRY_MAPS:
-        encoded[key] = np.ascontiguousarray(encoded[key][y0:y1, x0:x1])
-    compact = {key: obs[key] for key in ("query_points", "query_normals", "support_points",
+    if "geometry_image_hw" in encoded:
+        image_hw = encoded.pop("geometry_image_hw")
+        y0, x0 = encoded.pop("geometry_top_left")
+    else:
+        mask = encoded["mask"]
+        image_hw = mask.shape
+        ys = np.flatnonzero(mask.any(axis=1))
+        xs = np.flatnonzero(mask.any(axis=0))
+        y0, y1 = (int(ys[0]), int(ys[-1])+1) if len(ys) else (0, 0)
+        x0, x1 = (int(xs[0]), int(xs[-1])+1) if len(xs) else (0, 0)
+        for key in _GEOMETRY_MAPS:
+            encoded[key] = np.ascontiguousarray(encoded[key][y0:y1, x0:x1])
+    if "bilinear_valid_map" not in encoded:
+        encoded["bilinear_valid_map"] = bilinear_validity_map(
+            torch.as_tensor(encoded["xyz_map"]), torch.as_tensor(encoded["mask"])).numpy()
+    compact = {key: obs[key] for key in ("query_points", "query_normals",
                "sample_uid", "instance_uid", "_route_b_phase_poses") if key in obs}
+    if "support_points" in obs:
+        compact["source_support_count"] = len(obs["support_points"])
+    elif "source_support_count" in obs:
+        compact["source_support_count"] = obs["source_support_count"]
     compact["_route_b_training_inputs"] = {
+        "spec": TRAINING_INPUTS_SPEC,
         "min_support_points": prepared["min_support_points"], "encoded": encoded,
-        "image_hw": mask.shape, "top_left": (y0, x0)}
+        "image_hw": tuple(image_hw), "top_left": (y0, x0)}
+    _validate_training_wire(compact["_route_b_training_inputs"])
     return dict(item, observation=compact)
 
 
+def _validate_training_wire(wire):
+    """Validate the private CPU transfer schema without rescanning file data."""
+    expected = {"spec", "min_support_points", "encoded", "image_hw", "top_left"}
+    if not isinstance(wire, Mapping) or set(wire) != expected or wire.get("spec") != TRAINING_INPUTS_SPEC:
+        raise ValueError("Compact route-B wire schema mismatch")
+    threshold = wire["min_support_points"]
+    if isinstance(threshold, bool) or not isinstance(threshold, Integral) or threshold < 1:
+        raise ValueError("Compact route-B support threshold must be positive")
+    def integers(value, length, name):
+        if (not isinstance(value, (tuple, list)) or len(value) != length
+                or any(isinstance(v, bool) or not isinstance(v, Integral) for v in value)):
+            raise ValueError("Malformed compact route-B " + name)
+        return tuple(int(v) for v in value)
+    height, width = integers(wire["image_hw"], 2, "image size")
+    y0, x0 = integers(wire["top_left"], 2, "geometry origin")
+    if min(height, width) < 1 or not (0 <= y0 <= height and 0 <= x0 <= width):
+        raise ValueError("Compact route-B ROI is outside the image")
+    encoded = wire["encoded"]
+    if not isinstance(encoded, Mapping) or set(encoded) != _TRAINING_ENCODED_KEYS:
+        raise ValueError("Compact route-B encoded fields mismatch")
+    def array(key, shape, dtype):
+        value = encoded[key]
+        valid_type = isinstance(value, np.ndarray) or (torch.is_tensor(value) and value.device.type == "cpu")
+        wanted_dtype = getattr(torch, dtype) if torch.is_tensor(value) else np.dtype(dtype)
+        if (not valid_type or value.dtype != wanted_dtype or len(value.shape) != len(shape)
+                or any(want is not None and actual != want for actual, want in zip(value.shape, shape))):
+            raise ValueError("Malformed compact route-B array: " + key)
+        return value
+    mask = array("mask", (None, None), "bool")
+    rh, rw = mask.shape
+    if (not rh) != (not rw) or y0 + rh > height or x0 + rw > width:
+        raise ValueError("Compact route-B ROI shape is outside the image")
+    array("xyz_map", (rh, rw, 3), "float64")
+    array("normal_map", (rh, rw, 3), "float64")
+    array("normal_valid", (rh, rw), "bool")
+    array("bilinear_valid_map", (rh, rw), "bool")
+    array("context", (1, 13, 128, 128), "float32")
+    ph, pw = integers(encoded["texture_padded_hw"], 2, "texture padding")
+    th, tw = integers(encoded["texture_roi_hw"], 2, "texture ROI")
+    if min(th, tw) < 1 or ph != 32 * math.ceil(th / 32) or pw != 32 * math.ceil(tw / 32):
+        raise ValueError("Compact route-B texture padding mismatch")
+    array("texture", (1, 5, ph, pw), "float32")
+    for key in ("intrinsics", "context_affine", "context_affine_inverse", "intrinsics_context"):
+        array(key, (3, 3), "float64")
+    for key in ("gravity", "centroid", "extent"):
+        array(key, (3,), "float64")
+    array("texture_origin_uv", (2,), "float64")
+    points = array("support_points", (None, 3), "float64")
+    count = encoded["support_count"]
+    if isinstance(count, bool) or not isinstance(count, Integral) or count != len(points):
+        raise ValueError("Compact route-B support count mismatch")
+    for key in ("support_sufficient", "instance_valid"):
+        if not isinstance(encoded[key], (bool, np.bool_)) or bool(encoded[key]) != (count >= threshold):
+            raise ValueError("Compact route-B support validity mismatch")
+    xmin, ymin, xmax, ymax = integers(encoded["bbox_xyxy"], 4, "instance bbox")
+    if not (0 <= xmin < xmax <= width and 0 <= ymin < ymax <= height):
+        raise ValueError("Compact route-B instance bbox is outside the image")
+    if not isinstance(encoded["sample_uid"], str):
+        raise ValueError("Compact route-B sample identity must be text")
+
+
 def _restore_training_encoded(wire, device):
-    height, width = wire["image_hw"]
-    y0, x0 = wire["top_left"]
+    _validate_training_wire(wire)
     encoded = {key: torch.as_tensor(value).to(device, non_blocking=True)
-               if isinstance(value, np.ndarray) else value for key, value in wire["encoded"].items()}
-    for key in _GEOMETRY_MAPS:
-        roi = encoded[key]
-        rh, rw = roi.shape[:2]
-        if (rh, rw) != (height, width):
-            restored = roi.new_zeros((height, width, *roi.shape[2:]))
-            restored[y0:y0+rh, x0:x0+rw] = roi
-            encoded[key] = restored
+               if isinstance(value, np.ndarray) or torch.is_tensor(value) else value
+               for key, value in wire["encoded"].items()}
+    encoded["geometry_image_hw"] = tuple(wire["image_hw"])
+    encoded["geometry_top_left"] = tuple(wire["top_left"])
     return encoded
 
 
@@ -585,7 +716,8 @@ class InstanceSuction2DFastV3(nn.Module):
     def _prepare_encoded(self, observation):
         wire = observation.get("_route_b_training_inputs")
         if wire is not None:
-            if self.feature_dtype != torch.float32 or wire["min_support_points"] != self.min_support_points:
+            if (not isinstance(wire, Mapping) or self.feature_dtype != torch.float32
+                    or wire.get("min_support_points") != self.min_support_points):
                 raise ValueError("Compact training inputs do not match the model preparation profile")
             prepared = _restore_training_encoded(wire, self.device)
             prepared["observation"] = observation
@@ -598,7 +730,7 @@ class InstanceSuction2DFastV3(nn.Module):
                 and set(cache.get("sources", {})) == source_keys
                 and all(cache["sources"][key] is observation[key] for key in source_keys)):
             prepared = {key: torch.as_tensor(value).to(self.device, non_blocking=True)
-                        if isinstance(value, np.ndarray) else value
+                        if isinstance(value, np.ndarray) or torch.is_tensor(value) else value
                         for key, value in cache["encoded"].items()}
             prepared["observation"] = observation
             prepared["sample_uid"] = str(observation.get("sample_uid", observation.get("instance_uid", "instance")))
@@ -619,17 +751,19 @@ class InstanceSuction2DFastV3(nn.Module):
             global_features = self.global_projection(masked_mean_max(l4.flatten(2), mask))
             levels = [module(x) for module, x in zip(self.midlevel_query_projections, (l1, l2))]
         groups = {}
-        for i, item in enumerate(prepared):
-            g = global_features[i:i + 1]
+        # Split each learned batch once. Independent slices give every instance
+        # a SliceBackward that allocates a gradient for the entire source batch.
+        query_features = zip(*(level.split(1) for level in levels))
+        for i, (item, g, query) in enumerate(zip(prepared, global_features.split(1), query_features)):
             item['global_feature'] = g if item['instance_valid'] else g * 0
-            item['query_features'] = tuple(x[i:i + 1] for x in levels)
+            item['query_features'] = query
             groups.setdefault(item['texture'].shape[-2:], []).append(i)
         # Padding dissimilar ROIs to a common size would change GroupNorm statistics.
         for indices in groups.values():
             with self._network_autocast():
                 features = self.texture_stem(torch.cat([prepared[i]['texture'] for i in indices]))
-            for j, index in enumerate(indices):
-                prepared[index]['texture_feature'] = features[j:j + 1]
+            for index, feature in zip(indices, features.split(1)):
+                prepared[index]['texture_feature'] = feature
         return prepared
 
     def forward_instances(self, observations):
@@ -717,8 +851,8 @@ class InstanceSuction2DFastV3(nn.Module):
         # Canonical queries are recognized at their immutable source pixels;
         # only arbitrary off-surface/history queries need a full distance scan.
         uv, projected = self._project(points, encoded["intrinsics"])
-        sampled, inside, _, _ = _nearest_map(encoded["xyz_map"], uv)
-        mask, _, _, _ = _nearest_map(encoded["mask"], uv)
+        sampled, inside, _, nearest_uv = _nearest_geometry(encoded, "xyz_map", uv)
+        mask = _geometry_at_pixels(encoded, "mask", nearest_uv[..., 1], nearest_uv[..., 0])
         exact = finite & projected & inside & mask & ((sampled - points).norm(dim=-1) <= BOUNDARY_EPS_M)
         unresolved = torch.nonzero(finite & ~exact, as_tuple=False).flatten()
         valid = exact.clone()
@@ -742,29 +876,37 @@ class InstanceSuction2DFastV3(nn.Module):
 
     def _read_slots(self, encoded, unique_points):
         uv, projected = self._project(unique_points, encoded["intrinsics"])
-        actual, inside, source_id, nearest_uv = _nearest_map(encoded["xyz_map"], uv)
-        mask, _, _, _ = _nearest_map(encoded["mask"], uv)
-        normal, _, _, _ = _nearest_map(encoded["normal_map"], uv)
-        nv, _, _, _ = _nearest_map(encoded["normal_valid"], uv)
+        nearest_maps, inside, source_id, nearest_uv = _nearest_geometry_many(encoded, _GEOMETRY_MAPS, uv)
+        actual, mask = nearest_maps["xyz_map"], nearest_maps["mask"]
+        normal, nv = nearest_maps["normal_map"], nearest_maps["normal_valid"]
         observed = projected & inside & mask
         actual = torch.where(observed[..., None], actual, torch.zeros_like(actual))
         normal = torch.where((observed & nv)[..., None], normal, torch.zeros_like(normal))
         # Bilinear features are allowed only when all four ORIGINAL pixels
         # belong to this instance and span <=10mm in observed depth.
         floor_uv = torch.floor(uv).long()
-        bilinear_ok = projected.clone()
-        zs = []
-        h, w = encoded["mask"].shape
-        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            cx, cy = floor_uv[..., 0] + dx, floor_uv[..., 1] + dy
-            valid_corner = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h)
-            cy, cx = cy.clamp(0, h - 1), cx.clamp(0, w - 1)
-            valid_corner = valid_corner & encoded["mask"][cy, cx]
-            bilinear_ok &= valid_corner
-            zs.append(encoded["xyz_map"][cy, cx, 2])
-        depth = torch.stack(zs, -1)
-        bilinear_ok &= (depth.amax(-1) - depth.amin(-1)) <= .010 + BOUNDARY_EPS_M
-        bilinear_ok &= observed
+        h, w = encoded.get("geometry_image_hw", encoded["mask"].shape)
+        if "bilinear_valid_map" in encoded:
+            # Worker geometry is immutable. Phase changes the queried pixel,
+            # not the four-corner depth rule stored at that original pixel.
+            fx, fy = floor_uv[..., 0], floor_uv[..., 1]
+            bilinear_ok = _geometry_at_pixels(encoded, "bilinear_valid_map", fy, fx)
+            bilinear_ok &= (fx >= 0) & (fx < w - 1) & (fy >= 0) & (fy < h - 1)
+            bilinear_ok &= projected & observed
+        else:
+            # Public encoded callers can mutate raw maps between queries.
+            # Preserve their live-depth behavior instead of caching a rule.
+            bilinear_ok = projected.clone()
+            zs = []
+            for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+                cx, cy = floor_uv[..., 0] + dx, floor_uv[..., 1] + dy
+                valid_corner = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h)
+                valid_corner = valid_corner & _geometry_at_pixels(encoded, "mask", cy, cx)
+                bilinear_ok &= valid_corner
+                zs.append(_geometry_at_pixels(encoded, "xyz_map", cy, cx)[..., 2])
+            depth = torch.stack(zs, -1)
+            bilinear_ok &= (depth.amax(-1) - depth.amin(-1)) <= .010 + BOUNDARY_EPS_M
+            bilinear_ok &= observed
         tex = encoded["texture_feature"]
         tex_uv = uv - encoded["texture_origin_uv"]
         bilinear = sample_feature_at_indices(tex, tex_uv)
@@ -781,7 +923,8 @@ class InstanceSuction2DFastV3(nn.Module):
 
     def _contact_inputs(self, encoded, points, normals, phase):
         """Construct pose-conditioned tokens and diagnostics in FP64 geometry."""
-        radial, _, _ = ring_directions(normals, phase, feature_frame=self.feature_frame)
+        directions = ring_directions(normals, phase, feature_frame=self.feature_frame)
+        radial = directions[0]
         radii = points.new_tensor(RADII_M[1:])
         ring_points = points[:, None, None, :] + radii[None, :, None, None] * radial[:, None, :, :]
         unique_points = torch.cat((points[:, None, :], ring_points.flatten(1, 2)), 1)
@@ -794,7 +937,7 @@ class InstanceSuction2DFastV3(nn.Module):
 
         slots = {key: expand(value) for key, value in unique.items()}
         gates = projected_ring_gate(slots["points"], slots["observed"], points, normals, phase,
-                                    feature_frame=self.feature_frame)
+                                    feature_frame=self.feature_frame, _directions=directions)
         normal_alignment = (slots["normal"] * normals[:, None, None, :]).sum(-1)
         normal_alignment = torch.where(slots["normal_valid"], normal_alignment, torch.zeros_like(normal_alignment))
         gravity = encoded["gravity"]
@@ -839,11 +982,11 @@ class InstanceSuction2DFastV3(nn.Module):
     def _encode_contact_tokens(self, tokens, contact):
         ring_features = []
         with self._network_autocast():
-            for i, encoder in enumerate(self.ring_encoders):
-                zone = slice(3 * i, 3 * i + 3)
-                region_tokens = tokens[:, zone].permute(0, 1, 3, 2).reshape(len(tokens), 75, ANGLES)
+            regions = zip(self.ring_encoders, tokens.split(3, dim=1), contact.split(3, dim=1))
+            for i, (encoder, region_tokens, region_contact) in enumerate(regions):
+                region_tokens = region_tokens.permute(0, 1, 3, 2).reshape(len(tokens), 75, ANGLES)
                 ring_features.append(self._network_call(f"ring_{i}", encoder, region_tokens,
-                                                        contact[:, zone].any(1)))
+                                                        region_contact.any(1)))
         return torch.cat(ring_features, -1)
 
     def contact_features(self, encoded, points, normals, phase):
@@ -887,13 +1030,16 @@ class InstanceSuction2DFastV3(nn.Module):
         batch = {key: torch.cat([item[key] for item in prepared]) for key in keys}
         chunk = self.dense_query_chunk or self.query_chunk
         predictions, fusions = [], []
-        for start in range(0, sum(lengths), chunk):
-            sl = slice(start, start + chunk)
-            ring = self._encode_contact_tokens(batch["tokens"][sl], batch["contact"][sl])
-            fq = batch["fq"][sl]
-            fusion = torch.cat((batch["global_feature"][sl].to(fq.dtype), fq, ring.to(fq.dtype),
-                                batch["support"][sl].to(fq.dtype), batch["raw"][sl].to(fq.dtype),
-                                batch["descriptor"][sl]), -1)
+        # One split node assembles each source gradient once, including a short
+        # final chunk, instead of zero-filling the whole query batch per chunk.
+        chunks = zip(*(batch[key].split(chunk) for key in keys))
+        for values in chunks:
+            part = dict(zip(keys, values))
+            ring = self._encode_contact_tokens(part["tokens"], part["contact"])
+            fq = part["fq"]
+            fusion = torch.cat((part["global_feature"].to(fq.dtype), fq, ring.to(fq.dtype),
+                                part["support"].to(fq.dtype), part["raw"].to(fq.dtype),
+                                part["descriptor"]), -1)
             with self._network_autocast():
                 latent = self._network_call("query_fusion", self.query_fusion, fusion)
                 heads = {name: self._network_call(f"head_{name}", head, latent).squeeze(-1)
@@ -910,18 +1056,17 @@ class InstanceSuction2DFastV3(nn.Module):
             fusions.append(fusion)
         merged = {name: torch.cat([part[name] for part in predictions]) for name in predictions[0]}
         fusion = torch.cat(fusions)
-        results, start = [], 0
-        for item, count in zip(prepared, lengths):
-            sl = slice(start, start + count)
+        instance_predictions = {name: value.split(lengths) for name, value in merged.items()}
+        results = []
+        for index, (item, instance_fusion) in enumerate(zip(prepared, fusion.split(lengths))):
             valid = item["valid"]
-            result = {name: torch.where(valid, value[sl], torch.zeros_like(value[sl]))
-                      for name, value in merged.items()}
+            result = {name: torch.where(valid, values[index], torch.zeros_like(values[index]))
+                      for name, values in instance_predictions.items()}
             result.update(log_scale=result["ell"], log_variance=math.log(2.) + 2 * result["ell"],
                           valid=valid, query_valid=valid, points_cam_m=item["points_cam_m"],
                           normals_out_cam=item["normals_out_cam"],
-                          diagnostics={**item["diagnostics"], "fusion": fusion[sl]})
+                          diagnostics={**item["diagnostics"], "fusion": instance_fusion})
             results.append(result)
-            start += count
         return results
 
     def _score_chunk(self, encoded, points, normals, phase):

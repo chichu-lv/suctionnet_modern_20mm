@@ -1,0 +1,208 @@
+{
+  "scope": "Synthetic CPU local files, warm OS cache, identical canonical checks. No actual training dataset, cold-disk, RGB augmentation, IPC, or GPU.",
+  "fixture": {
+    "image_hw": [
+      720,
+      1280
+    ],
+    "support": 32000,
+    "queries": 256,
+    "repeats": 7,
+    "compressed_bytes": 1120826,
+    "numpy": "2.3.5"
+  },
+  "routes": {
+    "a": {
+      "timings": {
+        "npz": {
+          "validated_reader_ms": {
+            "runs": [
+              126.3001749975956,
+              128.15026799944462,
+              112.14534000100684,
+              109.89309000069625,
+              152.0772100011527,
+              125.4491279978538,
+              115.21470499792485
+            ],
+            "median": 125.4491279978538
+          },
+          "reader_and_touch_ms": {
+            "runs": [
+              128.9482109968958,
+              130.95417800286668,
+              114.9711930011108,
+              112.63354499897105,
+              155.14554900073563,
+              128.04537899864954,
+              118.24157599767204
+            ],
+            "median": 128.04537899864954
+          }
+        },
+        "npy": {
+          "validated_reader_ms": {
+            "runs": [
+              4.740976000903174,
+              5.126414002006641,
+              4.214029002469033,
+              4.802335999556817,
+              9.16627000333392,
+              6.329820997052593,
+              4.649111000617268
+            ],
+            "median": 4.802335999556817
+          },
+          "reader_and_touch_ms": {
+            "runs": [
+              9.643305002100533,
+              10.118717000295874,
+              8.360435000213329,
+              9.354444999189582,
+              14.091091001319,
+              10.930451997410273,
+              9.619508000469068
+            ],
+            "median": 9.643305002100533
+          }
+        }
+      },
+      "reader_counters": {
+        "source_requests": 7,
+        "source_hits": 7,
+        "source_fallbacks": 0,
+        "selection_requests": 0,
+        "selection_hits": 0,
+        "selection_fallbacks": 0,
+        "npz_reads": 7
+      },
+      "selected_members": [
+        "centroid",
+        "gravity",
+        "image_shape",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_components",
+        "support_normal_valid",
+        "support_normals",
+        "support_points",
+        "support_rgb",
+        "support_rgb_valid",
+        "support_source_ids",
+        "support_uv",
+        "xyz_map"
+      ],
+      "npy_and_receipt_bytes": 60073727,
+      "all_selected_arrays_and_metadata_equal": true
+    },
+    "b": {
+      "timings": {
+        "npz": {
+          "validated_reader_ms": {
+            "runs": [
+              115.24496099809767,
+              115.93680599980871,
+              115.41959500027588,
+              111.25120900032925,
+              128.59311899956083,
+              118.9579070014588,
+              127.67339499987429
+            ],
+            "median": 115.93680599980871
+          },
+          "reader_and_touch_ms": {
+            "runs": [
+              118.4336970000004,
+              118.955284000549,
+              118.94185400160495,
+              114.17073800112121,
+              132.03685900225537,
+              122.06224499823293,
+              131.36405800105422
+            ],
+            "median": 118.955284000549
+          }
+        },
+        "npy": {
+          "validated_reader_ms": {
+            "runs": [
+              3.348286001710221,
+              3.574448001018027,
+              3.64810900282464,
+              3.6709340020024683,
+              3.5865569989255164,
+              4.127674001210835,
+              4.085520002263365
+            ],
+            "median": 3.64810900282464
+          },
+          "reader_and_touch_ms": {
+            "runs": [
+              7.867281001381343,
+              8.333876001415774,
+              8.532696003385354,
+              8.226694000768475,
+              8.284241001092596,
+              9.827516998484498,
+              9.024238999700174
+            ],
+            "median": 8.333876001415774
+          }
+        }
+      },
+      "reader_counters": {
+        "source_requests": 7,
+        "source_hits": 7,
+        "source_fallbacks": 0,
+        "selection_requests": 0,
+        "selection_hits": 0,
+        "selection_fallbacks": 0,
+        "npz_reads": 7
+      },
+      "selected_members": [
+        "gravity",
+        "image_shape",
+        "instance_mask",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "normal_valid",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_points",
+        "xyz_map"
+      ],
+      "npy_and_receipt_bytes": 59803173,
+      "all_selected_arrays_and_metadata_equal": true
+    }
+  },
+  "notes": [
+    "Original manifests remain unchanged in the production builder.",
+    "NPY mirrors are larger than compressed NPZ; a finite disk budget is required.",
+    "reader_and_touch_ms forces all selected numerical pages to be consumed.",
+    "Actual worker throughput, cache coverage and storage latency require L20 measurement."
+  ]
+}

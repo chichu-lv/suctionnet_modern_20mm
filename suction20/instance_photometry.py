@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image, ImageEnhance
 
 
-def apply_source_rgb(observation, parameters):
+def apply_source_rgb(observation, parameters, *, prepare_support=True):
     factors, order, hue, grayscale = parameters
     raw = np.asarray(observation['rgb'], dtype=np.float32)
     mask = np.asarray(observation['mask'], dtype=bool)
@@ -42,6 +42,10 @@ def apply_source_rgb(observation, parameters):
         crop = np.asarray(image, dtype=np.float32) / 255.
         crop[~selected] = 0.
         result[box] = crop
+    if not prepare_support:
+        # Route B consumes image RGB. Do not materialize an unused second copy
+        # of those pixels as flattened support colors.
+        return dict(observation, rgb=result, rgb_valid=valid)
     uv = np.asarray(observation['support_uv'], np.int64)
     return dict(observation, rgb=result, rgb_valid=valid,
                 support_rgb=result[uv[:, 1], uv[:, 0]].copy(),

@@ -28,9 +28,29 @@ from .metadata import without_legacy_checksums
 OBSERVATION_SCHEMA = 'instance_observation_v2'
 MANIFEST_VERSION = 'suction20.instance_manifest.v4'
 READABLE_MANIFEST_VERSIONS = (MANIFEST_VERSION, 'suction20.instance_manifest.v3')
+# These full-camera arrays have no consumer after source observation validation
+# and before either route's compact training payload. Retain the organized XYZ
+# and normal maps used to check canonical query/pixel identity.
+_COMPACT_SOURCE_UNUSED_ARRAYS = frozenset(('depth_m', 'depth_valid', 'eligible_mask', 'component_map'))
 QUERY_FIELDS = ('query_points', 'query_normals', 'query_uv', 'query_ids',
                 'query_source_ids', 'query_components', 'query_valid',
                 'query_cell_ids', 'query_rounds')
+# These are archive-member allowlists, not replacement observation schemas.
+# Both routes retain every array used by the canonical query checks below.
+# Optional arrays are loaded when present; required-field validation is shared
+# with the full reader. JSON metadata and the complete member inventory are
+# always read, including when an unconsumed array is omitted.
+_SOURCE_CHECK_ARRAYS = frozenset(QUERY_FIELDS) | {
+    'xyz_map', 'normal_map', 'image_shape', 'intrinsics', 'gravity'}
+_SOURCE_RGB_ARRAYS = frozenset(('rgb', 'rgb_valid', 'mask'))
+SOURCE_TRAIN_ARRAYS = {
+    'a': _SOURCE_CHECK_ARRAYS | _SOURCE_RGB_ARRAYS | {
+        'support_points', 'support_rgb', 'support_rgb_valid', 'support_normals',
+        'support_normal_valid', 'support_uv', 'support_source_ids',
+        'support_components', 'centroid'},
+    'b': _SOURCE_CHECK_ARRAYS | _SOURCE_RGB_ARRAYS | {
+        'instance_mask', 'normal_valid', 'support_points'},
+}
 LABEL_ALIASES = {'S': 'seal', 'W': 'wrench', 'Q_inst': 'q_inst', 'valid': 'label_valid'}
 LABEL_IDENTITY_FIELDS = ('quality_contract', 'schema_version', 'teacher_spec', 'physics',
     'scene_id', 'frame_id', 'instance_row', 'obj_id', 'dense_path', 'seal_candidates_path',
@@ -123,23 +143,49 @@ def _save_npz(path, value):
     return path
 
 
-def _read_npz(path):
+def _read_npz(path, *, exclude_arrays=(), needed_arrays=None, cache_route=None):
+    exclude_arrays = frozenset(exclude_arrays)
+    if 'metadata_json' in exclude_arrays:
+        raise ValueError('NPZ metadata cannot be excluded')
+    if needed_arrays is not None:
+        if exclude_arrays:
+            raise ValueError('specify needed_arrays or exclude_arrays, not both')
+        needed_arrays = frozenset(needed_arrays) | {'metadata_json'}
     arrays = None
+    from .instance_selection_cache import read_cached_arrays, record_reader_cache
+    source_cache = (os.environ.get('SUCTION_INSTANCE_SOURCE_CACHE_' + cache_route.upper())
+                    if cache_route in SOURCE_TRAIN_ARRAYS else None)
+    if source_cache:
+        cached = read_cached_arrays(path, source_cache, exclude_arrays=exclude_arrays,
+                                    needed_arrays=needed_arrays, source_route=cache_route)
+        record_reader_cache('source', cached is not None)
+        if cached is not None:
+            arrays, members = cached
     cache_root = os.environ.get('SUCTION_INSTANCE_SELECTION_CACHE')
-    if cache_root:
-        from .instance_selection_cache import read_cached_arrays
-        arrays = read_cached_arrays(path, cache_root)
+    if arrays is None and cache_root:
+        cached = read_cached_arrays(path, cache_root, exclude_arrays=exclude_arrays,
+                                    needed_arrays=needed_arrays)
+        record_reader_cache('selection', cached is not None)
+        if cached is not None:
+            arrays, members = cached
     if arrays is None:
+        record_reader_cache('npz')
         with np.load(path, allow_pickle=False) as file:
-            arrays = {key: file[key] for key in file.files}
+            members = tuple(file.files)
+            arrays = {key: file[key] for key in members if key not in exclude_arrays
+                      and (needed_arrays is None or key in needed_arrays)}
     encoded = arrays.pop('metadata_json', None)
     result = without_legacy_checksums(arrays)
     if encoded is not None:
         meta = without_legacy_checksums(json.loads(str(encoded)))
-        if set(meta) & set(result):
+        # A skipped array must not conceal an ambiguous metadata declaration.
+        array_names = without_legacy_checksums(dict.fromkeys(
+            key for key in members if key != 'metadata_json'))
+        if set(meta) & set(array_names):
             raise ValueError('array/metadata key collision')
         result.update(meta)
-    return without_legacy_checksums(result)
+    # Both arrays and metadata were already cleaned without copying arrays.
+    return result
 
 
 def save_observation(path, observation):
@@ -151,7 +197,13 @@ def save_observation(path, observation):
 
 def load_observation(path):
     """Load once, then validate geometry in memory; never scan archive bytes."""
-    obs = _read_npz(path)
+    return _load_observation(path)
+
+
+def _load_observation(path, *, exclude_arrays=(), needed_arrays=None, cache_route=None):
+    """Keep identical canonical checks for full and compact-source readers."""
+    obs = _read_npz(path, exclude_arrays=exclude_arrays, needed_arrays=needed_arrays,
+                    cache_route=cache_route)
     if obs.get('normal_spec') != NORMAL_SPEC or obs.get('sampler_spec') != SAMPLER_SPEC:
         raise ValueError('observation normal/sampler version mismatch')
     if obs.get('precision_spec') != PRECISION_SPEC:
@@ -187,8 +239,8 @@ def load_observation(path):
     return obs
 
 
-def load_labels(path, *, points=None, normals=None):
-    labels = _read_npz(path)
+def load_labels(path, *, points=None, normals=None, cache_route=None):
+    labels = _read_npz(path, cache_route=cache_route)
     validate_labels(labels, expected_points=points, expected_normals=normals)
     if 'identity' in labels:
         labels['identity'] = _label_identity(labels['identity'])
@@ -284,16 +336,39 @@ class InstanceDataset:
                 self._cache.popitem(last=False)
         return result
 
-    def load_uncached(self, index):
+    def load_uncached(self, index, *, _compact_source=False, source_route=None):
+        if source_route is not None and source_route not in SOURCE_TRAIN_ARRAYS:
+            raise ValueError('source_route must be a, b, or None')
         record = copy.deepcopy(self.records[index])
-        obs = load_observation(_path(self.root, record['observation_npz']))
+        compact = bool(_compact_source and record['split'] == 'train')
+        route_compact = compact and source_route is not None
+        # Preserve the legacy private hint for callers without an explicit
+        # route. New route-aware workers use a complete consumer allowlist.
+        excluded = _COMPACT_SOURCE_UNUSED_ARRAYS if compact and not route_compact else ()
+        needed = SOURCE_TRAIN_ARRAYS[source_route] if route_compact else None
+        obs = _load_observation(_path(self.root, record['observation_npz']),
+                                exclude_arrays=excluded, needed_arrays=needed,
+                                cache_route=source_route if route_compact else None)
+        if route_compact:
+            if source_route == 'a':
+                # Validation above compared all canonical queries against
+                # these original maps. A's remaining consumers use support
+                # arrays, so do not retain validation-only full-camera maps.
+                obs.pop('xyz_map')
+                obs.pop('normal_map')
+            else:
+                # Keep the trainer's original len(support_points) contract.
+                # B independently counts finite positive-depth pixels for its
+                # model geometry; those two counts must not be substituted.
+                obs['source_support_count'] = len(obs.pop('support_points'))
         obs['sample_uid'], obs['instance_uid'] = record['sample_id'], record['instance_uid']
         obs['observation_identity']['instance_uid'] = record['instance_uid']
         full_count = len(obs['query_points'])
         count = min(full_count, self.training_queries) if self.training_queries is not None else full_count
         labels = None
         if self.require_labels and record.get('label_cache'):
-            labels = load_labels(_path(self.root, record['label_cache']))
+            labels = load_labels(_path(self.root, record['label_cache']),
+                                 cache_route=source_route if route_compact else None)
             _same_label_identity(labels.get('identity'), record.get('label_identity'))
             available = len(labels['points'])
             if available < count and self.require_labels:
@@ -301,13 +376,18 @@ class InstanceDataset:
             label_count = min(count, available)
             for key, value in list(labels.items()):
                 if isinstance(value, np.ndarray) and value.ndim and len(value) == available:
-                    labels[key] = value[:label_count].copy()
+                    prefix = value[:label_count]
+                    labels[key] = prefix if route_compact else prefix.copy()
+            if route_compact:
+                for alias, source in LABEL_ALIASES.items():
+                    labels[alias] = labels[source]
             validate_labels(labels, expected_points=obs['query_points'][:label_count],
                             expected_normals=obs['query_normals'][:label_count])
             if not np.array_equal(labels['query_id'], obs['query_ids'][:label_count]):
                 raise ValueError('label query IDs differ from observation prefix')
         for key in QUERY_FIELDS:
-            obs[key] = obs[key][:count].copy()
+            prefix = obs[key][:count]
+            obs[key] = prefix if route_compact else prefix.copy()
         obs['full_query_identity'] = obs['query_identity']
         obs['query_identity'] = query_descriptor(obs['query_source_ids'])
         record['has_supervision'] = bool(labels is not None and labels['label_valid'].any())

@@ -1,5 +1,7 @@
 # A/B 代码运行说明
 
+> 最新L20性能实现的构建、只读NPY/静态几何缓存启用和180秒配对命令见 [L20_PIPELINE_OPTIMIZATION.md](L20_PIPELINE_OPTIMIZATION.md)。本文保留通用数据、训练、恢复和评价命令；本轮性能优化不改变原manifest或要求从头训练。
+
 > **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（各在对应分支），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
 
 当前分支已经实现单实例数据、v3预处理、同姿态物理teacher、对应路线网络、预训练/微调、checkpoint恢复、推理与native评价。A在 `route-a-3d-rgb`，B在 `route-b-2d-projected-rings`；每分支只包含自己的模型、测试与运行配置，共同模块同步维护。

@@ -109,6 +109,47 @@ def test_route_geometry_and_images_prepared_after_augmentation(tmp_path, route):
     assert np.array_equal(item['observation']['query_points'], expected['query_points'])
 
 
+@pytest.mark.parametrize('route', ['a', 'b'])
+def test_compact_worker_skips_unused_archive_arrays_before_route_preparation(tmp_path, monkeypatch, route):
+    model_module = pytest.importorskip(f'models.instance_route_{route}')
+    from suction20 import instance_loading as loading
+    from suction20.instance_data import _COMPACT_SOURCE_UNUSED_ARRAYS
+
+    data = _source(tmp_path)
+    options = {'min_support_points': 100}
+    if route == 'a':
+        options.update(backbone_points=32, query_chunk_size=4)
+    spec = dict(loading._reader_spec(data), route=route, compact_source=True, geometry_options=options)
+    rgb = _draw_rgb(np.random.default_rng(8))
+    expected = model_module.compact_prepared_source_item(
+        loading._prepare_observation(data.load_uncached(0), rgb, spec))
+    path = data.root / data.records[0]['observation_npz']
+    with np.load(path, allow_pickle=False) as archive:
+        archive_type = type(archive)
+    original = archive_type.__getitem__
+
+    def read_required(self, key):
+        assert key not in _COMPACT_SOURCE_UNUSED_ARRAYS, 'compact worker inflated an unused image'
+        return original(self, key)
+
+    monkeypatch.setattr(archive_type, '__getitem__', read_required)
+    monkeypatch.setattr(loading, '_WORKER_SPEC', spec)
+    actual = loading._worker_prepare((data.records[0], rgb))
+    assert actual['record'] == expected['record']
+
+    def arrays(value, prefix=()):
+        if isinstance(value, np.ndarray):
+            return {prefix: value}
+        children = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, (list, tuple)) else ()
+        return {path: array for key, child in children for path, array in arrays(child, prefix + (key,)).items()}
+
+    actual_arrays, expected_arrays = arrays(actual), arrays(expected)
+    assert actual_arrays.keys() == expected_arrays.keys()
+    for key in actual_arrays:
+        assert actual_arrays[key].dtype == expected_arrays[key].dtype
+        np.testing.assert_array_equal(actual_arrays[key], expected_arrays[key])
+
+
 def test_worker_read_failure_propagates_and_closes_pool(tmp_path):
     data = _source(tmp_path)
     (data.root/data.records[0]['observation_npz']).unlink()

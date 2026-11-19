@@ -1,0 +1,46 @@
+{
+  "scope": "Synthetic local-file storage comparison; filesystem-specific allocation. No throughput timing.",
+  "fixture": {
+    "image_hw": [
+      720,
+      1280
+    ],
+    "support": 32000,
+    "queries": 256,
+    "repeats": 7,
+    "compressed_bytes": 1120826,
+    "numpy": "2.3.5"
+  },
+  "routes": {
+    "a": {
+      "dense_npy": {
+        "logical_bytes": 60073727,
+        "allocated_bytes": 60153856
+      },
+      "sparse_npy_64k": {
+        "logical_bytes": 60073727,
+        "allocated_bytes": 32882688
+      },
+      "all_array_bytes_equal": true
+    },
+    "b": {
+      "dense_npy": {
+        "logical_bytes": 59803173,
+        "allocated_bytes": 59875328
+      },
+      "sparse_npy_64k": {
+        "logical_bytes": 59803173,
+        "allocated_bytes": 31293440
+      },
+      "all_array_bytes_equal": true
+    }
+  },
+  "notes": [
+    "Original manifests remain unchanged in the production builder.",
+    "NPY mirrors are larger than compressed NPZ; a finite disk budget is required.",
+    "reader_and_touch_ms forces all selected numerical pages to be consumed.",
+    "Actual worker throughput, cache coverage and storage latency require L20 measurement.",
+    "Sparse NPY uses raw zero-byte holes; negative zero and NaN payloads remain unchanged.",
+    "Storage savings depend on the filesystem; the builder retains a conservative logical budget."
+  ]
+}

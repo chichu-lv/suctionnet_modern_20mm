@@ -1,0 +1,147 @@
+{
+  "route": "a",
+  "seed": 20261119,
+  "rounds": 7,
+  "support_count": 32000,
+  "query_count": 128,
+  "scope": "Synthetic CPU geometry preparation and compact packing only. Stored path reopens cache.json, packet.json and the mmap arena and performs semantic validation on every draw. OS file pages are warm; storage-cold performance is not measured. No in-process LRU exists in this probe. NPZ reading, RGB augmentation, IPC, learned network and GPU work are excluded. Fresh exposure arrays are constructed before timing.",
+  "source_identity_scope": "Small synthetic provenance stub with normal path/stat/settings key; full dataset/manifest reader is covered by separate integration tests.",
+  "settings": {
+    "backbone_points": 2048,
+    "min_support_points": 100,
+    "query_chunk_size": 128
+  },
+  "order": "alternating cold/stored",
+  "all_prepared_values_exact_every_exposure": true,
+  "fresh_rgb_changes_preserved": true,
+  "static_packet_independent_of_rgb_values": true,
+  "a_deferred_indices_unmaterialized": true,
+  "independently_reopened_arenas": 8,
+  "static_store_stats": {
+    "hits": 8,
+    "missing": 0,
+    "stale": 0,
+    "invalid": 0
+  },
+  "first_reopened_draw_ms": {
+    "stored_total_ms": 5.044158002419863,
+    "stored_read_validate_ms": 2.771770999970613,
+    "stored_bind_ms": 2.2590170010516886,
+    "stored_compact_ms": 0.013370001397561282
+  },
+  "offline_prepare_ms": 239.0891580034804,
+  "offline_write_validate_ms": 11.020603000361007,
+  "entry_bytes": 6409950,
+  "entry_files_bytes": {
+    "packet.json": 5983,
+    "arrays.npy": 6403967
+  },
+  "cache_definition_bytes": 211,
+  "conservative_memory_cache_charge_bytes": 21535898,
+  "preparation_version": {
+    "spec": "instance-route-a-static-geometry-v1",
+    "native_source": "route_a_contact_v2_contiguous_fps",
+    "fps_axes": [
+      0,
+      2,
+      1
+    ]
+  },
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "torch": "2.5.1+cpu",
+    "torch_threads": 1,
+    "thread_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    }
+  },
+  "timing": {
+    "cold_total_ms": {
+      "median_ms": 180.07110599864973,
+      "rounds_ms": [
+        193.08671399994637,
+        215.73717299907003,
+        174.6790229990438,
+        179.114323000249,
+        181.33174700051313,
+        180.07110599864973,
+        175.71336200126098
+      ]
+    },
+    "cold_prepare_bind_ms": {
+      "median_ms": 180.05383999843616,
+      "rounds_ms": [
+        193.06956799846375,
+        215.7197870001255,
+        174.66146699734963,
+        179.09510399840656,
+        181.30900300093344,
+        180.05383999843616,
+        175.6944039989321
+      ]
+    },
+    "cold_compact_ms": {
+      "median_ms": 0.017556001694174483,
+      "rounds_ms": [
+        0.017146001482615247,
+        0.017385998944519088,
+        0.017556001694174483,
+        0.01921900184242986,
+        0.022743999579688534,
+        0.017266000213567168,
+        0.01895800232887268
+      ]
+    },
+    "stored_total_ms": {
+      "median_ms": 5.002526002499508,
+      "rounds_ms": [
+        7.169018001150107,
+        6.583490998309571,
+        4.8772059999464545,
+        5.002526002499508,
+        5.588640000496525,
+        4.4756610004696995,
+        4.889725998509675
+      ]
+    },
+    "stored_read_validate_ms": {
+      "median_ms": 2.477636997355148,
+      "rounds_ms": [
+        3.4816860024875496,
+        2.376364998781355,
+        2.6109680002264213,
+        2.4427749995084014,
+        3.144253001664765,
+        2.2510449998662807,
+        2.477636997355148
+      ]
+    },
+    "stored_bind_ms": {
+      "median_ms": 2.4310570006491616,
+      "rounds_ms": [
+        3.6703559999295976,
+        4.193665001366753,
+        2.254310002172133,
+        2.5469710017205216,
+        2.4310570006491616,
+        2.210234000813216,
+        2.3988090033526532
+      ]
+    },
+    "stored_compact_ms": {
+      "median_ms": 0.013329998182598501,
+      "rounds_ms": [
+        0.01697599873295985,
+        0.013460998161463067,
+        0.011927997547900304,
+        0.012780001270584762,
+        0.013329998182598501,
+        0.014381999790202826,
+        0.013279997801873833
+      ]
+    }
+  }
+}

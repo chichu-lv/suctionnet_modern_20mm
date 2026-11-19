@@ -23,6 +23,12 @@
 
 ## Done（已完成）
 
+- [x] [L20三分钟实测后的供数与几何优化](docs/instance_routes/L20_PIPELINE_OPTIMIZATION.md)：A冷原生接触和FPS连续布局；B四角有效性表及ROI索引复用；A/B独立有预算NPY镜像、持久静态几何包、真实命中统计与180秒完整更新窗口。CPU配对与恢复验证已落地，用户GPU窗口单独标明来源。
+
+- [x] [补齐 E5 性能能力定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)：A 完整 FP64 原生三区接触、跨曝光静态几何与可选接触并集投影；B 静态 ROI 准备与 ROI 消费；共同路线白名单、少拷贝和有界缓存。附 CPU 配对及冷缓存恢复验证，未声明新 L20 吞吐。
+
+- [x] [按 E5 问题清单审查新 A/B 实现](docs/instance_routes/E5_PROBLEM_AUDIT.md)：源训练按需解压、A 固定几何统计前移、B 可微批特征按边界拆分、每更新一次指标读回；附 CPU 合成对照与数值/恢复回归，真实 GPU 增益待配对。
+
 - [x] 按项目约束移除 SHA-256 计算与校验，覆盖数据、缓存、checkpoint、备份、导出、原生扩展和基准脚本；保留实际结构/配置/事务检查，并增加 [永久约束](AGENTS.md) 与 [回归门禁](tests/test_no_sha256_verification.py)。兼容范围见[当前读取规则](docs/NO_CONTENT_CHECKSUMS.md)。
 - [x] 整理[A/B与公开方法的比较协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)及[论文数值目录](docs/instance_routes/reference/paper_baselines.json)：保留六组成对表与论文原始数值；公开仅半径方案已移为待定备忘，当前不实施该评价器。
 - [x] 分别整理 [A](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) / [B](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 的六部分实施计划及独立开发分支，明确输入产物、实现接口、失败处理、训练配方和实验验收；实际数据、模型、训练与推理代码已接通，完整真实实验继续列为待办。
@@ -65,6 +71,12 @@
 - [x] [选定正式配方及从头启动](docs/SELECTED_PRETRAINING_RECIPE.md)：`finalize_pretraining.py`支持读取已完成的batch-combo结果，选择各机最快完整候选，生成H20有效batch48、L20有效batch12的六组新配置；不再锁定有效batch8，预算从配置派生，旧final入口保留历史兼容。
 
 ## TODO（待完成）
+
+- [ ] 按[最新L20执行文档](docs/instance_routes/L20_PIPELINE_OPTIMIZATION.md)复测本轮实现：确认原生版本、源镜像/静态包实际覆盖和命中、磁盘与RSS预算，并对照180秒窗口；没有把本轮CPU热页缓存收益写成已测GPU吞吐。
+
+- [ ] 在实际 L20 数据与原训练配置下验证[定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)的 SpConv/CUDA 数值、缓存命中率、暴露等待和端到端吞吐；A 接触并集保持 opt-in，pinned/H2D 优先级由新分段结果确定。
+
+- [ ] 在原 L20 配置、有效 batch 32 和相同数据/增强顺序下验收本轮[针对性优化](docs/instance_routes/E5_PROBLEM_AUDIT.md)，确认真实 SpConv/CUDA 数值与端到端收益后用于正式断点续训；此前 L20 提速不计作本轮成果。
 
 - [ ] [公开比较协议待定](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)：保留论文值，后续确定半径适配、公开权重与test选模披露后再开展完整场景AP比较。
 - [ ] 按[可运行入口](docs/instance_routes/IMPLEMENTATION.md)在完整真实资产上构建缓存并执行100场景预训练、目标微调；补A真实SpConv GPU验收和两路线GPU时延、B部署导出。

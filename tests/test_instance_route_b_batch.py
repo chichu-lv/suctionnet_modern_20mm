@@ -73,13 +73,16 @@ def _loss(outputs):
                         for part in outputs]).mean()
 
 
-def test_batched_gradient_matches_instance_normalized_serial_training():
+@pytest.mark.parametrize("dense_chunk", [3, 8])
+def test_batched_gradient_matches_instance_normalized_serial_training(dense_chunk):
     torch.manual_seed(52)
     serial = InstanceSuction2DFastV3(query_chunk=2).train()
-    batched = deepcopy(serial).configure_execution(dense_query_chunk=8)
+    batched = deepcopy(serial).configure_execution(dense_query_chunk=dense_chunk)
     serial.set_training_context(13)
     batched.set_training_context(13)
-    rows = observations()[:2]
+    # Unequal query counts, two exact-size texture buckets, and a short final
+    # dense chunk must preserve all parameter gradients through batch splitting.
+    rows = observations()
     _loss([serial(row) for row in rows]).backward()
     _loss(batched.forward_instances(rows)).backward()
     for (name, a), (other, b) in zip(serial.named_parameters(), batched.named_parameters()):
@@ -252,9 +255,14 @@ def test_compact_source_ticket_roundtrips_geometry_scores_and_gradients(mask_kin
     small = compact["observation"]
     ref = model._prepare_encoded(prepared)
     restored = model._prepare_encoded(small)
-    assert set(restored) == set(ref)
+    assert set(restored) == set(ref) | {"geometry_image_hw", "geometry_top_left", "bilinear_valid_map"}
+    height, width = ref["mask"].shape
+    yy, xx = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
     for key, value in ref.items():
-        if isinstance(value, torch.Tensor):
+        if key in route_b._GEOMETRY_MAPS:
+            logical = route_b._geometry_at_pixels(restored, key, yy, xx)
+            torch.testing.assert_close(logical, value, rtol=0, atol=0)
+        elif isinstance(value, torch.Tensor):
             torch.testing.assert_close(restored[key], value, rtol=0, atol=0)
         elif key != "observation":
             assert restored[key] == value
