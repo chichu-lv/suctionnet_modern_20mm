@@ -103,7 +103,9 @@ class SpconvResUNet14(nn.Module):
             return self.projection(inputs['voxel_features'].new_empty((0, 512)))
         import spconv.pytorch as spconv
         # Four stride-2 stages require at least 16 cells along each axis.
-        shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
+        shape = inputs.get('spatial_shape')
+        if shape is None:
+            shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
         device_type = inputs['voxel_features'].device.type
         autocast_enabled = torch.is_autocast_enabled(device_type)
         bf16_dense = (autocast_enabled and

@@ -287,3 +287,15 @@ def test_real_wrapper_supports_12_channels_without_changing_legacy_default(monke
     with pytest.raises(ValueError, match='requires backbone_root'):
         InstanceSuction3D()
 
+
+def test_active_voxel_survives_all_four_unpadded_strides():
+    class Capture(InjectedBackbone):
+        def forward(self, inputs):
+            xyz = inputs['voxel_coords'][:, 1:].cpu()
+            shape = torch.tensor(inputs['spatial_shape'])
+            assert torch.any((xyz.amax(0) + 1) % 16 != 0)
+            for stride in (2, 4, 8, 16):
+                assert torch.all(xyz // stride < shape // stride)
+            return super().forward(inputs)
+
+    InstanceSuction3D(backbone=Capture()).encode_instance(observation())

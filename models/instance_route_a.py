@@ -241,7 +241,12 @@ class InstanceSuction3D(nn.Module):
             inputs = np.concatenate(((points[selected] - centroid) / .1,
                                      normalized_rgb[selected], normals[selected],
                                      np.broadcast_to(gravity, (len(selected), 3))), axis=1)
-            sparse_inputs = {'voxel_coords': self._tensor(np.ascontiguousarray(coords), dtype=torch.int32),
+            # Pad the empty high end to complete all four stride-2 blocks.
+            # With a tight odd extent, spconv drops the trailing cells and an
+            # occluded instance can lose its entire active set at the bottleneck.
+            spatial_shape = ((coords[:, 1:].max(0).astype(np.int64) // 16 + 1) * 16).tolist()
+            sparse_inputs = {'spatial_shape': spatial_shape,
+                             'voxel_coords': self._tensor(np.ascontiguousarray(coords), dtype=torch.int32),
                              'voxel_features': self._tensor(inputs), 'g_cam': self._tensor(gravity[None])}
             features = self.backbone(sparse_inputs)
             if features.shape != (len(selected), 256):
