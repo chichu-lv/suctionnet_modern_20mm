@@ -1,5 +1,7 @@
 # 单物体吸取路线 A/B 工程规范（v3）
 
+> **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（各在对应分支），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
+
 本规范定义单物体 RGB-D 吸取的两条实现路线：A复用稀疏3D骨干与物理接触分组；B采用共享2D图像编码、逐查询语义特征及投影环带读取。两者对明确的接触中心和有向轴预测Seal、Wrench、保留目标自碰的实例质量及历史规划动作成败。
 
 **A/B的实例数据、teacher、网络、预训练/微调、checkpoint恢复和native推理/评价已实现。** 直接100场景训练，默认每个test场景固定8帧选best，标记 `test_selected`、`fixed_test_subset`；训练后单独评价完整test，不重新选模。公开仅半径评价待定。运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。当前完成CPU和合成资产链路验证，尚无新模型完整真实数据精度、GPU时延或TensorRT结果。
@@ -96,3 +98,4 @@ v3进一步处理：水平吸取时的显式局部角向信息不足；理想环
 5. 报告native INST、历史动作分类、候选覆盖及端到端成本；[公开仅半径协议待定](PUBLIC_METHOD_COMPARISON.md)，不把native结果填成论文AP。
 
 v3设计参考共129项数学/schema检查保留；新代码测试和B实际CNN合成资产链路见[验证说明](../MODEL_VALIDATION.md)。完整真实数据重算/训练和GPU性能仍待执行。
+

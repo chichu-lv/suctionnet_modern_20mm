@@ -25,6 +25,8 @@ from torch.nn import functional as F
 import yaml
 
 from .metrics import attempt_metrics
+from .instance_execution import (EXECUTION_SCHEMA, configure_model_execution, execution_math_mode, resolve_execution,
+    sample_evaluation_steps, source_instance_budget, source_update_size)
 
 CHECKPOINT_SCHEMA = 'instance_training_checkpoint_v1'
 QUALITY_CONTRACT = 'gt_INST20_pose_v2'
@@ -55,7 +57,8 @@ def evaluation_mode(model):
     previous_states = [(module, module.training) for module in model.modules()]
     try:
         model.eval()
-        yield
+        with execution_math_mode(getattr(model, '_instance_execution', None), training=False):
+            yield
     finally:
         # train(flag) recurses and would overwrite descendants with mixed modes.
         for module, flag in previous_states:
@@ -78,6 +81,8 @@ def _positive_update(value, name):
 def scheduled_evaluation_steps(stage_config):
     """Resolve one unambiguous schedule; the original budget endpoint is mandatory."""
     total = _positive_update(stage_config['steps'], 'steps')
+    if stage_config.get('evaluate_every_instances') is not None:
+        return sample_evaluation_steps(stage_config)
     explicit = stage_config.get('evaluation_steps')
     every = stage_config.get('evaluate_every')
     if explicit is not None:
@@ -137,6 +142,9 @@ def load_instance_config(path):
         raise ValueError('Invalid query or effective batch budget')
     if int(config['finetune']['head_only_steps']) < 0:
         raise ValueError('head_only_steps must be nonnegative')
+    execution = resolve_execution(config)
+    if execution is not None:
+        config['execution'] = execution
     return config
 
 
@@ -155,7 +163,9 @@ def create_instance_model(config, device='cpu'):
         model = InstanceSuction2DFastV3(**options)
     else:
         raise ValueError(f'Unknown route: {route}')
-    return model.to(device)
+    model = model.to(device)
+    configure_model_execution(model, resolve_execution(config))
+    return model
 
 
 def seed_all(seed):
@@ -307,6 +317,52 @@ def source_loss(prediction, labels):
             + .25 * F.smooth_l1_loss(values[2], truth[2], beta=.05))
 
 
+def batched_source_losses(predictions, labels):
+    """FP32 loss per supported instance, with one packed query reduction.
+
+    Each instance has equal weight regardless of its number of valid queries.
+    Unknown targets are selected out before arithmetic, never multiplied by 0.
+    """
+    if len(predictions) != len(labels):
+        raise ValueError('Model output count differs from the requested instance batch')
+    if not predictions:
+        raise ValueError('Batched source loss requires at least one instance')
+    device = predictions[0]['q_inst'].device
+    values, targets, masks, memberships = [], [], [], []
+    for index, (prediction, truth) in enumerate(zip(predictions, labels)):
+        q = prediction['q_inst'].reshape(-1)
+        mask = torch.as_tensor(_array(truth, 'label_valid', 'valid'), device=device, dtype=torch.bool)
+        if mask.shape != q.shape:
+            raise ValueError('Prediction/query/label prefix length mismatch')
+        pv = prediction.get('valid', prediction.get('query_valid'))
+        if pv is not None:
+            mask = mask & pv.reshape(-1).bool()
+        ell = prediction.get('ell', prediction.get('log_scale'))
+        if ell is None:
+            raise ValueError('Laplace ell=log(scale), not log-variance, is required')
+        values.append(torch.stack((q.float(), prediction['seal'].reshape(-1).float(),
+                                    prediction['wrench'].reshape(-1).float(), ell.reshape(-1).float()), -1))
+        targets.append(torch.as_tensor(np.stack([_array(truth, key, alias) for key, alias in
+                        [('q_inst', 'Q_inst'), ('seal', 'S'), ('wrench', 'W')]], -1),
+                        device=device, dtype=torch.float32))
+        masks.append(mask)
+        memberships.append(torch.full((len(q),), index, device=device, dtype=torch.long))
+    valid = torch.cat(masks)
+    value, truth = torch.cat(values)[valid], torch.cat(targets)[valid]
+    member = torch.cat(memberships)[valid]
+    if not bool((torch.isfinite(truth) & (truth >= 0) & (truth <= 1)).all()):
+        raise ValueError('Known physical labels must be finite probabilities')
+    if not bool(torch.isfinite(value).all()):
+        raise FloatingPointError('Nonfinite model output on supported queries')
+    ell = value[:, 3].clamp(-6., 1.)
+    per_query = (torch.exp(-ell) * (value[:, 0] - truth[:, 0]).abs() + ell
+        + .5 * F.smooth_l1_loss(value[:, 1], truth[:, 1], beta=.05, reduction='none')
+        + .25 * F.smooth_l1_loss(value[:, 2], truth[:, 2], beta=.05, reduction='none'))
+    sums = per_query.new_zeros(len(predictions)).scatter_add(0, member, per_query)
+    counts = per_query.new_zeros(len(predictions)).scatter_add(0, member, torch.ones_like(per_query))
+    return (sums / counts.clamp_min(1))[counts > 0]
+
+
 def attempt_loss(model, item):
     obs, attempts = item['observation'], item['attempts']
     p = _array(attempts, 'point_cam_m', 'points')
@@ -389,7 +445,23 @@ def _ordered_map(fn, tickets, workers):
             del result
 
 
-def _evaluation_items(dataset, prepare_geometry=None):
+def _geometry_options(model):
+    options = {'min_support_points': minimum_support_points(model)}
+    if hasattr(model, 'backbone_points'):
+        options.update(backbone_points=model.backbone_points, query_chunk_size=model.query_chunk_size)
+    return options
+
+
+def _evaluation_items(dataset, prepare_geometry=None, *, model=None, execution=None):
+    if execution is not None:
+        from .instance_loading import InstancePreparationPool
+        route = ('a' if hasattr(model, 'backbone_points') else
+                 'b' if hasattr(model, 'feature_frame') else None)
+        with InstancePreparationPool(dataset, workers=execution['evaluation_workers'],
+                prefetch=execution['prefetch_factor'], route=route,
+                geometry_options=_geometry_options(model) if model is not None else None) as pool:
+            yield from pool.map((index, None) for index in range(len(dataset)))
+        return
     workers = _workers('SUCTION20_INSTANCE_EVAL_WORKERS')
     if not workers:
         yield from dataset
@@ -403,12 +475,35 @@ def _evaluation_items(dataset, prepare_geometry=None):
     yield from _ordered_map(prepare, range(len(dataset)), workers)
 
 
+def _source_evaluation_predictions(model, dataset):
+    execution = getattr(model, '_instance_execution', None)
+    threshold = minimum_support_points(model)
+    iterator = _evaluation_items(dataset, getattr(model, 'prepare_source_geometry', None),
+                                 model=model, execution=execution)
+    size = execution['evaluation_microbatch_instances'] if execution is not None else 1
+    try:
+        while group := list(islice(iterator, size)):
+            eligible = [i for i, item in enumerate(group) if len(item['observation']['query_points'])
+                        and len(item['observation']['support_points']) >= threshold]
+            outputs = {}
+            if eligible:
+                observations = [group[i]['observation'] for i in eligible]
+                predictions = model.forward_instances(observations) if execution is not None else [model(observations[0])]
+                if len(predictions) != len(eligible):
+                    raise ValueError('Model output count differs from the requested evaluation batch')
+                outputs = dict(zip(eligible, predictions))
+            for index, item in enumerate(group):
+                yield item, outputs.get(index)
+    finally:
+        iterator.close()
+
+
 @torch.no_grad()
 def evaluate_instance_source(model, dataset, *, collect_records=True, record_sink=None):
     rows, overall, subsets = [], _InstanceMetrics(), {}
     threshold = minimum_support_points(model)
     with evaluation_mode(model):
-        for item in _evaluation_items(dataset, getattr(model, 'prepare_source_geometry', None)):
+        for item, pred in _source_evaluation_predictions(model, dataset):
             obs, labels, record = item['observation'], item['labels'], item['record']
             count = len(obs['query_points'])
             if labels is None:
@@ -418,8 +513,7 @@ def evaluate_instance_source(model, dataset, *, collect_records=True, record_sin
             if len(quality) != count or not valid_label.all() or not np.isfinite(quality).all():
                 raise ValueError('Incomplete teacher for selection/coverage; no unknown-to-zero fill')
             selected = None
-            if count and len(obs['support_points']) >= threshold:
-                pred = model(obs)
+            if pred is not None:
                 valid = _to_numpy(pred.get('valid', np.ones(count, bool))).astype(bool)
                 scores = _to_numpy(pred['q_inst']).reshape(-1)
                 if len(scores) != count or not np.isfinite(scores[valid]).all():
@@ -452,7 +546,7 @@ def evaluate_instance_attempts(model, dataset, *, collect_records=True, record_s
     scores, outcomes, rows = [], [], []
     total = 0
     with evaluation_mode(model):
-        for item in _evaluation_items(dataset):
+        for item in _evaluation_items(dataset, execution=getattr(model, '_instance_execution', None)):
             a = item['attempts']
             p, n = _array(a, 'point_cam_m', 'points'), _array(a, 'normal_out_cam', 'normal_out')
             pred = model.score_at_pose(model.encode_instance(item['observation']), p, n)
@@ -626,7 +720,7 @@ def _atomic_torch_save(path, value):
 
 
 class InstanceTrainer:
-    """FP32 single-instance accumulation with exact boundary checkpoint resume.
+    """Legacy accumulation or explicitly configured batched execution.
 
     A test-selected best is labeled as such in every checkpoint and report.
     Explicit last/budget-end weights are retained independently of that ranking.
@@ -638,6 +732,14 @@ class InstanceTrainer:
         if stage == 'finetune' and target_dataset is None:
             raise ValueError('Finetuning requires target training observations')
         self.model, self.config = model, clean_metadata(config)
+        self.execution = resolve_execution(self.config)
+        if self.execution is not None:
+            self.config['execution'] = deepcopy(self.execution)
+            configure_model_execution(model, self.execution)
+        self._preparation_pools = {}
+        self._preparation_streams = {}
+        self._pending_tickets = {'source': deque(), 'target': deque()}
+        self._data_wait_seconds = 0.
         architecture = getattr(model, 'architecture_metadata', None)
         b_architecture = architecture() if config['route'] == 'b' and callable(architecture) else None
         if b_architecture is not None:
@@ -674,6 +776,7 @@ class InstanceTrainer:
         self.source_schedule = InstanceSchedule(self.source.records, seed)
         self.target_schedule = InstanceSchedule(self.target.records, seed+1, hierarchy=False) if self.target else None
         self.augmentation_rng = np.random.default_rng(seed+2)
+        self.target_augmentation_rng = np.random.default_rng(seed+3) if self.execution is not None else None
         groups = model.parameter_groups()
         if set(groups) != {'encoder', 'decoder', 'contact', 'heads'}:
             raise ValueError('Model must expose encoder/decoder/contact/heads groups')
@@ -697,6 +800,8 @@ class InstanceTrainer:
         }
         if b_architecture is not None:
             self.identity['model_architecture'] = clean_metadata(b_architecture)
+        if self.execution is not None:
+            self.identity['execution'] = deepcopy(self.execution)
         self._apply_phase()
 
     @property
@@ -716,10 +821,30 @@ class InstanceTrainer:
                     selection_frames_per_scene=selection['frames_per_scene'],
                     selection_frame_ids=list(selection['frame_ids']),
                     selection_frame_sampler=selection['frame_sampler'])
+            if 'successful_instance_budget' in self.config['pretrain']:
+                result['successful_instance_budget'] = source_instance_budget(self.config['pretrain'])
+                result['effective_instances_per_update'] = self.config['pretrain']['accumulate_instances']
+                result['final_update_instances'] = (source_instance_budget(self.config['pretrain']) -
+                    (self.config['pretrain']['steps'] - 1) * self.config['pretrain']['accumulate_instances'])
+            if self.config['pretrain'].get('evaluate_every_instances') is not None:
+                result['evaluate_every_instances'] = self.config['pretrain']['evaluate_every_instances']
+                result['evaluation_instance_counts'] = [min(source_instance_budget(self.config['pretrain']),
+                    step * self.config['pretrain']['accumulate_instances']) for step in result['evaluation_steps']]
+        if self.execution is not None:
+            result['execution'] = deepcopy(self.execution)
+            result['evaluation_precision'] = 'fp32_tf32_disabled'
         return result
 
     def _learning_rate(self):
         cfg = self.config['pretrain']
+        if 'warmup_instances' in cfg:
+            next_count = self.supervised_source_instances + source_update_size(cfg, self.supervised_source_instances)
+            warmup = int(cfg['warmup_instances'])
+            peak, final = float(cfg['peak_lr']), float(cfg['final_lr'])
+            if warmup and next_count <= warmup:
+                return peak * next_count / warmup
+            fraction = min(1., max(0., (next_count - warmup) / max(1, source_instance_budget(cfg) - warmup)))
+            return final + .5 * (peak - final) * (1 + math.cos(math.pi * fraction))
         next_step = self.step + 1
         warmup = int(cfg['warmup_steps'])
         peak, final = float(cfg['peak_lr']), float(cfg['final_lr'])
@@ -762,6 +887,16 @@ class InstanceTrainer:
         return item
 
     def _draw_batch(self, dataset, schedule, count):
+        if self.execution is not None:
+            stream = self._prepared_stream(dataset, schedule)
+            key = 'source' if dataset is self.source else 'target'
+            for _ in range(count):
+                started = time.perf_counter()
+                item = next(stream)
+                self._data_wait_seconds += time.perf_counter() - started
+                self._pending_tickets[key].popleft()
+                yield item
+            return
         workers = _workers('SUCTION20_INSTANCE_TRAIN_WORKERS')
         if not workers:
             for _ in range(count):
@@ -782,6 +917,39 @@ class InstanceTrainer:
                    for _ in range(count))
         yield from _ordered_map(prepare, tickets, min(workers, count))
 
+    def _prepared_stream(self, dataset, schedule):
+        from .instance_loading import InstancePreparationPool
+        key = 'source' if dataset is self.source else 'target'
+        if key in self._preparation_streams:
+            return self._preparation_streams[key]
+        pending = self._pending_tickets[key]
+        saved_pending = list(pending)
+        rng = self.augmentation_rng if key == 'source' else self.target_augmentation_rng
+        def tickets():
+            # The saved sampler already issued these tickets before the last
+            # checkpoint. Replay them without sampling or drawing augmentation.
+            yield from saved_pending
+            while True:
+                rgb = _draw_rgb(rng) if self.config.get('rgb_augmentation', True) else None
+                ticket = (schedule.next(), rgb)
+                pending.append(ticket)
+                yield ticket
+        pool = InstancePreparationPool(dataset, workers=self.execution['train_workers'],
+            prefetch=self.execution['prefetch_factor'],
+            route=self.config['route'], geometry_options=_geometry_options(self.model))
+        self._preparation_pools[key] = pool
+        self._preparation_streams[key] = pool.map(tickets())
+        return self._preparation_streams[key]
+
+    def close(self):
+        """Release workers while keeping pending ticket definitions resumable."""
+        for pool in self._preparation_pools.values():
+            pool.close()
+        for stream in self._preparation_streams.values():
+            stream.close()
+        self._preparation_pools.clear()
+        self._preparation_streams.clear()
+
     def _microbatch_source(self, count, weight, microbatch):
         completed = draws = 0
         limit = max(100, count * int(self.config.get('max_draw_multiplier', 20)))
@@ -796,17 +964,22 @@ class InstanceTrainer:
                 losses = []
                 if supported:
                     outputs = self.model.forward_instances([item['observation'] for item in supported])
-                    for output, item in zip(outputs, supported):
-                        loss = source_loss(output, item['labels'])
-                        if loss is not None:
-                            losses.append(loss)
-                    del outputs, output
+                    if len(outputs) != len(supported):
+                        raise ValueError('Model output count differs from the requested instance batch')
+                    if self.execution is not None:
+                        losses = list(batched_source_losses(outputs, [item['labels'] for item in supported]).unbind())
+                    else:
+                        for output, item in zip(outputs, supported):
+                            loss = source_loss(output, item['labels'])
+                            if loss is not None:
+                                losses.append(loss)
+                    del outputs
                 self.skipped_no_supervision += len(group) - len(losses)
                 if losses:
                     # One instance-normalized loss per supervised observation.
                     (torch.stack(losses).sum() * weight).backward()
                     completed += len(losses)
-                    yield from [float(loss.detach()) for loss in losses]
+                    yield from torch.stack(losses).detach().float().cpu().tolist()
         if completed < count:
             raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
 
@@ -814,8 +987,8 @@ class InstanceTrainer:
         completed = draws = 0
         limit = max(100, count * int(self.config.get('max_draw_multiplier', 20)))
         while draws < limit and completed < count:
-            # Draw at most the remaining successful budget. All queued tickets are
-            # consumed before checkpointing, including draws later found invalid.
+            # Consume this update's draws in order. Explicit execution may keep
+            # lookahead tickets, saved separately at each successful checkpoint.
             for item in self._draw_batch(dataset, schedule, min(count - completed, limit - draws)):
                 draws += 1
                 obs = item['observation']
@@ -837,6 +1010,9 @@ class InstanceTrainer:
             raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
 
     def _source_update_items(self, count, weight):
+        if self.execution is not None:
+            size = min(count, self.execution['microbatch_instances'])
+            return self._microbatch_source(count, weight, size)
         size = int(os.environ.get('SUCTION20_INSTANCE_B_MICROBATCH', '1'))
         if size < 1:
             raise ValueError('SUCTION20_INSTANCE_B_MICROBATCH must be positive')
@@ -848,10 +1024,23 @@ class InstanceTrainer:
         return self._update_items(self.target, self.target_schedule, 2, .5, target=True)
 
     def train_one_update(self):
+        with execution_math_mode(self.execution, training=True):
+            return self._train_one_update()
+
+    def _train_one_update(self):
+        started = time.perf_counter()
+        self._data_wait_seconds = 0.
+        if self.stage == 'pretrain':
+            count = source_update_size(self.config['pretrain'], self.supervised_source_instances)
+            if count == 0:
+                raise ValueError('The declared source instance budget is already complete')
+        if self.execution is not None and self.execution['compile_mode'] == 'reduce-overhead':
+            mark = getattr(getattr(torch, 'compiler', None), 'cudagraph_mark_step_begin', None)
+            if callable(mark) and next(self.model.parameters()).device.type == 'cuda':
+                mark()
         self._apply_phase()
         self.optimizer.zero_grad(set_to_none=True)
         if self.stage == 'pretrain':
-            count = int(self.config['pretrain']['accumulate_instances'])
             losses = list(self._source_update_items(count, 1. / count))
             target_losses = []
         else:
@@ -859,26 +1048,40 @@ class InstanceTrainer:
             target_losses = list(self._target_update_items())
             losses = list(self._source_update_items(2, .25))
         gradients = [p for p in self.model.parameters() if p.grad is not None]
-        if not gradients or not all(bool(torch.isfinite(p.grad).all()) for p in gradients):
+        if not gradients:
             self.optimizer.zero_grad(set_to_none=True)
-            raise FloatingPointError('Nonfinite/absent gradients: no successful step or instance budget credited')
-        norm = nn.utils.clip_grad_norm_(gradients, float(self.config.get('max_grad_norm', 10.)), error_if_nonfinite=True)
+            raise FloatingPointError('Absent gradients: no successful step or instance budget credited')
+        try:
+            # The total norm performs the nonfinite check once instead of one
+            # host-device synchronization per parameter. This is the PRE-clip norm.
+            norm = nn.utils.clip_grad_norm_(gradients, float(self.config.get('max_grad_norm', 10.)),
+                                            error_if_nonfinite=True)
+        except RuntimeError as error:
+            self.optimizer.zero_grad(set_to_none=True)
+            raise FloatingPointError('Nonfinite gradients: no successful step or instance budget credited') from error
         self.optimizer.step()
         self.step += 1
         self.supervised_source_instances += count
         self.supervised_target_observations += 2 if self.stage == 'finetune' else 0
-        return {'step': self.step, 'source_loss': float(np.mean(losses)),
+        record = {'step': self.step, 'source_loss': float(np.mean(losses)),
                 'target_loss': float(np.mean(target_losses)) if target_losses else None,
                 'grad_norm': float(norm), 'supervised_source_instances': self.supervised_source_instances,
                 'supervised_target_observations': self.supervised_target_observations,
-                'source_draws': self.source_schedule.draws,
-                'target_draws': self.target_schedule.draws if self.target_schedule else 0,
+                'source_draws': self.source_schedule.draws - len(self._pending_tickets['source']),
+                'target_draws': (self.target_schedule.draws - len(self._pending_tickets['target'])) if self.target_schedule else 0,
                 'skipped_no_supervision': self.skipped_no_supervision,
                 'learning_rates': {g['name']: g['lr'] for g in self.optimizer.param_groups}}
+        if self.execution is not None:
+            record['effective_source_instances_this_update'] = count
+            record['source_draws_issued'] = self.source_schedule.draws
+            record['pending_source_tickets'] = len(self._pending_tickets['source'])
+            record['timing'] = {'update_wall_seconds': time.perf_counter() - started,
+                                'data_wait_seconds': self._data_wait_seconds}
+        return record
 
     def state_dict(self, *, kind='last'):
         names = {id(p): name for name, p in self.model.named_parameters()}
-        return {'schema': CHECKPOINT_SCHEMA, 'identity': self.identity, 'config': self.config,
+        state = {'schema': CHECKPOINT_SCHEMA, 'identity': self.identity, 'config': self.config,
                 'initialization': deepcopy(self.initialization),
                 'policy': self.policy, 'checkpoint_kind': kind,
                 'checkpoint_selection_role': self.policy['selection_role'] if kind == 'best' else 'budget_endpoint_or_progress',
@@ -891,6 +1094,16 @@ class InstanceTrainer:
                 'target_schedule': self.target_schedule.state_dict() if self.target_schedule else None,
                 'augmentation_rng': deepcopy(self.augmentation_rng.bit_generator.state), 'rng': rng_state(),
                 'parameter_groups': {key: [names[id(p)] for p in values] for key, values in self.groups.items()}}
+        if self.execution is not None:
+            # Samplers/RNGs include issued work. Save the small unconsumed
+            # ticket definitions as well, never prepared arrays or processes.
+            state['preparation_state'] = {
+                'schema': EXECUTION_SCHEMA,
+                'pending_source': deepcopy(list(self._pending_tickets['source'])),
+                'pending_target': deepcopy(list(self._pending_tickets['target'])),
+                'target_augmentation_rng': deepcopy(self.target_augmentation_rng.bit_generator.state),
+            }
+        return state
 
     def save(self, name='last.pt'):
         _atomic_torch_save(self.run_dir/name, self.state_dict(kind='best' if name == 'best.pt' else 'last'))
@@ -901,6 +1114,28 @@ class InstanceTrainer:
             raise ValueError('Resume checkpoint schema mismatch')
         if clean_metadata(state.get('config')) != clean_metadata(self.config):
             raise ValueError('Resume configuration differs from the saved run')
+        preparation = state.get('preparation_state')
+        if self.execution is not None:
+            if not isinstance(preparation, dict) or preparation.get('schema') != EXECUTION_SCHEMA:
+                raise ValueError('Batched resume requires its saved preparation ticket state')
+            for key, dataset in (('source', self.source), ('target', self.target)):
+                tickets = preparation.get('pending_' + key)
+                if not isinstance(tickets, list):
+                    raise ValueError('Batched resume requires a pending ticket list')
+                if dataset is None and tickets:
+                    raise ValueError('Pending target tickets without a target dataset')
+                for ticket in tickets:
+                    if (not isinstance(ticket, (list, tuple)) or len(ticket) != 2
+                            or isinstance(ticket[0], bool) or not isinstance(ticket[0], (int, np.integer))
+                            or not 0 <= ticket[0] < len(dataset)):
+                        raise ValueError('Resume pending dataset index is invalid')
+            if self.stage == 'pretrain':
+                step = state.get('global_step')
+                pre = self.config['pretrain']
+                if (isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= pre['steps']
+                        or state.get('supervised_source_instances') != min(
+                            step * pre['accumulate_instances'], source_instance_budget(pre))):
+                    raise ValueError('Resume successful source budget is inconsistent with its step')
         validate_source_selection_checkpoint(state)
         old_identity = state.get('identity', {})
         if 'model_architecture' in self.identity:
@@ -921,6 +1156,8 @@ class InstanceTrainer:
                     'torch_version', 'numpy_version', 'device_type'):
             if old_identity.get(key) != self.identity.get(key):
                 raise ValueError(f'Resume run identity mismatch: {key}')
+        if self.execution is not None and old_identity.get('execution') != self.execution:
+            raise ValueError('Resume execution profile differs from the saved run')
         if old_identity.get('runtime_contract') == RUNTIME_CONTRACT:
             for key in ('source', 'selection', 'target'):
                 if clean_metadata(old_identity.get(key)) != self.identity.get(key):
@@ -930,6 +1167,7 @@ class InstanceTrainer:
                 if key not in old_identity:
                     raise ValueError(f'Resume dataset definition missing: {key}')
                 _check_available_definition(clean_metadata(old_identity[key]), self.identity[key], key)
+        self.close()
         self.model.load_state_dict(state['model'], strict=True)
         self.optimizer.load_state_dict(state['optimizer'])
         self.step = int(state['global_step'])
@@ -942,6 +1180,10 @@ class InstanceTrainer:
         if self.target_schedule:
             self.target_schedule.load_state_dict(state['target_schedule'])
         self.augmentation_rng.bit_generator.state = state['augmentation_rng']
+        if self.execution is not None:
+            self._pending_tickets = {key: deque(deepcopy(preparation['pending_' + key]))
+                                     for key in ('source', 'target')}
+            self.target_augmentation_rng.bit_generator.state = preparation['target_augmentation_rng']
         restore_rng(state['rng'])
         self._apply_phase()
 
@@ -1041,6 +1283,12 @@ class InstanceTrainer:
             temporary.unlink(missing_ok=True)
 
     def run(self, *, stop_after=None):
+        try:
+            return self._run(stop_after=stop_after)
+        finally:
+            self.close()
+
+    def _run(self, *, stop_after=None):
         cfg = self.config[self.stage]
         evaluation_steps = frozenset(scheduled_evaluation_steps(cfg))
         save_every = checkpoint_interval(cfg)

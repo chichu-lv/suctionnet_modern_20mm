@@ -1,5 +1,7 @@
 # 训练评价与复现执行说明
 
+> **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（各在对应分支），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
+
 本页固定 v3 设计配方（物理质量仍为v2）、数据顺序、损失归约、选模、输出和实现验收。A/B设计见[总览](README.md)，坐标和标签见[数据合同](DATA_AND_LABELS.md)。初始配方只保留一套默认，避免把未实施的超参数搜索写成必要实验矩阵。
 
 **当前执行政策：官方100个训练场景直接预训练，90个source test场景各固定8帧选 `best.pt`，标记 `test_selected`、`fixed_test_subset`；同时保留 `last.pt`。** 默认每875步评价一次，训练后单独对固定best运行完整test报告，不重新选模。取消新路线的90/10开发→refit流程。test参与选择后的同集成绩不作为独立测试估计。目标域1676/399/87划分不变。[公开仅半径评价](PUBLIC_METHOD_COMPARISON.md)设为待定，既不实现也不作为训练前置。实际运行命令见[IMPLEMENTATION.md](IMPLEMENTATION.md)。
@@ -316,3 +318,4 @@ B当前新运行使用 `feature_frame=two_fixed_z_charts_rodrigues_z05_v1`，并
 本次增加了实际模型、teacher、损失/冻结、暂停恢复、推理/评价测试；B用合成官方RGB-D/MAT/pose及完整对象资产执行真实CNN更新、完整256-query选择、保存/恢复和CLI预测。A的CPU模型测试使用显式注入backbone，真实SpConv/CUDA未在本环境执行。当前没有真实数据完整训练、GPU时延或机器人成功率结果。精确测试范围及CI记录见[验证说明](../MODEL_VALIDATION.md)。旧129项NumPy参考仍是独立数学/schema证据，不累加为新模型准确率。
 
 完整数据执行需另记录法向有效率、候选覆盖、B径向/角槽拒绝与缺测比例、A主干关联距离和真实teacher构建耗时。未知teacher标签不能变成0；窄物体法向失效不能暗中退回旧算法；从FP32升至float64不能恢复原始精度。数据和权重保存在外部数据/运行目录，仓库只提交代码、配置、测试和可复核汇总。
+

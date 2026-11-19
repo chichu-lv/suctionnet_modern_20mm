@@ -1,0 +1,49 @@
+# Opt-in, from-scratch profile. Existing runs retain instance_a.yaml.
+schema: instance_runtime_v1
+route: a
+quality_contract: gt_INST20_pose_v2
+seed: 42
+rgb_augmentation: true
+max_grad_norm: 10.0
+max_draw_multiplier: 20
+model:
+  backbone_root: null
+  backbone_points: 2048
+  min_support_points: 100
+  query_chunk_size: 128
+  singleton_bn_policy: running_stats
+execution:
+  schema: instance_batched_execution_v1
+  microbatch_instances: 32
+  precision: bf16_dense
+  dense_query_chunk: 4096
+  train_workers: 24
+  evaluation_workers: 8
+  prefetch_factor: 2
+  evaluation_microbatch_instances: 32
+  compile_mode: null
+  allow_tf32: true
+  main_threads: 1
+pretrain:
+  train_scene_range: [0, 99]
+  selection_split: test
+  selection_frames_per_scene: 8
+  successful_instance_budget: 140000
+  steps: 4375
+  accumulate_instances: 32
+  queries: 128
+  peak_lr: 0.00042
+  final_lr: 0.000015
+  warmup_instances: 7008
+  evaluate_every_instances: 14000
+  evaluation_records: best_and_final
+  checkpoint_every: 438
+finetune:
+  steps: 1000
+  head_only_steps: 200
+  evaluate_every: 100
+  evaluation_records: best_and_final
+  checkpoint_every: 100
+public_evaluation:
+  status: deferred
+  radius_only_protocol: null

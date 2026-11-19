@@ -37,6 +37,12 @@ def main(argv=None):
     parser.add_argument('--backbone-root', type=Path, help='Pinned external SpConv backbone directory; route A only')
     parser.add_argument('--query-chunk-size', type=int,
                         help='Override query batching only: A query_chunk_size / B query_chunk')
+    parser.add_argument('--microbatch-instances', type=int,
+                        help='Batch source inference across instances (FP32); target actions remain per observation')
+    parser.add_argument('--preparation-workers', type=int,
+                        help='Lightweight spawn workers for evaluation; zero is synchronous')
+    parser.add_argument('--prefetch-factor', type=int, default=2,
+                        help='Prepared observations in flight per spawn worker')
     parser.add_argument('--split', choices=['train', 'val', 'test'], default='test',
                         help='Source: train/test with full query labels; target: train/val/test')
     parser.add_argument('--allow-partial-manifests', action='store_true',
@@ -48,12 +54,29 @@ def main(argv=None):
         parser.error('--allow-partial-manifests describes source scene coverage only')
     if args.query_chunk_size is not None and args.query_chunk_size < 1:
         parser.error('--query-chunk-size must be positive')
+    if args.microbatch_instances is not None and args.microbatch_instances < 1:
+        parser.error('--microbatch-instances must be positive')
+    if args.preparation_workers is not None and args.preparation_workers < 0:
+        parser.error('--preparation-workers must be nonnegative')
+    if args.prefetch_factor < 1:
+        parser.error('--prefetch-factor must be positive')
 
     runtime_options = {'backbone_root': args.backbone_root}
     if args.query_chunk_size is not None:
         runtime_options['query_chunk_size'] = args.query_chunk_size
     model, metadata = load_instance_checkpoint(args.checkpoint, device=args.device,
                                               **runtime_options)
+    if args.microbatch_instances is not None or args.preparation_workers is not None:
+        from suction20.instance_execution import DEFAULT_EXECUTION
+        execution = deepcopy(getattr(model, '_instance_execution', DEFAULT_EXECUTION))
+        execution.update(precision='fp32', compile_mode=None, allow_tf32=False,
+            evaluation_microbatch_instances=args.microbatch_instances or 1,
+            evaluation_workers=args.preparation_workers or 0,
+            prefetch_factor=args.prefetch_factor)
+        if not callable(getattr(model, 'forward_instances', None)):
+            raise ValueError('Explicit evaluation batching requires model.forward_instances')
+        model._instance_execution = execution
+        metadata['runtime_evaluation_execution'] = deepcopy(execution)
     if args.backbone_root is not None and metadata['route'] != 'a':
         raise ValueError('--backbone-root is only valid for route A')
     if args.domain == 'source':

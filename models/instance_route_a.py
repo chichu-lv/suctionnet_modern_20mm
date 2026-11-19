@@ -248,16 +248,41 @@ def prepare_source_geometry(observation, *, backbone_points=2048, min_support_po
     for start in range(0, len(points), query_chunk_size):
         part = slice(start, start + query_chunk_size)
         chunks[start] = _query_geometry(geometry, points[part], normalized[part], pose_valid[part])
+    # Preserve object references through a spawn-worker pickle. This checks
+    # that the transient geometry is still attached to its own raw observation,
+    # without reading file bytes or computing content digests. In-place mutation
+    # of an observation while it is queued remains outside the input contract.
+    names = ('support_points', 'support_rgb', 'support_normals', 'support_normal_valid',
+             'support_rgb_valid', 'support_components', 'support_source_ids', 'support_uv',
+             'centroid', 'gravity')
+    references = {name: observation[name] for name in names if name in observation}
     cache = dict(geometry=geometry, settings=(backbone_points, min_support_points, query_chunk_size),
-                 points=points, normals=normals, chunks=chunks)
+                 points=points, normals=normals, chunks=chunks, source_references=references)
     return dict(observation, _route_a_geometry=cache)
+
+
+# Explicit worker-facing name; both spellings are pure CPU functions and do
+# not construct a model or initialize CUDA.
+prepare_source_geometry_cpu = prepare_source_geometry
+
+
+def _slice_query_geometry(geometry, selected):
+    """Slice a prepared query block without rebuilding any neighborhood."""
+    if geometry is None:
+        return None
+    points, normals, anchors, distance, valid, association, contact = geometry
+    association = {name: value[selected] for name, value in association.items()}
+    return (points[selected], normals[selected], anchors[selected], distance[selected], valid[selected],
+            association, tuple(value[selected] for value in contact))
 
 
 class InstanceSuction3D(nn.Module):
     """A's 531D query fusion and separate 200D Seal head.
 
-    ``observation`` contains one instance, not a padded batch of objects.
-    Microbatch-one gradient accumulation is handled by the training loop.
+    ``forward`` consumes one instance; ``forward_instances`` packs independent
+    objects into one sparse backbone call and batches their dense queries.
+    Training BatchNorm moments then span active voxels from multiple objects;
+    this is an explicit new-run behavior, not equivalent to old accumulation.
     ``backbone_points`` changes are explicit and belong in checkpoint identity.
     """
     route = 'a'
@@ -288,6 +313,10 @@ class InstanceSuction3D(nn.Module):
         self.backbone_points = backbone_points
         self.min_support_points = min_support_points
         self.query_chunk_size = query_chunk_size
+        self.execution_precision = 'fp32'
+        self.execution_compile_mode = None
+        self.dense_query_chunk = None
+        self._compiled_dense = {}
         self.global_projection = _mlp((512, 128, 64))
         self.local_projection = _mlp((256, 64))
         self.local_point_mlp = _mlp((75, 64, 64))
@@ -312,6 +341,43 @@ class InstanceSuction3D(nn.Module):
     def _tensor(self, value, *, dtype=None):
         return torch.as_tensor(value, device=self.device, dtype=dtype or self.dtype)
 
+    def configure_execution(self, *, precision='fp32', compile_mode=None, dense_query_chunk=None):
+        """Configure dense execution without changing parameter/state-dict keys.
+
+        Geometry stays CPU float64, and the sparse backbone runs in float32
+        even when dense MLPs use BF16. Compile is opt-in and excludes sparse
+        operators and CPU geometry. Benchmark actual hardware before enabling
+        it; CUDA graph speedups are not guaranteed for dynamic query shapes.
+        """
+        if precision not in {'fp32', 'bf16_dense'}:
+            raise ValueError('Route-A precision must be fp32 or bf16_dense')
+        if compile_mode not in {None, 'default', 'reduce-overhead', 'max-autotune',
+                                'max-autotune-no-cudagraphs'}:
+            raise ValueError('Unsupported dense compile_mode')
+        if (dense_query_chunk is not None and
+                (isinstance(dense_query_chunk, bool) or not isinstance(dense_query_chunk, int)
+                 or dense_query_chunk < 1)):
+            raise ValueError('dense_query_chunk must be a positive integer or None')
+        self.execution_precision = precision
+        self.dense_query_chunk = dense_query_chunk
+        if compile_mode != self.execution_compile_mode:
+            self._compiled_dense = {}
+            if compile_mode is not None:
+                for name in ('global_projection', 'local_projection', 'local_point_mlp',
+                             'zone_projection', 'query_fusion', 'q_head', 'seal_head',
+                             'wrench_head', 'scale_head', 'task_head'):
+                    self._compiled_dense[name] = torch.compile(getattr(self, name), mode=compile_mode,
+                                                               dynamic=True)
+            self.execution_compile_mode = compile_mode
+        return self
+
+    def _dense_autocast(self):
+        return torch.autocast(device_type=self.device.type, dtype=torch.bfloat16,
+                              enabled=self.execution_precision == 'bf16_dense' and self.training)
+
+    def _dense(self, name, value):
+        return self._compiled_dense.get(name, getattr(self, name))(value)
+
     def architecture_metadata(self):
         return {'architecture_id': self.architecture_id, 'route': self.route,
                 'quality_contract': self.quality_contract, 'input_channels': 12,
@@ -328,74 +394,110 @@ class InstanceSuction3D(nn.Module):
                                        query_chunk_size=self.query_chunk_size)
 
     def encode_instance(self, observation):
+        return self.encode_instances([observation])[0]
+
+    def _instance_geometry(self, observation):
         prepared = observation.get('_route_a_geometry')
         if prepared is None:
             geometry = _instance_geometry(observation, self.backbone_points, self.min_support_points)
         else:
             if prepared['settings'] != (self.backbone_points, self.min_support_points, self.query_chunk_size):
                 raise ValueError('Prepared route-A geometry has different model settings')
+            if any(observation.get(name) is not value
+                   for name, value in prepared.get('source_references', {}).items()):
+                raise ValueError('Prepared route-A geometry belongs to a different source observation')
             geometry = prepared['geometry']
-        points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
-            geometry[name] for name in ('points_np', 'rgb_np', 'normals_np', 'normal_valid_np',
-                                        'rgb_valid_np', 'source_ids_np', 'components_np'))
-        centroid, gravity = geometry['centroid_np'], geometry['gravity_np']
-        source_index, backbone_index = geometry['source_index'], geometry['backbone_index']
-        selected, keys = geometry['backbone_raw_indices'], geometry['backbone_voxel_keys']
-        sufficient = geometry['support_sufficient']
-        normalized_rgb = (rgb - np.array([.485, .456, .406])) / np.array([.229, .224, .225])
-        normalized_rgb[~rgb_valid] = 0.
-        if len(selected) and sufficient:
-            offset = keys.min(0)
+        return geometry, prepared
+
+    def encode_instances(self, observations):
+        """Encode a ragged microbatch in one sparse call, with disjoint batch IDs.
+
+        Each object retains its own centering, voxel offset, source IDs, CPU
+        neighbors and interpolation indices. Objects with inadequate support
+        contribute no active voxels but keep their original batch position.
+        """
+        observations = list(observations)
+        if not observations:
+            return []
+        entries, coord_parts, input_parts, lengths = [], [], [], []
+        for batch_id, observation in enumerate(observations):
+            geometry, prepared = self._instance_geometry(observation)
+            points, rgb, normals = (geometry[name] for name in ('points_np', 'rgb_np', 'normals_np'))
+            centroid, gravity = geometry['centroid_np'], geometry['gravity_np']
+            selected, keys = geometry['backbone_raw_indices'], geometry['backbone_voxel_keys']
+            normalized_rgb = (rgb - np.array([.485, .456, .406])) / np.array([.229, .224, .225])
+            normalized_rgb[~geometry['rgb_valid_np']] = 0.
+            offset = keys.min(0) if len(selected) else np.zeros(3, np.int64)
             nonnegative = keys - offset
-            if nonnegative.max() > np.iinfo(np.int32).max - 1:
+            if len(selected) and nonnegative.max() > np.iinfo(np.int32).max - 1:
                 raise ValueError('Instance extent overflows int32 voxel coordinates')
-            coords = np.column_stack((np.zeros(len(selected), np.int32), nonnegative[:, ::-1])).astype(np.int32)
+            coords = np.column_stack((np.full(len(selected), batch_id, np.int32),
+                                      nonnegative[:, ::-1])).astype(np.int32)
             inputs = np.concatenate(((points[selected] - centroid) / .1,
                                      normalized_rgb[selected], normals[selected],
                                      np.broadcast_to(gravity, (len(selected), 3))), axis=1)
-            # Pad the empty high end to complete all four stride-2 blocks.
-            # With a tight odd extent, spconv drops the trailing cells and an
-            # occluded instance can lose its entire active set at the bottleneck.
-            spatial_shape = ((coords[:, 1:].max(0).astype(np.int64) // 16 + 1) * 16).tolist()
-            sparse_inputs = {'spatial_shape': spatial_shape,
-                             'voxel_coords': self._tensor(np.ascontiguousarray(coords), dtype=torch.int32),
-                             'voxel_features': self._tensor(inputs), 'g_cam': self._tensor(gravity[None])}
-            features = self.backbone(sparse_inputs)
-            if features.shape != (len(selected), 256):
+            coord_parts.append(coords)
+            input_parts.append(inputs)
+            lengths.append(len(selected))
+            entries.append((observation, geometry, prepared, normalized_rgb, offset))
+        coords_np = np.ascontiguousarray(np.concatenate(coord_parts))
+        inputs_np = np.concatenate(input_parts)
+        # One common spatial bound is padded to complete all four strides.
+        # A batch column separates even perfectly overlapping object voxels.
+        spatial_shape = (((coords_np[:, 1:].max(0).astype(np.int64) // 16 + 1) * 16).tolist()
+                         if len(coords_np) else [16, 16, 16])
+        sparse_inputs = {'spatial_shape': spatial_shape,
+                         'voxel_coords': self._tensor(coords_np, dtype=torch.int32),
+                         'voxel_features': self._tensor(inputs_np, dtype=torch.float32),
+                         'g_cam': self._tensor(np.stack([item[1]['gravity_np'] for item in entries]),
+                                               dtype=torch.float32)}
+        if len(coords_np):
+            # The verified spconv 2.3.6 bridge does not support BF16 sparse
+            # tensors. Explicitly keep this entire backbone path in FP32.
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                features = self.backbone(sparse_inputs)
+            if features.shape != (len(coords_np), 256):
                 raise ValueError('Route-A backbone must preserve input row order and return [N,256]')
-            pooled = torch.cat((features.mean(0), features.max(0).values), dim=0)
-            context = self.global_projection(pooled)
+            features = features.float()
         else:
-            # Invalid small instances cannot exercise a one-active-voxel BN path.
-            selected = np.empty(0, np.int64)
-            keys = np.empty((0, 3), np.int64)
-            offset = np.zeros(3, np.int64)
-            sparse_inputs = {'voxel_coords': self._tensor(np.empty((0, 4), np.int32), dtype=torch.int32),
-                             'voxel_features': self._tensor(np.empty((0, 12))),
-                             'g_cam': self._tensor(gravity[None])}
-            features = self._tensor(np.empty((0, 256)))
-            context = self._tensor(np.zeros(64))
-        association = geometry['raw_association']
-        raw_features = _interpolate(features, association)
-        feature_valid = self._tensor(association['valid'], dtype=torch.bool)
-        projected = self.local_projection(raw_features)
-        projected = torch.where(feature_valid[:, None], projected, torch.zeros_like(projected))
-        return {'source_index': source_index, 'backbone_index': backbone_index, 'prepared': prepared,
-                'points_np': points, 'rgb': self._tensor(normalized_rgb),
-                'normals_np': normals, 'normal_valid_np': normal_valid,
-                'rgb_valid_np': rgb_valid, 'source_ids_np': source_ids,
-                'components_np': components, 'centroid_np': centroid, 'gravity_np': gravity,
-                'backbone_features': features, 'raw_projected_features': projected,
-                'raw_feature_valid_np': association['valid'], 'context': context,
-                'backbone_raw_indices': selected, 'backbone_source_ids': source_ids[selected],
-                'backbone_voxel_keys': keys, 'voxel_offset_xyz': offset,
-                'sparse_inputs': sparse_inputs, 'support_sufficient': sufficient,
+            features = self._tensor(np.empty((0, 256)), dtype=torch.float32)
+        feature_parts = list(features.split(lengths))
+        supported = [index for index, count in enumerate(lengths) if count]
+        contexts = [self._tensor(np.zeros(64)) for _ in entries]
+        with self._dense_autocast():
+            if supported:
+                pooled = torch.stack([torch.cat((feature_parts[i].mean(0), feature_parts[i].max(0).values))
+                                      for i in supported])
+                projected_context = self._dense('global_projection', pooled)
+                for row, index in enumerate(supported):
+                    contexts[index] = projected_context[row]
+            raw_features = [_interpolate(part, item[1]['raw_association'])
+                            for part, item in zip(feature_parts, entries)]
+            raw_lengths = [len(value) for value in raw_features]
+            projected = self._dense('local_projection', torch.cat(raw_features))
+        projected_parts = projected.split(raw_lengths)
+        encoded, offset = [], 0
+        for index, ((observation, geometry, prepared, normalized_rgb, voxel_offset),
+                    part, raw_projected) in enumerate(zip(entries, feature_parts, projected_parts)):
+            association = geometry['raw_association']
+            keep = self._tensor(association['valid'], dtype=torch.bool)
+            raw_projected = torch.where(keep[:, None], raw_projected, torch.zeros_like(raw_projected))
+            selected = geometry['backbone_raw_indices']
+            item_sparse = {'voxel_coords': sparse_inputs['voxel_coords'][offset:offset + len(part)],
+                           'voxel_features': sparse_inputs['voxel_features'][offset:offset + len(part)],
+                           'g_cam': sparse_inputs['g_cam'][index:index + 1], 'spatial_shape': spatial_shape}
+            offset += len(part)
+            encoded.append({**geometry, 'prepared': prepared, 'rgb': self._tensor(normalized_rgb),
+                'backbone_features': part, 'raw_projected_features': raw_projected,
+                'context': contexts[index], 'backbone_source_ids': geometry['source_ids_np'][selected],
+                'voxel_offset_xyz': voxel_offset, 'sparse_inputs': item_sparse,
                 'association_diagnostics': association_diagnostics(association),
                 'query_points': observation.get('query_points', np.empty((0, 3))),
                 'query_normals': observation.get('query_normals', np.empty((0, 3))),
-                'query_ids': observation.get('query_ids'), 'observation': observation}
+                'query_ids': observation.get('query_ids'), 'observation': observation})
+        return encoded
 
-    def _contact_batch(self, encoded, points, contact):
+    def _contact_inputs(self, encoded, points, contact):
         count, slots = len(points), sum(ZONE_SAMPLES)
         indices, masks, descriptor, raw_count, summary, angular_support = contact
         mask = self._tensor(masks, dtype=torch.bool)
@@ -408,7 +510,11 @@ class InstanceSuction3D(nn.Module):
             rgb = self._tensor(np.zeros((count, slots, 3)))
         point_input = torch.cat((local_features, rgb, self._tensor(descriptor)), dim=-1)
         point_input = torch.where(mask[..., None], point_input, torch.zeros_like(point_input))
-        local = self.local_point_mlp(point_input)
+        return point_input, mask, raw_count, summary, angular_support
+
+    def _contact_network(self, point_input, mask, raw_count):
+        # Keep masked reductions in FP32 even when the point MLP uses BF16.
+        local = self._dense('local_point_mlp', point_input).float()
         local = torch.where(mask[..., None], local, torch.zeros_like(local))
         zone_output = []
         offset = 0
@@ -420,47 +526,79 @@ class InstanceSuction3D(nn.Module):
             maximum = torch.where(nonempty[:, None], maximum, torch.zeros_like(maximum))
             stats = torch.cat((mean, maximum, self._tensor(np.log1p(raw_count[:, zone]))[:, None],
                                nonempty[:, None].to(mean.dtype)), dim=-1)
-            projected = self.zone_projection(stats)
+            projected = self._dense('zone_projection', stats)
             zone_output.append(torch.where(nonempty[:, None], projected, torch.zeros_like(projected)))
             offset += budget
-        return torch.cat(zone_output, -1), self._tensor(summary), raw_count, angular_support
+        return torch.cat(zone_output, -1)
+
+    def _contact_batch(self, encoded, points, contact):
+        point_input, mask, raw_count, summary, angular_support = self._contact_inputs(encoded, points, contact)
+        with self._dense_autocast():
+            zones = self._contact_network(point_input, mask, raw_count)
+        return zones, self._tensor(summary), raw_count, angular_support
 
     def _score_chunk(self, encoded, points, normals, pose_valid, geometry=None):
-        if geometry is None:
-            geometry = _query_geometry(encoded, points, normals, pose_valid)
-        safe_points, normals, anchors, anchor_distance, valid, association, contact = geometry
-        query_features = _interpolate(encoded['backbone_features'], association)
-        zones, lip, raw_counts, angular_support = self._contact_batch(encoded, safe_points, contact)
-        context = encoded['context'].expand(len(points), -1)
-        delta = self._tensor((safe_points - encoded['centroid_np']) / .1)
-        axis = self._tensor(normals)
-        gravity = self._tensor(encoded['gravity_np']).expand(len(points), -1)
-        dot_gravity = (axis * gravity).sum(-1, keepdim=True)
-        descriptor = torch.cat((delta, axis, gravity, dot_gravity), -1)
-        query_feature_valid = self._tensor(association['valid'], dtype=torch.bool)
-        fused = self.query_fusion(torch.cat((query_features, context, zones, lip, descriptor,
-                                             query_feature_valid[:, None].to(query_features.dtype)), -1))
-        q = self.q_head(fused).squeeze(-1).sigmoid()
-        seal = self.seal_head(torch.cat((zones, lip), -1)).squeeze(-1).sigmoid()
-        wrench = self.wrench_head(torch.cat((fused, context, delta, axis, gravity), -1)).squeeze(-1).sigmoid()
-        ell = self.scale_head(fused).squeeze(-1).clamp(-6., 1.)
-        task = self.task_head(torch.cat((fused, axis, dot_gravity), -1)).squeeze(-1)
-        keep = self._tensor(valid, dtype=torch.bool)
+        return self._score_chunks([(encoded, points, normals, pose_valid, geometry)])[0]
+
+    def _score_chunks(self, chunks):
+        """Batch dense query work while every CPU neighborhood stays local."""
+        lengths, values, reasons, anchors_out, anchor_distances = [], [], [], [], []
+        counts, summaries, angular_supports = [], [], []
+        for encoded, points, normals, pose_valid, geometry in chunks:
+            if geometry is None:
+                geometry = _query_geometry(encoded, points, normals, pose_valid)
+            safe_points, normals, anchors, anchor_distance, valid, association, contact = geometry
+            point_input, mask, raw_count, summary, angular_support = self._contact_inputs(encoded, safe_points, contact)
+            values.append(dict(point_input=point_input, mask=mask,
+                query_features=_interpolate(encoded['backbone_features'], association),
+                context=encoded['context'].expand(len(points), -1),
+                delta=self._tensor((safe_points - encoded['centroid_np']) / .1),
+                axis=self._tensor(normals), gravity=self._tensor(encoded['gravity_np']).expand(len(points), -1),
+                query_feature_valid=self._tensor(association['valid'], dtype=torch.bool),
+                valid=self._tensor(valid, dtype=torch.bool)))
+            lengths.append(len(points))
+            counts.append(raw_count)
+            summaries.append(summary)
+            angular_supports.append(angular_support)
+            anchors_out.append(np.where(valid, encoded['source_ids_np'][np.maximum(anchors, 0)], -1)
+                               if len(encoded['source_ids_np']) else np.full(len(points), -1))
+            anchor_distances.append(anchor_distance)
+            reasons.extend('ok' if ok else ('invalid_pose' if not good else
+                           'insufficient_support' if not encoded['support_sufficient'] else 'pose_geometry_invalid')
+                           for ok, good in zip(valid, pose_valid))
+        tensors = {name: torch.cat([value[name] for value in values], dim=0) for name in values[0]}
+        raw_counts = np.concatenate(counts)
+        lip = self._tensor(np.concatenate(summaries))
+        query_features, context, delta, axis, gravity, query_feature_valid, keep = (
+            tensors[name] for name in ('query_features', 'context', 'delta', 'axis', 'gravity',
+                                      'query_feature_valid', 'valid'))
+        with self._dense_autocast():
+            zones = self._contact_network(tensors['point_input'], tensors['mask'], raw_counts)
+            dot_gravity = (axis * gravity).sum(-1, keepdim=True)
+            descriptor = torch.cat((delta, axis, gravity, dot_gravity), -1)
+            fused = self._dense('query_fusion', torch.cat((query_features, context, zones, lip, descriptor,
+                                               query_feature_valid[:, None].to(query_features.dtype)), -1))
+            # Cast learned logits/scales before nonlinear outputs and losses;
+            # BF16 remains confined to dense matrix multiplications.
+            q = self._dense('q_head', fused).squeeze(-1).float().sigmoid()
+            seal = self._dense('seal_head', torch.cat((zones, lip), -1)).squeeze(-1).float().sigmoid()
+            wrench = self._dense('wrench_head', torch.cat((fused, context, delta, axis, gravity), -1)).squeeze(-1).float().sigmoid()
+            ell = self._dense('scale_head', fused).squeeze(-1).float().clamp(-6., 1.)
+            task = self._dense('task_head', torch.cat((fused, axis, dot_gravity), -1)).squeeze(-1).float()
         masked = lambda value: torch.where(keep, value, torch.zeros_like(value))
-        reasons = ['ok' if ok else ('invalid_pose' if not good else
-                   'insufficient_support' if not encoded['support_sufficient'] else 'pose_geometry_invalid')
-                   for ok, good in zip(valid, pose_valid)]
-        return {'q_inst': masked(q), 'seal': masked(seal), 'wrench': masked(wrench),
+        combined = {'q_inst': masked(q), 'seal': masked(seal), 'wrench': masked(wrench),
                 'ell': masked(ell), 'log_scale': masked(ell),
                 'log_variance': masked(math.log(2.) + 2 * ell), 'task_logit': masked(task),
                 'task_probability': masked(task.sigmoid()), 'valid': keep,
                 'pose_geometry_valid': keep, 'query_feature_valid': query_feature_valid & keep,
                 'lip_summary': lip, 'region_counts': self._tensor(raw_counts, dtype=torch.long),
-                'independent_angular_support': self._tensor(angular_support, dtype=torch.long),
-                'anchor_source_ids': self._tensor(np.where(valid, encoded['source_ids_np'][np.maximum(anchors, 0)], -1)
-                                                 if len(encoded['source_ids_np']) else np.full(len(points), -1), dtype=torch.long),
-                'anchor_distance_m': self._tensor(anchor_distance, dtype=torch.float64),
+                'independent_angular_support': self._tensor(np.concatenate(angular_supports), dtype=torch.long),
+                'anchor_source_ids': self._tensor(np.concatenate(anchors_out), dtype=torch.long),
+                'anchor_distance_m': self._tensor(np.concatenate(anchor_distances), dtype=torch.float64),
                 'reason': reasons}
+        offsets = np.r_[0, np.cumsum(lengths)]
+        return [{name: value[int(start):int(end)] for name, value in combined.items()}
+                for start, end in zip(offsets[:-1], offsets[1:])]
 
     def score_at_pose(self, encoded, p, n, query_batch_index=None):
         points, normals = numpy_array(p, np.float64), numpy_array(n, np.float64)
@@ -503,6 +641,78 @@ class InstanceSuction3D(nn.Module):
         if canonical and encoded['query_ids'] is not None:
             result['query_ids'] = self._tensor(numpy_array(encoded['query_ids'], np.int64), dtype=torch.long)
         return result
+
+    def forward_instances(self, observations):
+        """True sparse microbatch with instance-normalized outputs for the trainer.
+
+        ``query_chunk_size`` is a per-instance limit. ``dense_query_chunk`` is
+        an optional total limit across all objects in each dense invocation.
+        Neither setting changes object/candidate ownership or loss reduction.
+        """
+        encoded = self.encode_instances(observations)
+        if not encoded:
+            return []
+        records = []
+        for item in encoded:
+            points = numpy_array(item['query_points'], np.float64)
+            normals = numpy_array(item['query_normals'], np.float64)
+            if points.shape == (3,):
+                points = points[None]
+            if normals.shape == (3,):
+                normals = normals[None]
+            if points.ndim != 2 or points.shape[1] != 3 or normals.shape != points.shape:
+                raise ValueError('Pose inputs must have matching [Q,3] shapes')
+            pose_valid, normalized = _normalize_queries(points, normals)
+            prepared = item.get('prepared')
+            use_cached = (prepared is not None and np.array_equal(points, prepared['points'], equal_nan=True)
+                          and np.array_equal(normals, prepared['normals'], equal_nan=True))
+            records.append((item, points, normalized, pose_valid, prepared if use_cached else None))
+        outputs = [[] for _ in encoded]
+        maximum = max(len(row[1]) for row in records)
+        cap = self.dense_query_chunk
+        for start in range(0, max(1, maximum), self.query_chunk_size):
+            pending, owners, total = [], [], 0
+
+            def flush():
+                nonlocal total
+                if pending:
+                    for owner, output in zip(owners, self._score_chunks(pending)):
+                        outputs[owner].append(output)
+                    pending.clear()
+                    owners.clear()
+                    total = 0
+
+            for owner, (item, points, normals, pose_valid, prepared) in enumerate(records):
+                if start >= len(points) and (start or len(points)):
+                    continue
+                end = min(start + self.query_chunk_size, len(points))
+                geometry = prepared['chunks'].get(start) if prepared is not None else None
+                part = start
+                # The first iteration also represents an empty query list.
+                while part < end or (part == start == end == 0):
+                    if cap is not None and total == cap:
+                        flush()
+                    stop = end if cap is None else min(end, part + cap - total)
+                    selected = slice(part - start, stop - start)
+                    pending.append((item, points[part:stop], normals[part:stop], pose_valid[part:stop],
+                                    _slice_query_geometry(geometry, selected)))
+                    owners.append(owner)
+                    total += stop - part
+                    part = stop
+                    if not end:
+                        break
+            flush()
+        results = []
+        for parts, (item, points, normalized, _, _) in zip(outputs, records):
+            combined = {name: (sum((part[name] for part in parts), []) if name == 'reason'
+                               else torch.cat([part[name] for part in parts], dim=0))
+                        for name in parts[0]}
+            combined['points'] = self._tensor(points, dtype=torch.float64)
+            combined['normal_out'] = self._tensor(normalized, dtype=torch.float64)
+            query_ids = np.arange(len(points)) if item['query_ids'] is None else numpy_array(item['query_ids'], np.int64)
+            combined['query_ids'] = self._tensor(query_ids, dtype=torch.long)
+            results.append(combined)
+        return results
 
     def parameter_groups(self):
         if hasattr(self.backbone, 'parameter_groups'):
