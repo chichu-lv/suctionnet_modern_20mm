@@ -38,6 +38,15 @@
 
 ## 单物体路线 A/B 设计与实施
 
+- [x] 2026-11-19 接收用户GPU2/GPU3的180秒稳态窗口，实施[冷几何、NPY/mmap、持久静态包与B消费端优化](instance_routes/L20_PIPELINE_OPTIMIZATION.md)，增加有限磁盘预算、不可变来源/布局检查、命中遥测和固定墙钟窗口。
+- [ ] 以原L20 batch32、A6/B8 workers复测新实现，核对缓存覆盖/页缓存与真实吞吐；随后再决定H2D/pinning、B同步点和A接触并集的优先级。
+
+- [x] 2026-11-19 [性能能力定向适配](instance_routes/E5_PERFORMANCE_MIGRATION.md)：A 原生完整三区接触、静态几何包及可选按需投影；B 静态图像 ROI 到消费者；路线白名单、少拷贝、每 worker 有界缓存和冷恢复对照。
+- [ ] 按原 L20 配置验收新实现的真实 GPU 数值、缓存实际命中、供给等待和同步端到端吞吐，再决定 pinned/H2D 及正式检查点切换；不以局部 CPU warm 数字代替训练加速。
+
+- [x] 2026-11-19 [E5问题在新路线中的针对性审查](instance_routes/E5_PROBLEM_AUDIT.md)：落实源训练按需读取、A消费者固定统计前移、B反向切片分配优化和更新边界指标读回；当前证据为CPU合成对照和回归。
+- [ ] 同卡、同有效batch32、同抽样/增强验证上述新增改动的L20吞吐、CUDA/SpConv数值、资源及正常恢复；完成后再更新正式运行记录。
+
 - [x] [A/B独立分支与六部分实施文档](instance_routes/README.md)，v3架构图、几何边界及物理v2目标自碰合同已整理。
 - [x] 共同 `instance_geometry/data/teacher`、官方格式builder、精确p/n标签、对象资产/缓存身份；CPU与合成官方格式验证。
 - [x] A的12通道SpConv包装、raw支持谐波/分组、531融合与精确姿态接口；CPU测试显式注入骨干，真实SpConv尚待GPU检查。

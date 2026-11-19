@@ -1,0 +1,426 @@
+{
+  "schema": "instance_e5_problem_audit_cpu_v1",
+  "date_beijing": "2026-11-19",
+  "scope": "Evidence from synthetic CPU probes. No new L20/H20 performance or production training claim.",
+  "baseline_commits": {
+    "A": "59e05c0934bf07ea5c6fb47818c61966b3c8bb02",
+    "B": "e6d9578f5fb39174cf9a81c769672800c06a9306"
+  },
+  "source_reader": {
+    "scope": "Synthetic CPU, in-memory compressed NPZ. No disk I/O, labels, GPU, or production training.",
+    "fixture": {
+      "image_hw": [
+        720,
+        1280
+      ],
+      "support": 32000,
+      "queries": 256,
+      "repeats": 5,
+      "random_seed": 7,
+      "compressed_bytes": 1120826,
+      "all_array_bytes": 74810576,
+      "metadata_json_chars": 5698,
+      "numpy_version": "2.3.5"
+    },
+    "omitted_bytes": 12902400,
+    "array_member_read_ms": {
+      "full": {
+        "runs": [
+          144.8802489976515,
+          135.69648799966672,
+          142.22295000217855,
+          141.51978399968357,
+          137.9094570002053
+        ],
+        "median": 141.51978399968357
+      },
+      "selective": {
+        "runs": [
+          130.8768870003405,
+          107.08973700093338,
+          112.52737099857768,
+          109.48206600005506,
+          108.61721099718125
+        ],
+        "median": 109.48206600005506
+      }
+    },
+    "validated_observation_read_ms": {
+      "full": {
+        "runs": [
+          157.10858500096947,
+          151.14695000011125,
+          152.22828200057847,
+          148.89932900041458,
+          145.2679200010607
+        ],
+        "median": 151.14695000011125
+      },
+      "selective": {
+        "runs": [
+          147.29464700212702,
+          120.10782300058054,
+          118.41538400040008,
+          117.29254999954719,
+          119.00808799691731
+        ],
+        "median": 119.00808799691731
+      }
+    },
+    "json_decode_and_cleanup_ms": {
+      "runs": [
+        0.3082549992541317,
+        0.23278099979506806,
+        0.2578189996711444,
+        0.23627599875908345,
+        0.3515800017339643
+      ],
+      "median": 0.2578189996711444
+    },
+    "omitted_fields": {
+      "component_map": {
+        "bytes": 3686400,
+        "member_read_ms": {
+          "runs": [
+            10.072327000671066,
+            7.756301998597337,
+            8.198800998798106,
+            7.808351001585834,
+            7.843884999601869
+          ],
+          "median": 7.843884999601869
+        }
+      },
+      "depth_m": {
+        "bytes": 7372800,
+        "member_read_ms": {
+          "runs": [
+            16.574597997532692,
+            15.208125998469768,
+            17.431814998417394,
+            16.272441996989073,
+            15.420185998664238
+          ],
+          "median": 16.272441996989073
+        }
+      },
+      "depth_valid": {
+        "bytes": 921600,
+        "member_read_ms": {
+          "runs": [
+            2.078686000459129,
+            2.0460269988689106,
+            2.1583970010397024,
+            2.3278519984160084,
+            2.0543399987218436
+          ],
+          "median": 2.078686000459129
+        }
+      },
+      "eligible_mask": {
+        "bytes": 921600,
+        "member_read_ms": {
+          "runs": [
+            2.0044240009156056,
+            1.9885299989255145,
+            2.0768829999724403,
+            2.1256869986245874,
+            2.094589999614982
+          ],
+          "median": 2.0768829999724403
+        }
+      }
+    },
+    "all_retained_arrays_and_metadata_equal": true
+  },
+  "route_a_diagnostics": {
+    "schema": "route_a_diagnostics_cpu_v1",
+    "scope": "CPU diagnostic functions on synthetic association arrays only; not live source data, CUDA execution, or end-to-end training throughput",
+    "baseline_ref": "59e05c0934bf07ea5c6fb47818c61966b3c8bb02",
+    "source_file": "models/instance_route_a_geometry.py",
+    "current_source": "Imported from the working tree at invocation",
+    "environment": {
+      "python": "3.12.14",
+      "numpy": "2.3.5",
+      "machine": "x86_64"
+    },
+    "seed": 20261119,
+    "instances_per_round": 32,
+    "support_counts": [
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048,
+      6923,
+      32768,
+      65536,
+      143048
+    ],
+    "support_count_range": [
+      6923,
+      143048
+    ],
+    "support_range_reference": "research/instance_runs/20261119/route-a-geometry.md",
+    "distance_dtype": "float64",
+    "repeats": 9,
+    "all_diagnostic_fields_exactly_equal": true,
+    "measurements": [
+      {
+        "round": 1,
+        "order": [
+          "baseline",
+          "current"
+        ],
+        "baseline_ms": 161.83101599926886,
+        "current_ms": 107.40645100122492
+      },
+      {
+        "round": 2,
+        "order": [
+          "current",
+          "baseline"
+        ],
+        "current_ms": 104.22658400057117,
+        "baseline_ms": 153.40995000042312
+      },
+      {
+        "round": 3,
+        "order": [
+          "baseline",
+          "current"
+        ],
+        "baseline_ms": 150.94545200008724,
+        "current_ms": 103.00834700137784
+      },
+      {
+        "round": 4,
+        "order": [
+          "current",
+          "baseline"
+        ],
+        "current_ms": 102.0418169991899,
+        "baseline_ms": 155.16695199949027
+      },
+      {
+        "round": 5,
+        "order": [
+          "baseline",
+          "current"
+        ],
+        "baseline_ms": 153.65919699979713,
+        "current_ms": 109.54345600111992
+      },
+      {
+        "round": 6,
+        "order": [
+          "current",
+          "baseline"
+        ],
+        "current_ms": 110.60523800006195,
+        "baseline_ms": 161.90964499946858
+      },
+      {
+        "round": 7,
+        "order": [
+          "baseline",
+          "current"
+        ],
+        "baseline_ms": 184.84628099940892,
+        "current_ms": 119.67311000080372
+      },
+      {
+        "round": 8,
+        "order": [
+          "current",
+          "baseline"
+        ],
+        "current_ms": 126.31153499933134,
+        "baseline_ms": 175.62368600010814
+      },
+      {
+        "round": 9,
+        "order": [
+          "baseline",
+          "current"
+        ],
+        "baseline_ms": 166.1118659994827,
+        "current_ms": 105.16282599928672
+      }
+    ],
+    "summary": {
+      "baseline": {
+        "median_ms_per_32_instances": 161.83101599926886,
+        "min_ms": 150.94545200008724,
+        "max_ms": 184.84628099940892
+      },
+      "current": {
+        "median_ms_per_32_instances": 107.40645100122492,
+        "min_ms": 102.0418169991899,
+        "max_ms": 126.31153499933134
+      }
+    }
+  },
+  "route_b_backward": {
+    "scope": "synthetic CPU backward allocations; not GPU throughput or peak memory",
+    "torch_version": "2.5.1+cpu",
+    "device": "cpu",
+    "torch_threads": 1,
+    "baseline_ref": "e6d9578f5fb39174cf9a81c769672800c06a9306",
+    "baseline_commit": "e6d9578f5fb39174cf9a81c769672800c06a9306",
+    "candidate": "current working tree models/instance_route_b.py",
+    "instances": 8,
+    "query_lengths": [
+      3,
+      2,
+      3,
+      3,
+      2,
+      3,
+      3,
+      2
+    ],
+    "seed": 672,
+    "query_chunk": 2,
+    "dense_chunk": 4096,
+    "allocation_accounting": "Sum only aten::slice_backward and aten::cat CPU output allocations; exclude their nested autograd, zeros, and empty events. Cumulative operator allocations are not peak memory.",
+    "baseline": {
+      "backward_operators": {
+        "aten::slice_backward": {
+          "calls": 261,
+          "allocated_output_bytes": 49876788
+        },
+        "aten::cat": {
+          "calls": 0,
+          "allocated_output_bytes": 0
+        }
+      },
+      "selected_operator_allocation_bytes": 49876788
+    },
+    "candidate_result": {
+      "backward_operators": {
+        "aten::slice_backward": {
+          "calls": 155,
+          "allocated_output_bytes": 12509568
+        },
+        "aten::cat": {
+          "calls": 14,
+          "allocated_output_bytes": 7985124
+        }
+      },
+      "selected_operator_allocation_bytes": 20494692
+    },
+    "equivalence": {
+      "all_prediction_tensors_exact": true,
+      "prediction_tensor_count": 256,
+      "prediction_keys_match": true,
+      "prediction_mismatches": [],
+      "parameter_gradient_count": 126,
+      "gradient_parameter_keys_match": true,
+      "all_parameter_gradients_exact": true,
+      "all_parameter_gradients_close": true,
+      "gradient_tolerance": {
+        "rtol": 0.001,
+        "atol": 2e-05
+      },
+      "max_gradient_absolute_error": 0.0,
+      "max_gradient_error_parameter": null
+    },
+    "selected_allocation_reduction_fraction": 0.5890935879832518
+  },
+  "training_metrics": {
+    "scope": "CPU synthetic engine fixtures; original branch training module vs modified module",
+    "torch": "2.5.1+cpu",
+    "numpy": "2.3.5",
+    "cases": [
+      {
+        "stage": "pretrain",
+        "microbatch": 1,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 11,
+        "skipped_draws": 4
+      },
+      {
+        "stage": "pretrain",
+        "microbatch": 2,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 11,
+        "skipped_draws": 4
+      },
+      {
+        "stage": "pretrain",
+        "microbatch": 5,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 11,
+        "skipped_draws": 4
+      },
+      {
+        "stage": "finetune",
+        "microbatch": 1,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 6,
+        "skipped_draws": 2
+      },
+      {
+        "stage": "finetune",
+        "microbatch": 2,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 6,
+        "skipped_draws": 2
+      },
+      {
+        "stage": "finetune",
+        "microbatch": 5,
+        "updates": 3,
+        "all_metrics_and_checkpoint_state_exact": true,
+        "source_instances": 6,
+        "skipped_draws": 2
+      }
+    ]
+  },
+  "validation": {
+    "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q --ignore=tests/test_prefetch.py",
+    "route_a": {
+      "passed": 851,
+      "skipped": 5,
+      "seconds": 73.04
+    },
+    "route_b": {
+      "passed": 861,
+      "skipped": 4,
+      "seconds": 82.57
+    },
+    "excluded_file": "tests/test_prefetch.py",
+    "exclusion_reason": "Local full suites blocked in the existing DataLoader test. Standalone reproduction waited in _try_get_data and hit its external timeout. File is unchanged; unfiltered GitHub CI remains the complete gate.",
+    "cuda_tested": false,
+    "production_training_changed": false
+  }
+}

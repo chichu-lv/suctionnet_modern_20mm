@@ -101,6 +101,13 @@ def _report(tmp_path):
     return json.loads((tmp_path / 'benchmark' / 'benchmark.json').read_text())
 
 
+def _seconds_argv(tmp_path, seconds, *options):
+    args = _argv(tmp_path, *options)
+    position = args.index('--measure-updates')
+    del args[position:position + 2]
+    return [*args, '--measure-seconds', str(seconds)]
+
+
 def test_default_trial_uses_config_batch_and_counts_only_measurements(tmp_path, runtime):
     assert benchmark.main(_argv(tmp_path)) == 0
     report = _report(tmp_path)
@@ -221,6 +228,95 @@ def test_hundred_update_stability_mode_is_an_explicit_single_trial(tmp_path, run
     assert report['trials'][0]['disposable_final_step'] == 105
 
 
+@pytest.mark.parametrize('seconds, expected_updates, exit_code', [(11., 2, 0), (1., 0, 1)])
+def test_fixed_window_finishes_overrun_update_but_excludes_it_from_performance(tmp_path, runtime,
+                                                                             seconds, expected_updates, exit_code):
+    assert benchmark.main(_seconds_argv(tmp_path, seconds)) == exit_code
+    trial = _report(tmp_path)['trials'][0]
+    measured = trial['measurement']
+    window = trial['measurement_window']
+    assert window['completed'] and window['stop_reason'] == 'deadline_reached'
+    assert window['requested_seconds'] == seconds
+    assert window['actual_wall_seconds'] == 4. * (expected_updates + 1)
+    assert window['overrun_seconds'] == window['actual_wall_seconds'] - seconds
+    assert measured['updates'] == expected_updates
+    assert measured['effective_instances'] == 32 * expected_updates
+    assert measured['seconds'] == 4. * expected_updates
+    assert measured['throughput_denominator_seconds'] == seconds
+    assert measured['effective_instances_per_second'] == 32 * expected_updates / seconds
+    assert len(trial['overrun_update_records']) == 1
+    overrun = trial['overrun_update_records'][0]
+    assert overrun['window_start_offset_seconds'] < seconds < overrun['window_end_offset_seconds']
+    assert overrun['effective_instances'] == 32
+    assert trial['disposable_final_step'] == 2 + expected_updates + 1
+    assert all(row['window_end_offset_seconds'] <= seconds for row in trial['measured_update_records'])
+    if expected_updates:
+        assert measured['mean_seconds_per_update'] == measured['p95_seconds_per_update'] == 4.
+    assert runtime['trainers'][0].closed
+
+
+def test_fixed_window_counts_exact_deadline_and_includes_both_cuda_synchronizations(tmp_path, runtime, monkeypatch):
+    def synchronize(device):
+        runtime['clock'] += .25
+    monkeypatch.setattr(benchmark.torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(benchmark.torch.cuda, 'synchronize', synchronize)
+    monkeypatch.setattr(benchmark.torch.cuda, 'reset_peak_memory_stats', lambda device: None)
+    monkeypatch.setattr(benchmark.torch.cuda, 'max_memory_allocated', lambda device: 4096)
+    monkeypatch.setattr(benchmark.torch.cuda, 'max_memory_reserved', lambda device: 8192)
+    monkeypatch.setattr(benchmark.torch.cuda, 'empty_cache', lambda: None)
+    assert benchmark.main(_seconds_argv(tmp_path, 9., '--device', 'cuda:1')) == 0
+    trial = _report(tmp_path)['trials'][0]
+    assert trial['measurement_window']['actual_wall_seconds'] == 9.
+    assert trial['measurement_window']['completed']
+    assert trial['measurement']['updates'] == 2
+    assert trial['measurement']['effective_instances_per_second'] == 64 / 9
+    assert trial['measurement']['mean_seconds_per_update'] == 4.5
+    assert trial['measured_update_records'][-1]['window_end_offset_seconds'] == 9.
+    assert trial['overrun_update_records'] == []
+    assert trial['disposable_final_step'] == 4
+
+
+def test_fixed_window_fails_when_training_budget_ends_before_deadline(tmp_path, runtime):
+    runtime['config']['pretrain']['steps'] = 4
+    assert benchmark.main(_seconds_argv(tmp_path, 10.)) == 1
+    report = _report(tmp_path)
+    trial = report['trials'][0]
+    assert trial['status'] == 'failed'
+    assert not trial['measurement_window']['completed']
+    assert trial['measurement_window']['stop_reason'] == 'training_budget_exhausted'
+    assert trial['measurement_window']['actual_wall_seconds'] == 8.
+    assert trial['measurement']['updates'] == 2
+    assert trial['measurement']['throughput_denominator_seconds'] == 10.
+    assert trial['measurement']['effective_instances_per_second'] == 64 / 10
+    assert trial['disposable_final_step'] == 4 and trial['overrun_update_records'] == []
+    assert report['successful_trials'] == 0 and report['fastest_successful_trial'] is None
+    assert 'budget exhausted' in trial['error']['message']
+    assert runtime['trainers'][0].closed
+
+
+@pytest.mark.parametrize('seconds', ['0', '-1', 'nan', 'inf'])
+def test_invalid_time_window_fails_before_model_creation(tmp_path, runtime, seconds):
+    with pytest.raises(SystemExit) as error:
+        benchmark.main(_seconds_argv(tmp_path, seconds))
+    assert error.value.code == 2 and not runtime['models']
+
+
+def test_measurement_modes_are_mutually_exclusive_and_old_defaults_remain(tmp_path, runtime):
+    with pytest.raises(SystemExit) as error:
+        benchmark.main(_argv(tmp_path, '--measure-seconds', '180'))
+    assert error.value.code == 2 and not runtime['models']
+    args = _argv(tmp_path)
+    for flag in ('--measure-updates', '--warmup-updates'):
+        position = args.index(flag)
+        del args[position:position + 2]
+    assert benchmark.main(args) == 0
+    trial = _report(tmp_path)['trials'][0]
+    assert trial['measurement_mode'] == 'updates'
+    assert trial['warmup']['updates'] == 5 and trial['measurement']['updates'] == 20
+    assert trial['measurement_seconds_requested'] is None
+    assert 'measurement_window' not in trial and trial['overrun_update_records'] == []
+
+
 @pytest.mark.parametrize('field,value', [
     ('schema', 'unsupported_profile'), ('hidden_fast_mode', True),
     ('prefetch_factor', False), ('train_workers', -1), ('dense_query_chunk', 1.5),
@@ -264,3 +360,28 @@ def test_environment_records_real_legacy_worker_names(monkeypatch):
     assert environment['SUCTION20_INSTANCE_EVAL_WORKERS'] == '4'
     assert environment['OPENBLAS_NUM_THREADS'] == '1'
     assert 'SUCTION20_INSTANCE_PREPARE_WORKERS' not in environment
+
+
+def test_preparation_capability_report_reads_versions_without_executing_native_code(monkeypatch):
+    def unused(*args, **kwargs):
+        pytest.fail('Capability reporting must not execute geometry or initialize CUDA')
+    native = SimpleNamespace(__file__='native-extension', route_a_contact_query=unused,
+                             ROUTE_A_CONTACT_SOURCE_VERSION='test-v2', ROUTE_A_CONTACT_ABI_VERSION=1,
+                             ROUTE_A_CONTACT_PROFILE_VERSION=1)
+    modules = {'models.instance_route_a_geometry': SimpleNamespace(
+                    _spatial_index_cpu=native, _fps_cpu=SimpleNamespace(fps_positions=unused), _FPS_AXES=(0, 2, 1)),
+               'models.instance_route_b_preparation': SimpleNamespace(STATIC_INPUTS_SPEC='test-static-v2')}
+    monkeypatch.setattr(benchmark.importlib, 'import_module', lambda name: modules[name])
+    monkeypatch.setattr(benchmark.torch.cuda, 'init', unused)
+    caps = benchmark._preparation_capabilities()
+    assert caps['route_a']['ROUTE_A_CONTACT_SOURCE_VERSION'] == 'test-v2'
+    assert caps['route_a']['ROUTE_A_CONTACT_ABI_VERSION'] == caps['route_a']['ROUTE_A_CONTACT_PROFILE_VERSION'] == 1
+    assert caps['route_a']['compiled_fps_supported'] and caps['route_a']['native_contact_entry_available']
+    assert caps['route_a']['fps_axis_order'] == [0, 2, 1]
+    assert caps['route_b']['STATIC_INPUTS_SPEC'] == 'test-static-v2'
+    def absent(name):
+        raise ModuleNotFoundError(name)
+    monkeypatch.setattr(benchmark.importlib, 'import_module', absent)
+    missing = benchmark._preparation_capabilities()
+    assert missing['route_a'] is None and missing['route_b'] is None
+    assert set(missing['import_errors']) == {'route_a', 'route_b'}

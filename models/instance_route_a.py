@@ -8,6 +8,7 @@ model device and retain their complete gradient graph across pose chunks.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import torch
@@ -19,6 +20,7 @@ from .instance_route_a_geometry import (
     BOUNDARY_ROUNDOFF_M, HEIGHT_LIMIT_M, ZONE_BOUNDS, ZONE_SAMPLES,
     NeighborIndex, association_diagnostics, contact_coordinates,
     deterministic_fps, fps_positions_in_source_order, lip_summary, numpy_array, voxel_representatives,
+    native_contact_geometry, reference_contact_geometry,
 )
 
 
@@ -167,48 +169,29 @@ def _instance_geometry(observation, backbone_points, min_support_points):
         keys = np.empty((0, 3), np.int64)
     backbone_index = NeighborIndex(points[selected], source_ids[selected], components[selected])
     association = backbone_index.associate(points, components)
+    # These support-wide percentiles depend only on fixed CPU geometry. Prepare
+    # them with the neighbors so a prefetched instance does not repeat NumPy
+    # reductions on the GPU consumer thread after launching its backbone.
+    diagnostics = association_diagnostics(association)
     return dict(points_np=points, rgb_np=rgb, normals_np=normals, normal_valid_np=normal_valid,
                 rgb_valid_np=rgb_valid, source_ids_np=source_ids, components_np=components,
                 centroid_np=centroid, gravity_np=gravity, source_index=source_index,
                 backbone_index=backbone_index, raw_association=association,
+                association_diagnostics=diagnostics,
                 raw_feature_valid_np=association['valid'], backbone_raw_indices=selected,
                 backbone_voxel_keys=keys, support_sufficient=sufficient)
 
 
 def _contact_geometry(encoded, points, normals, components, valid):
-    count = len(points)
-    slots = sum(ZONE_SAMPLES)
-    indices = np.zeros((count, slots), np.int64)
-    masks = np.zeros((count, slots), bool)
-    descriptor = np.zeros((count, slots, 8), np.float64)
-    raw_count = np.zeros((count, 3), np.int64)
-    summary = np.zeros((count, 8), np.float64)
-    angular_support = np.zeros(count, np.int64)
-    for row in np.flatnonzero(valid):
-        support = encoded['source_index'].support_ball(points[row], components[row])
-        rho, height, tangent, zones = contact_coordinates(encoded['points_np'][support], points[row], normals[row])
-        summary[row], angular_support[row] = lip_summary(height[zones[2]], tangent[zones[2]], normals[row])
-        offset = 0
-        for zone, (mask, budget) in enumerate(zip(zones, ZONE_SAMPLES)):
-            local = np.flatnonzero(mask)
-            raw_count[row, zone] = len(local)
-            rows = support[local]
-            # support_ball returns unique support rows in source-ID order;
-            # taking a zone mask preserves that order.
-            chosen = fps_positions_in_source_order(encoded['points_np'][rows], budget)
-            rows, local = rows[chosen], local[chosen]
-            selected_slice = slice(offset, offset + len(rows))
-            indices[row, selected_slice] = rows
-            masks[row, selected_slice] = True
-            outer_radius = ZONE_BOUNDS[zone][1]
-            observed_normal = encoded['normals_np'][rows]
-            descriptor[row, selected_slice] = np.column_stack((
-                rho[local] / outer_radius, height[local] / HEIGHT_LIMIT_M,
-                observed_normal @ normals[row], tangent[local] @ encoded['gravity_np'] / outer_radius,
-                observed_normal @ encoded['gravity_np'], encoded['raw_feature_valid_np'][rows],
-                encoded['normal_valid_np'][rows], encoded['rgb_valid_np'][rows]))
-            offset += budget
-    return indices, masks, descriptor, raw_count, summary, angular_support
+    backend = os.environ.get('SUCTION_A_CONTACT_BACKEND', 'auto')
+    if backend not in ('auto', 'native', 'reference'):
+        raise ValueError('SUCTION_A_CONTACT_BACKEND must be auto, native or reference')
+    result = (native_contact_geometry(encoded, points, normals, components, valid)
+              if backend != 'reference' else None)
+    if result is None and backend == 'native':
+        raise RuntimeError('Requested route-A native contact engine is unavailable; build its current extension')
+    return (reference_contact_geometry(encoded, points, normals, components, valid)
+            if result is None else result)
 
 
 def _query_geometry(encoded, points, normals, pose_valid):
@@ -235,21 +218,83 @@ def _normalize_queries(points, normals):
     return pose_valid, normalized
 
 
-def prepare_source_geometry(observation, *, backbone_points=2048, min_support_points=100, query_chunk_size=32):
-    """Prepare final per-instance CPU geometry after query selection and RGB jitter.
+SOURCE_STATIC_GEOMETRY_SPEC = 'instance-route-a-static-geometry-v1'
 
-    This is transient worker output. Keep it attached to its own observation
-    for the upcoming forward pass, never across augmentation or resampling.
-    Each worker can handle a different instance with the same model settings.
+
+def prepare_source_static_geometry(observation, *, backbone_points=2048,
+                                   min_support_points=100, query_chunk_size=32):
+    """Prepare only immutable geometry for a validated, RGB-only source draw.
+
+    The worker owns file-version/settings invalidation. This object never holds
+    augmented colors, observation references, or model features. RGB validity
+    is geometry input and is checked again when binding the current colors.
     """
     geometry = _instance_geometry(observation, backbone_points, min_support_points)
+    geometry.pop('rgb_np')
     points = numpy_array(observation['query_points'], np.float64).copy()
     normals = numpy_array(observation['query_normals'], np.float64).copy()
     pose_valid, normalized = _normalize_queries(points, normals)
-    chunks = {}
-    for start in range(0, len(points), query_chunk_size):
-        part = slice(start, start + query_chunk_size)
-        chunks[start] = _query_geometry(geometry, points[part], normalized[part], pose_valid[part])
+    # Query the complete candidate batch once. Network chunking does not need
+    # repeated native index construction or separate CPU query invocations.
+    query = _query_geometry(geometry, points, normalized, pose_valid)
+    chunks = {start: _slice_query_geometry(query, slice(start, start + query_chunk_size))
+              for start in range(0, len(points), query_chunk_size)}
+    if 'support_source_ids' in observation:
+        source_ids = numpy_array(observation['support_source_ids'], np.int64)
+    else:
+        uv = numpy_array(observation['support_uv'], np.int64)
+        source_ids = uv[:, 1] * int(observation['rgb'].shape[1]) + uv[:, 0]
+    order = np.argsort(source_ids, kind='stable')
+    duplicate = source_ids[order][1:] == source_ids[order][:-1]
+    rows = order[np.r_[True, ~duplicate]] if len(order) else order
+    return dict(spec=SOURCE_STATIC_GEOMETRY_SPEC, geometry=geometry,
+                settings=(backbone_points, min_support_points, query_chunk_size),
+                points=points, normals=normals, chunks=chunks,
+                rgb_source_order=order, rgb_source_rows=rows, duplicate_source_ids=duplicate,
+                source_support_count=len(source_ids))
+
+
+def _bind_source_rgb(observation, static_geometry):
+    """Gather this draw's colors in the static source-ID order, without sorting."""
+    rgb = numpy_array(observation['support_rgb'], np.float64)
+    count = static_geometry['source_support_count']
+    if rgb.shape != (count, 3) or len(observation['support_points']) != count:
+        raise ValueError('Static route-A geometry requires the same support rows')
+    valid = numpy_array(observation.get('support_rgb_valid', np.isfinite(rgb).all(1)), bool)
+    if valid.shape != (count,):
+        raise ValueError('support_rgb_valid must have shape [M]')
+    if not np.isfinite(rgb[valid]).all() or np.any((rgb[valid] < 0) | (rgb[valid] > 1)):
+        raise ValueError('Valid RGB must be finite in [0,1]')
+    rows = static_geometry['rgb_source_rows']
+    if not np.array_equal(valid[rows], static_geometry['geometry']['rgb_valid_np']):
+        raise ValueError('Static route-A geometry has different RGB validity')
+    duplicate = static_geometry['duplicate_source_ids']
+    if np.any(duplicate):
+        order = static_geometry['rgb_source_order']
+        sorted_rgb = np.where(valid[order, None], rgb[order], 0.)
+        if (np.any(np.max(np.abs(sorted_rgb[1:] - sorted_rgb[:-1]), axis=1)[duplicate]
+                   > BOUNDARY_ROUNDOFF_M)
+                or np.any((valid[order][1:] != valid[order][:-1])[duplicate])):
+            raise ValueError('One source ID cannot identify different support attributes')
+    result = rgb[rows]
+    result[~valid[rows]] = 0.
+    return result
+
+
+def prepare_source_geometry(observation, *, backbone_points=2048, min_support_points=100,
+                            query_chunk_size=32, static_geometry=None):
+    """Bind current RGB to static CPU geometry for exactly this loader ticket."""
+    settings = (backbone_points, min_support_points, query_chunk_size)
+    if static_geometry is None:
+        static_geometry = prepare_source_static_geometry(observation, backbone_points=backbone_points,
+            min_support_points=min_support_points, query_chunk_size=query_chunk_size)
+    if (static_geometry.get('spec') != SOURCE_STATIC_GEOMETRY_SPEC
+            or static_geometry['settings'] != settings):
+        raise ValueError('Static route-A geometry has different model settings')
+    if (not np.array_equal(observation['query_points'], static_geometry['points'], equal_nan=True)
+            or not np.array_equal(observation['query_normals'], static_geometry['normals'], equal_nan=True)):
+        raise ValueError('Static route-A geometry has different canonical queries')
+    geometry = dict(static_geometry['geometry'], rgb_np=_bind_source_rgb(observation, static_geometry))
     # Preserve object references through a spawn-worker pickle. This checks
     # that the transient geometry is still attached to its own raw observation,
     # without reading file bytes or computing content digests. In-place mutation
@@ -258,8 +303,9 @@ def prepare_source_geometry(observation, *, backbone_points=2048, min_support_po
              'support_rgb_valid', 'support_components', 'support_source_ids', 'support_uv',
              'centroid', 'gravity')
     references = {name: observation[name] for name in names if name in observation}
-    cache = dict(geometry=geometry, settings=(backbone_points, min_support_points, query_chunk_size),
-                 points=points, normals=normals, chunks=chunks, source_references=references)
+    cache = dict(geometry=geometry, settings=settings, points=static_geometry['points'],
+                 normals=static_geometry['normals'], chunks=static_geometry['chunks'],
+                 source_references=references)
     return dict(observation, _route_a_geometry=cache)
 
 
@@ -275,9 +321,17 @@ def compact_prepared_source_item(item):
         return item
     image_fields = {'rgb', 'rgb_valid', 'depth_m', 'depth_valid', 'xyz_map',
                     'mask', 'instance_mask', 'normal_map', 'normal_valid',
-                    'eligible_mask', 'component_map'}
-    return dict(item, observation={key: value for key, value in observation.items()
-                                   if key not in image_fields})
+                    'eligible_mask', 'component_map', 'bbox_xyxy', 'bbox_pixel_edges'}
+    compact = {key: value for key, value in observation.items() if key not in image_fields}
+    # Keep original geometry/indices intact for the public arbitrary-pose API.
+    # This sorted subset is only a training performance hint. It contains no
+    # network features and can be ignored to run the complete reference path.
+    if os.environ.get('SUCTION_A_CONTACT_UNION') == '1':
+        chunks = observation['_route_a_geometry']['chunks']
+        rows = [part[-1][0][part[-1][1]] for part in chunks.values()]
+        compact['_route_a_contact_feature_rows'] = (np.unique(np.concatenate(rows))
+                                                    if rows else np.empty(0, np.int64))
+    return dict(item, observation=compact)
 
 
 # Explicit worker-facing name; both spellings are pure CPU functions and do
@@ -428,7 +482,7 @@ class InstanceSuction3D(nn.Module):
             geometry = prepared['geometry']
         return geometry, prepared
 
-    def encode_instances(self, observations):
+    def encode_instances(self, observations, *, _contact_union=False):
         """Encode a ragged microbatch in one sparse call, with disjoint batch IDs.
 
         Each object retains its own centering, voxel offset, source IDs, CPU
@@ -490,15 +544,29 @@ class InstanceSuction3D(nn.Module):
                 projected_context = self._dense('global_projection', pooled)
                 for row, index in enumerate(supported):
                     contexts[index] = projected_context[row]
-            raw_features = [_interpolate(part, item[1]['raw_association'])
-                            for part, item in zip(feature_parts, entries)]
+            feature_rows = [observation.get('_route_a_contact_feature_rows')
+                            if _contact_union and prepared is not None else None
+                            for observation, _, prepared, _, _ in entries]
+            feature_rows = [None if rows is None else numpy_array(rows) for rows in feature_rows]
+            associations = []
+            for rows, item in zip(feature_rows, entries):
+                association = item[1]['raw_association']
+                if rows is not None:
+                    if (rows.ndim != 1 or rows.dtype != np.int64
+                            or (len(rows) and (rows[0] < 0 or rows[-1] >= len(association['valid'])))
+                            or np.any(rows[1:] <= rows[:-1])):
+                        raise ValueError('Compact contact feature rows must be sorted unique support indices')
+                    association = {key: association[key][rows] for key in ('indices', 'weights', 'valid')}
+                associations.append(association)
+            raw_features = [_interpolate(part, association)
+                            for part, association in zip(feature_parts, associations)]
             raw_lengths = [len(value) for value in raw_features]
             projected = self._dense('local_projection', torch.cat(raw_features))
         projected_parts = projected.split(raw_lengths)
         encoded, offset = [], 0
         for index, ((observation, geometry, prepared, normalized_rgb, voxel_offset),
                     part, raw_projected) in enumerate(zip(entries, feature_parts, projected_parts)):
-            association = geometry['raw_association']
+            association = associations[index]
             keep = self._tensor(association['valid'], dtype=torch.bool)
             raw_projected = torch.where(keep[:, None], raw_projected, torch.zeros_like(raw_projected))
             selected = geometry['backbone_raw_indices']
@@ -506,21 +574,63 @@ class InstanceSuction3D(nn.Module):
                            'voxel_features': sparse_inputs['voxel_features'][offset:offset + len(part)],
                            'g_cam': sparse_inputs['g_cam'][index:index + 1], 'spatial_shape': spatial_shape}
             offset += len(part)
-            encoded.append({**geometry, 'prepared': prepared, 'rgb': self._tensor(normalized_rgb),
+            rows = feature_rows[index]
+            encoded.append({**geometry, 'prepared': prepared,
+                'rgb': self._tensor(normalized_rgb if rows is None else normalized_rgb[rows]),
                 'backbone_features': part, 'raw_projected_features': raw_projected,
+                'contact_feature_rows': rows,
                 'context': contexts[index], 'backbone_source_ids': geometry['source_ids_np'][selected],
                 'voxel_offset_xyz': voxel_offset, 'sparse_inputs': item_sparse,
-                'association_diagnostics': association_diagnostics(association),
                 'query_points': observation.get('query_points', np.empty((0, 3))),
                 'query_normals': observation.get('query_normals', np.empty((0, 3))),
                 'query_ids': observation.get('query_ids'), 'observation': observation})
         return encoded
 
+    def _complete_contact_features(self, encoded):
+        """Lazily restore full support features without detaching the backbone.
+
+        Public encode methods always prepare full features. The fallback also
+        keeps a privately encoded training item safe for an additional pose
+        whose contacts were not present in its original canonical candidate set.
+        """
+        if encoded.get('contact_feature_rows') is None:
+            return
+        association = encoded['raw_association']
+        with self._dense_autocast():
+            features = _interpolate(encoded['backbone_features'], association)
+            projected = self._dense('local_projection', features)
+        keep = self._tensor(association['valid'], dtype=torch.bool)
+        encoded['raw_projected_features'] = torch.where(keep[:, None], projected, torch.zeros_like(projected))
+        rgb = (encoded['rgb_np'] - np.array([.485, .456, .406])) / np.array([.229, .224, .225])
+        rgb[~encoded['rgb_valid_np']] = 0.
+        encoded['rgb'] = self._tensor(rgb)
+        encoded['contact_feature_rows'] = None
+
     def _contact_inputs(self, encoded, points, contact):
         count, slots = len(points), sum(ZONE_SAMPLES)
         indices, masks, descriptor, raw_count, summary, angular_support = contact
         mask = self._tensor(masks, dtype=torch.bool)
-        if len(encoded['points_np']):
+        rows = encoded.get('contact_feature_rows')
+        if rows is not None:
+            requested = indices[masks]
+            locations = np.searchsorted(rows, requested)
+            present = locations < len(rows)
+            if len(rows):
+                present &= rows[np.minimum(locations, len(rows) - 1)] == requested
+            if not np.all(present):
+                self._complete_contact_features(encoded)
+                rows = None
+            else:
+                remapped = np.zeros_like(indices)
+                remapped[masks] = locations
+                indices = remapped
+        if rows is not None and not len(rows):
+            # Keep the empty projection in the autograd graph so zero-contact
+            # training preserves zero parameter gradients instead of None.
+            zero = encoded['raw_projected_features'].sum() * 0
+            local_features = self._tensor(np.zeros((count, slots, 64))) + zero
+            rgb = self._tensor(np.zeros((count, slots, 3)))
+        elif len(encoded['points_np']):
             index = self._tensor(indices, dtype=torch.long)
             local_features = encoded['raw_projected_features'][index]
             rgb = encoded['rgb'][index]
@@ -668,7 +778,11 @@ class InstanceSuction3D(nn.Module):
         an optional total limit across all objects in each dense invocation.
         Neither setting changes object/candidate ownership or loss reduction.
         """
-        encoded = self.encode_instances(observations)
+        # Experimental execution-only switch: public encode/score APIs and
+        # evaluation retain the complete reference projection by default.
+        contact_union = self.training and os.environ.get('SUCTION_A_CONTACT_UNION') == '1'
+        encoded = (self.encode_instances(observations, _contact_union=True) if contact_union
+                   else self.encode_instances(observations))
         if not encoded:
             return []
         records = []

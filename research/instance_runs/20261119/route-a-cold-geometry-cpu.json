@@ -1,0 +1,410 @@
+{
+  "scope": "Synthetic CPU cold geometry only. Native extensions for baseline/current are built with identical flags. All point/descriptor/count/summary and prepared geometry arrays are compared exactly. The same fixed RGB is used. No input reading, augmentation, static-cache hits, IPC, H2D or learned network is timed. Optional phase profile is a separate untimed call and excludes grid creation and ambiguous-row reference correction; summed worker work is not elapsed wall time with multiple threads. This is not an L20 training throughput result.",
+  "baseline_git_commit": "4809d6b39ecf11dc31c0ae14c08acdb316be2e46",
+  "seed": 20261119,
+  "support_count": 32000,
+  "query_count": 128,
+  "settings": {
+    "backbone_points": 2048,
+    "min_support_points": 100,
+    "query_chunk_size": 128
+  },
+  "rounds": 7,
+  "order": "rotating four variants",
+  "all_contact_arrays_exact": true,
+  "all_static_geometry_arrays_exact": true,
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "compiler": "14.2.0",
+    "compiler_flags": [
+      "-shared",
+      "-fPIC",
+      "-O3",
+      "-fno-fast-math",
+      "-ffp-contract=off",
+      "-pthread"
+    ],
+    "baseline_native_source": "route_a_contact_v1",
+    "current_native_source": "route_a_contact_v2_contiguous_fps",
+    "thread_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    }
+  },
+  "current_native_stage_work_ms": {
+    "query_ms": 21.535491,
+    "regions_ms": 18.302104999999994,
+    "lip_ms": 12.401110999999998,
+    "fps_and_pack_ms": 32.746001
+  },
+  "python_profiles": {
+    "baseline_prepare_ms": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method _cold_baseline._spatial_index_cpu.route_a_contact_query>",
+        "calls": 1,
+        "self_ms": 107.338514,
+        "cumulative_ms": 107.338514
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 169,
+        "function": "associate",
+        "calls": 2,
+        "self_ms": 42.480914,
+        "cumulative_ms": 48.719361
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method models._fps_cpu.fps_positions>",
+        "calls": 1,
+        "self_ms": 17.238099,
+        "cumulative_ms": 17.238099
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 122,
+        "function": "__post_init__",
+        "calls": 2,
+        "self_ms": 14.074464,
+        "cumulative_ms": 18.208934
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'reduce' of 'numpy.ufunc' objects>",
+        "calls": 76,
+        "self_ms": 9.523430000000001,
+        "cumulative_ms": 9.523430000000001
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 96,
+        "function": "voxel_representatives",
+        "calls": 1,
+        "self_ms": 7.509904000000001,
+        "cumulative_ms": 8.647653
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'argsort' of 'numpy.ndarray' objects>",
+        "calls": 5,
+        "self_ms": 4.020643,
+        "cumulative_ms": 4.020643
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_model>",
+        "line": 90,
+        "function": "_support",
+        "calls": 1,
+        "self_ms": 3.161161,
+        "cumulative_ms": 8.557257
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_model>",
+        "line": 134,
+        "function": "<genexpr>",
+        "calls": 8,
+        "self_ms": 2.3522160000000003,
+        "cumulative_ms": 2.3522160000000003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method _cold_baseline._spatial_index_cpu.create>",
+        "calls": 1,
+        "self_ms": 1.877231,
+        "cumulative_ms": 1.877231
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'partition' of 'numpy.ndarray' objects>",
+        "calls": 4,
+        "self_ms": 1.3060610000000001,
+        "cumulative_ms": 1.3060610000000001
+      },
+      {
+        "file": "_linalg.py",
+        "line": 2623,
+        "function": "norm",
+        "calls": 8,
+        "self_ms": 1.266828,
+        "cumulative_ms": 4.025091000000001
+      },
+      {
+        "file": "_shape_base_impl.py",
+        "line": 61,
+        "function": "take_along_axis",
+        "calls": 4,
+        "self_ms": 1.243217,
+        "cumulative_ms": 1.3626550000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method numpy._core._multiarray_umath._unique_hash>",
+        "calls": 7,
+        "self_ms": 0.7913530000000001,
+        "cumulative_ms": 0.7913530000000001
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_model>",
+        "line": 150,
+        "function": "_instance_geometry",
+        "calls": 1,
+        "self_ms": 0.586976,
+        "cumulative_ms": 105.71164
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 141,
+        "function": "nearest_anchor",
+        "calls": 1,
+        "self_ms": 0.31624500000000005,
+        "cumulative_ms": 0.37310200000000004
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_model>",
+        "line": 224,
+        "function": "prepare_source_static_geometry",
+        "calls": 1,
+        "self_ms": 0.250268,
+        "cumulative_ms": 218.20127300000001
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 61,
+        "function": "deterministic_fps",
+        "calls": 1,
+        "self_ms": 0.15454600000000002,
+        "cumulative_ms": 18.653434
+      },
+      {
+        "file": "<4809d6b39ecf11dc31c0ae14c08acdb316be2e46:models._cold_baseline_geometry>",
+        "line": 379,
+        "function": "native_contact_geometry",
+        "calls": 1,
+        "self_ms": 0.15424500000000002,
+        "cumulative_ms": 109.46846700000002
+      },
+      {
+        "file": "numeric.py",
+        "line": 98,
+        "function": "zeros_like",
+        "calls": 5,
+        "self_ms": 0.152377,
+        "cumulative_ms": 0.157016
+      }
+    ],
+    "current_prepare_ms": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method _cold_current._spatial_index_cpu.route_a_contact_query>",
+        "calls": 1,
+        "self_ms": 88.6992,
+        "cumulative_ms": 88.6992
+      },
+      {
+        "file": "instance_route_a_geometry.py",
+        "line": 177,
+        "function": "associate",
+        "calls": 2,
+        "self_ms": 30.753451000000002,
+        "cumulative_ms": 36.555555000000005
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method models._fps_cpu.fps_positions>",
+        "calls": 1,
+        "self_ms": 17.360924,
+        "cumulative_ms": 17.360924
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'reduce' of 'numpy.ufunc' objects>",
+        "calls": 75,
+        "self_ms": 7.967009000000001,
+        "cumulative_ms": 7.967009000000001
+      },
+      {
+        "file": "instance_route_a_geometry.py",
+        "line": 122,
+        "function": "__post_init__",
+        "calls": 2,
+        "self_ms": 7.467725000000001,
+        "cumulative_ms": 9.934785
+      },
+      {
+        "file": "instance_route_a_geometry.py",
+        "line": 96,
+        "function": "voxel_representatives",
+        "calls": 1,
+        "self_ms": 7.182673,
+        "cumulative_ms": 8.305867
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'argsort' of 'numpy.ndarray' objects>",
+        "calls": 5,
+        "self_ms": 3.982406,
+        "cumulative_ms": 3.982406
+      },
+      {
+        "file": "instance_route_a.py",
+        "line": 90,
+        "function": "_support",
+        "calls": 1,
+        "self_ms": 3.2693410000000003,
+        "cumulative_ms": 8.831379
+      },
+      {
+        "file": "instance_route_a.py",
+        "line": 134,
+        "function": "<genexpr>",
+        "calls": 8,
+        "self_ms": 2.416175,
+        "cumulative_ms": 2.416175
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'partition' of 'numpy.ndarray' objects>",
+        "calls": 4,
+        "self_ms": 1.306291,
+        "cumulative_ms": 1.306291
+      },
+      {
+        "file": "_shape_base_impl.py",
+        "line": 61,
+        "function": "take_along_axis",
+        "calls": 4,
+        "self_ms": 1.241392,
+        "cumulative_ms": 1.3336810000000001
+      },
+      {
+        "file": "_linalg.py",
+        "line": 2623,
+        "function": "norm",
+        "calls": 8,
+        "self_ms": 0.840749,
+        "cumulative_ms": 3.711497
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method numpy._core._multiarray_umath._unique_hash>",
+        "calls": 7,
+        "self_ms": 0.740758,
+        "cumulative_ms": 0.740758
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method _cold_current._spatial_index_cpu.create>",
+        "calls": 1,
+        "self_ms": 0.6629600000000001,
+        "cumulative_ms": 0.6629600000000001
+      },
+      {
+        "file": "instance_route_a.py",
+        "line": 150,
+        "function": "_instance_geometry",
+        "calls": 1,
+        "self_ms": 0.5565680000000001,
+        "cumulative_ms": 85.12649200000001
+      },
+      {
+        "file": "instance_route_a_geometry.py",
+        "line": 149,
+        "function": "nearest_anchor",
+        "calls": 1,
+        "self_ms": 0.40969500000000003,
+        "cumulative_ms": 0.47303300000000004
+      },
+      {
+        "file": "instance_route_a.py",
+        "line": 224,
+        "function": "prepare_source_static_geometry",
+        "calls": 1,
+        "self_ms": 0.27749,
+        "cumulative_ms": 177.96564700000002
+      },
+      {
+        "file": "numeric.py",
+        "line": 98,
+        "function": "zeros_like",
+        "calls": 5,
+        "self_ms": 0.15917,
+        "cumulative_ms": 0.16426800000000003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'sort' of 'numpy.ndarray' objects>",
+        "calls": 7,
+        "self_ms": 0.13275,
+        "cumulative_ms": 0.13275
+      },
+      {
+        "file": "instance_route_a_geometry.py",
+        "line": 387,
+        "function": "native_contact_geometry",
+        "calls": 1,
+        "self_ms": 0.12055,
+        "cumulative_ms": 89.590455
+      }
+    ]
+  },
+  "baseline_prepare_ms": [
+    224.87392800030648,
+    219.3073109992838,
+    214.18140099922311,
+    258.2934829988517,
+    218.31086900056107,
+    257.5088890007464,
+    226.54166299980716
+  ],
+  "current_prepare_ms": [
+    185.8596589991066,
+    188.6638910000329,
+    285.0513699995645,
+    224.6498899985454,
+    194.63120400178013,
+    187.63678399773198,
+    183.24544099959894
+  ],
+  "baseline_contact_ms": [
+    120.1534020001418,
+    118.76832699999795,
+    120.66864000007627,
+    155.68300999802887,
+    120.56557399773737,
+    109.21774800226558,
+    132.1045980002964
+  ],
+  "current_contact_ms": [
+    93.28889600146795,
+    91.97290799784241,
+    89.23291600149241,
+    104.48950700083515,
+    92.38103399911779,
+    89.23064300324768,
+    90.75192800082732
+  ],
+  "medians_ms": {
+    "baseline_prepare_ms": 224.87392800030648,
+    "current_prepare_ms": 188.6638910000329,
+    "baseline_contact_ms": 120.56557399773737,
+    "current_contact_ms": 91.97290799784241
+  }
+}

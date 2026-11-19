@@ -18,6 +18,11 @@ try:
 except ImportError:
     _fps_cpu = None
 
+try:
+    from . import _spatial_index_cpu
+except ImportError:
+    _spatial_index_cpu = None
+
 
 def _fps_axis_order():
     """Match this NumPy build's einsum reduction order for three FP64 squares.
@@ -131,7 +136,15 @@ class NeighborIndex:
             if np.any(ids[1:] == ids[:-1]):
                 self._tied_source_ids.add(int(comp))
             self.groups[int(comp)] = (rows, cKDTree(self.points[rows]))
-        self.all_tree = cKDTree(self.points) if len(self.points) else None
+        self.all_tree = None
+        if len(self.groups) == 1:
+            rows, tree = next(iter(self.groups.values()))
+            if np.array_equal(rows, np.arange(len(self.points))):
+                # Source preparation has already sorted unique source IDs.
+                # The component tree then has the exact all-point row order.
+                self.all_tree = tree
+        if self.all_tree is None and len(self.points):
+            self.all_tree = cKDTree(self.points)
 
     def nearest_anchor(self, points, radius=.005):
         """Nearest raw point, resolving exact ties without modifying the pose."""
@@ -279,9 +292,10 @@ def distance_summary(values):
 def association_diagnostics(association):
     count = len(association['valid'])
     mean = lambda a: float(np.mean(a)) if count else 0.
-    return {'d1_p50_p95_max': distance_summary(association['d1']),
+    nearest = distance_summary(association['d1'])
+    return {'d1_p50_p95_max': nearest,
             'd3_p50_p95_max': distance_summary(association['d3']),
-            'nearest_coverage_radius_max': distance_summary(association['d1'])['max'],
+            'nearest_coverage_radius_max': nearest['max'],
             'within_10mm_feature_valid_fraction': mean(association['valid']),
             'same_component_no_backbone_fraction': mean(association['component_missing']),
             'same_component_fewer_than_three_neighbors_fraction': mean(association['counts'] < 3)}
@@ -330,3 +344,116 @@ def lip_summary(height, tangent, normal, *, basis=None):
     result[:] = [np.log1p(len(height)), gaps.max() / (2 * np.pi), 1.,
                  rms / HEIGHT_LIMIT_M, *(amplitude / HEIGHT_LIMIT_M), float(valid)]
     return result, angular_support
+
+
+def reference_contact_geometry(encoded, points, normals, components, valid):
+    """Original Route-A contact math, also used for rare ambiguous native rows.
+
+    Keep this reference independent of the native engine: region membership,
+    local source-ID FPS order and raw-lip moments remain defined here.
+    """
+    count, slots = len(points), sum(ZONE_SAMPLES)
+    indices = np.zeros((count, slots), np.int64)
+    masks = np.zeros((count, slots), bool)
+    descriptor = np.zeros((count, slots, 8), np.float64)
+    raw_count = np.zeros((count, 3), np.int64)
+    summary = np.zeros((count, 8), np.float64)
+    angular_support = np.zeros(count, np.int64)
+    for row in np.flatnonzero(valid):
+        support = encoded['source_index'].support_ball(points[row], components[row])
+        rho, height, tangent, zones = contact_coordinates(encoded['points_np'][support], points[row], normals[row])
+        summary[row], angular_support[row] = lip_summary(height[zones[2]], tangent[zones[2]], normals[row])
+        offset = 0
+        for zone, (mask, budget) in enumerate(zip(zones, ZONE_SAMPLES)):
+            local = np.flatnonzero(mask)
+            raw_count[row, zone] = len(local)
+            rows = support[local]
+            chosen = fps_positions_in_source_order(encoded['points_np'][rows], budget)
+            rows, local = rows[chosen], local[chosen]
+            selected_slice = slice(offset, offset + len(rows))
+            indices[row, selected_slice] = rows
+            masks[row, selected_slice] = True
+            outer_radius = ZONE_BOUNDS[zone][1]
+            observed_normal = encoded['normals_np'][rows]
+            descriptor[row, selected_slice] = np.column_stack((
+                rho[local] / outer_radius, height[local] / HEIGHT_LIMIT_M,
+                observed_normal @ normals[row], tangent[local] @ encoded['gravity_np'] / outer_radius,
+                observed_normal @ encoded['gravity_np'], encoded['raw_feature_valid_np'][rows],
+                encoded['normal_valid_np'][rows], encoded['rgb_valid_np'][rows]))
+            offset += budget
+    return indices, masks, descriptor, raw_count, summary, angular_support
+
+
+def native_contact_geometry(encoded, points, normals, components, valid, *, workers=1, profile=None):
+    """Batch A's complete contact preparation on the shared native CPU grid.
+
+    Return None when the optional extension or the current NumPy FPS arithmetic
+    is unsupported, so callers can use reference_contact_geometry. One native
+    worker is the default: the existing spawn preparation pool already supplies
+    instance parallelism. Native handles remain local and are never pickled in
+    a prepared observation or cached across exposures.
+
+    Discrete selection follows the reference exactly. FP64 descriptors/moments
+    allow tight roundoff from native versus NumPy math. Queries within a small
+    roundoff guard of region or angular-support decisions use the full original
+    reference, retaining its exact boundary and tie behavior.
+
+    An optional ``profile`` dict receives summed candidate-worker milliseconds
+    for query, region filtering, raw-lip summary and FPS/packing. These are CPU
+    work durations (not wall time with multiple workers); grid construction and
+    ambiguous-row reference correction are excluded. The default does not read
+    a clock. Profiling requires an extension advertising its profile version.
+    """
+    native = _spatial_index_cpu
+    if native is None or getattr(native, 'ROUTE_A_CONTACT_ABI_VERSION', None) != 1 or _FPS_AXES is None:
+        return None
+    if profile is not None:
+        if not isinstance(profile, dict):
+            raise TypeError('native contact profile must be a dict')
+        if getattr(native, 'ROUTE_A_CONTACT_PROFILE_VERSION', None) != 1:
+            raise RuntimeError('native contact profiling requires the current extension')
+    if isinstance(workers, bool) or not isinstance(workers, (int, np.integer)) or not 1 <= workers <= 256:
+        raise ValueError('native contact workers must be an integer in [1,256]')
+    points = np.ascontiguousarray(points, dtype=np.float64)
+    normals = np.ascontiguousarray(normals, dtype=np.float64)
+    components = np.ascontiguousarray(components, dtype=np.int64)
+    valid = np.asarray(valid, dtype=bool)
+    count = len(points)
+    if points.shape != (count, 3) or normals.shape != points.shape or components.shape != (count,) or valid.shape != (count,):
+        raise ValueError('contact poses, components and validity must have aligned [Q] rows')
+    support = np.ascontiguousarray(encoded['points_np'], dtype=np.float64)
+    outputs = {'indices': np.zeros((count, 128), np.int64),
+               'mask': np.zeros((count, 128), bool),
+               'descriptor': np.zeros((count, 128, 8), np.float64),
+               'counts': np.zeros((count, 3), np.int64),
+               'summary': np.zeros((count, 8), np.float64),
+               'angular_support': np.zeros(count, np.int64),
+               'uncertain': np.zeros(count, bool)}
+    if profile is not None:
+        outputs['profile_ms'] = np.zeros((count, 4), np.float64)
+    inputs = {'points': points, 'normals': normals, 'components': components,
+              'selected': np.flatnonzero(valid).astype(np.int64, copy=False),
+              'fps_axes': np.asarray(_FPS_AXES, np.int64), 'boundary': BOUNDARY_ROUNDOFF_M}
+    for name, source, dtype in (
+            ('observed_normals', 'normals_np', np.float64),
+            ('source_components', 'components_np', np.int64),
+            ('source_ids', 'source_ids_np', np.int64),
+            ('feature_valid', 'raw_feature_valid_np', bool),
+            ('normal_valid', 'normal_valid_np', bool),
+            ('rgb_valid', 'rgb_valid_np', bool),
+            ('gravity', 'gravity_np', np.float64)):
+        inputs[name] = np.ascontiguousarray(encoded[source], dtype=dtype)
+    grid = native.create(support, 0, len(support), .02)
+    native.route_a_contact_query(grid, inputs, outputs, int(workers))
+    if profile is not None:
+        profile.update(zip(('query_ms', 'regions_ms', 'lip_ms', 'fps_and_pack_ms'),
+                           outputs['profile_ms'].sum(axis=0).tolist()))
+    result = tuple(outputs[name] for name in
+                   ('indices', 'mask', 'descriptor', 'counts', 'summary', 'angular_support'))
+    uncertain = np.flatnonzero(outputs['uncertain'])
+    if len(uncertain):
+        corrected = reference_contact_geometry(encoded, points[uncertain], normals[uncertain],
+                                               components[uncertain], valid[uncertain])
+        for array, reference in zip(result, corrected):
+            array[uncertain] = reference
+    return result

@@ -1,5 +1,64 @@
 # 模型验证与当前训练状态
 
+## 2026-11-19 L20三分钟实测后的冷路径与只读缓存优化
+
+本轮代码基线 A `4809d6b39ecf11dc31c0ae14c08acdb316be2e46`、B `d1c600b1b8ee81f49c9b988c51e217a311699e3b`。用户提供17:30:08–17:33:08、L20 GPU2/GPU3、预热2步、batch32的180秒窗口，A13.51/B29.51实例每秒，数据等待86.7%/49.9%。服务器原始文件在当前工作区不可访问；[转录记录](../research/instance_runs/20261119/l20-window180-user-reported.json)明确标为用户提供，未确认测试commit或缓存启用，未将其当作本轮代码的GPU复测。最新命令、缓存预算/覆盖与配对步骤见 [L20执行文档](instance_routes/L20_PIPELINE_OPTIMIZATION.md)。
+
+实现：A有序紧凑支持云免排序查询、连续局部FPS与同序单组件树复用，native来源版本 `route_a_contact_v2_contiguous_fps`；B静态四角有效性表、最近像素ROI索引和环方向复用；A/B独立source NPY/mmap镜像（可选标准稀疏NPY）及单arena持久静态包。缓存均显式离线构建、有磁盘预算、训练只读，保持原manifest、标签和checkpoint身份。不同来源/配置/几何版本失效，数组shape/索引/有限性及读写代际复核保留，无内容摘要。
+
+本地 Python3.12.14/Torch2.5.1+cpu/NumPy2.3.5，Torch/BLAS单线程，gcc/g++原生扩展。最终两路线核心套件执行 `python -m pytest -q --ignore=tests/test_prefetch.py`：**A 927 passed / 5 skipped（124.97s）**、**B 951 passed / 6 skipped（137.48s）**。包括全部新增执行代码、禁止内容校验60项、串行池统计隔离和最后缓存有效性修正；两个工作树 `git diff --check` 通过。旧DataLoader三项在此本地环境曾阻塞，继续交给不排除文件的GitHub完整CI；最终提交结果见 [PR #9](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/9)、[PR #10](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/10) checks，不把本地排除版本记为完整CI。
+
+针对性证据：A native/流式FPS/模型/noSHA 96 passed；B既有模型73 passed、新consumer+noSHA 82 passed；新source镜像最后专项+noSHA70 passed；静态存储/loading/恢复组 A94/B92 passed（另有另一条路线条件skip）；新180秒benchmark+noSHA两路线各94 passed。这些均与最终套件重叠，不累加为独立覆盖。
+
+缓存验证包含：metadata及完整成员冲突、路径碰撞、同长度/mtime源文件原子替换、映射期间替换、布局/形状/索引/有限值拒绝、COW不污染、预算与断点恢复、负零/NaN位模式、A惰性索引任意姿态回退、第一次disk命中与新RGB、serial/spawn，以及pretrain/finetune各3步连续与暂停冷恢复后的模型/AdamW/采样/RNG/pending ticket/source-target trace。180秒假时钟验证截止前完整更新、正好截止、跨线完整执行后排除、CUDA同步计入时间、预算提前耗尽失败与旧20步默认保持。
+
+CPU配对：A旧/新完整接触120.566→91.973ms、冷几何224.874→188.664ms，所有contact/prepared数组逐元素一致。B slot读取41.403→27.746ms、完整contact输入66.909→51.577ms；19个contact tensor/纹理梯度和完整网络256预测诊断tensor/126参数梯度逐元素一致。NPY读取并触达全部选中数组 A128.045→9.643ms、B118.955→8.334ms，所有数组/metadata一致。逐draw重开静态包+语义校验+新RGB+compact A180.071→5.003ms、B12.917→5.061ms，未使用LRU且所有准备值精确一致。后两项为热OS页缓存，不能推定冷随机磁盘或L20端到端收益。
+
+静态包单实例示例 A6.41MB/B4.41MB；源NPY逻辑约60MB/实例，标准稀疏NPY实际分配示例约31–33MB，原NPZ约1.12MB。已记录磁盘权衡，不默认无界展开数据。原始逐轮JSON、存储对照与复现脚本均在[20261119研究目录](../research/instance_runs/20261119/)。本轮未运行真实GPU、切换正式训练、修改模型权重结构/batch/学习率，也未启用未经实机验收的pinned/H2D或A接触并集默认路径。
+
+## 2026-11-19 第二轮：补齐性能能力适配与静态准备
+
+基线：A `4264e4d14319fcf230bb43a43d27ef582da94ae8`、B `f7a3ffc83f4993e3543dcc8ece7080b3dc905596`。上一轮不是完整性能能力继承验收；本轮逐项结果、启用条件、原始逐轮数据和剩余项见 [定向适配报告](instance_routes/E5_PERFORMANCE_MIGRATION.md)。
+
+实现 A 专用原生三区接触（复用现有空间网格/线程/缓冲管理）、完整候选一次准备、静态几何与当前 RGB 分离，以及默认关闭的接触并集按需插值/投影。B 将静态图像几何与当前 RGB 分开，几何 ROI 保留到 consumer，不再恢复完整相机零图。共同 reader 使用路线白名单、验证后释放不用的整图、prefix view/label alias 少拷贝，并保留原 flattened support 训练计数。每 worker 缓存默认64 MiB计费上限/16条目，包含底层owner计费、来源读取前后key复核、冷恢复验证。没有新增文件内容校验。
+
+本地 Python3.12.14、Torch2.5.1+cpu、NumPy2.3.5，gcc/g++构建可选扩展，Torch/BLAS单线程。核心回归：
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest -q --ignore=tests/test_prefetch.py
+```
+
+结果：**A 889 passed / 5 skipped（101.44s）**，**B 897 passed / 6 skipped（111.76s）**。末轮针对性组另有 **A 90 passed / 2 skipped**、**B 81 passed / 4 skipped**；最后串行/worker共用选定record读取、来源替换和禁止内容校验门禁，两路线各 **63 passed**。这些与核心套件重叠，不累加为独立覆盖。新增 skip 为另一条路线专属用例；未通过跳过来掩盖新增实现失败。新原生头文件也已验证包含在 source distribution 中。
+
+本地仍排除已知在当前执行环境阻塞的旧 `tests/test_prefetch.py` 三项；该文件和旧 DataLoader 实现未修改，前一轮已单独定位 `_try_get_data` 等待。GitHub CI 继续执行不排除文件的完整 `python -m pytest -q`，最终提交的状态与日志以 [A PR #9](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/9)、[B PR #10](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/10) 的 checks 为准。本地结果不记为未排除的完整套件。
+
+关键验证包括：当前A参考 vs native离散采样/边界/FP64量，单/多原生线程确定性、handle不入IPC，A/B不同曝光预测和梯度，缓存owner内存预算、读取期间文件原子替换、serial/spawn与选定record顺序；compact路径下pretrain/finetune各3步连续与暂停冷恢复，模型、优化器、采样、augmentation RNG、pending ticket及source/target trace一致。A并集路径额外验证FP32/BF16、BN buffers、空并集的零梯度关系、公开encode/eval完整特征和任意姿态惰性补齐autograd。
+
+合成CPU分段：A完整接触178.411→115.960ms；整体prepare冷路径266.474→215.250ms，已有static仅绑定当前RGB为2.455ms。B prepare+compact 125.235→12.424ms，理想缓存命中3.602ms，CPU consumer转换10.412→0.173ms。A并集示例插值/投影131072→24538行，FP32/BF16预测误差0，梯度最大绝对差分别1.746e-9/5.960e-8。路线白名单进一步少物化数组，但读取中位数没有超过上一轮四字段方案，未宣称额外读取加速。
+
+所有计时均为明确固定的CPU合成输入；warm数字不代表正式训练命中率，也不含完整I/O/增强/IPC/H2D/网络。真实SpConv/CUDA数值、L20吞吐、实际缓存命中和资源分段仍待同配置配对。A接触并集默认关闭，pinned/H2D完整链路本轮未新增；没有切换正式训练、改变模型参数/标签/batch/学习率或训练预算。
+
+
+## 2026-11-19 按 E5 历史问题审查新 A/B 路线
+
+检查基线：A `59e05c0934bf07ea5c6fb47818c61966b3c8bb02`，B `e6d9578f5fb39174cf9a81c769672800c06a9306`。审查结果、适用边界、逐项证据和复现命令见 [E5问题检查报告](instance_routes/E5_PROBLEM_AUDIT.md)，原始 CPU 数值见 [机器可读记录](../research/instance_runs/20261119/e5-problem-audit-cpu.json)。
+
+本轮针对新实现确认的重复开销，分别修改紧凑 source worker 的按需数组读取、A 的固定邻域统计位置、B 的可微批特征拆分，以及训练器的更新边界指标读回。现有模型参数、候选/标签、增强/采样、有效 batch、损失权重及 checkpoint 状态定义保持原样。当前 L20 microbatch32/有效batch32下通常只有一组 source；多组读回问题主要作用于更小microbatch、补采样及目标微调，不能称为当前主要瓶颈。
+
+本轮环境 Python3.12.14、PyTorch2.5.1+cpu、NumPy2.3.5，单线程Torch/BLAS，已用gcc/g++构建本仓库可选CPU扩展。分别在两条独立分支运行：
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest -q --ignore=tests/test_prefetch.py
+```
+
+结果：**A 851 passed / 5 skipped（73.04s）**，**B 861 passed / 4 skipped（82.57s）**。skip为测试原有的真实发布数据/另一条路线条件，不添加新skip。结果包括本轮新增的数组按需读取、完整成员碰撞/损坏query拒绝、A预取诊断、B不等query/多纹理桶/尾块梯度、指标读回及非有限梯度拒绝，以及当前实例执行器真实spawn、pending ticket、预训练/微调恢复测试。两条路线共用的测试不重复累计为独立覆盖。
+
+最初尝试完整 `pytest -q`，两分支均在原有 `tests/test_prefetch.py::test_spawn_prefetch_matches_serial_and_resumes_consumed_state` 停止推进；单独复现的20秒faulthandler栈停在Torch DataLoader的`_try_get_data`等待，45秒后由外部超时终止。该本地阻塞已在此前验证记录出现，本轮未修改旧prefetch实现或测试。完整GitHub CI仍运行未排除任何文件的`python -m pytest -q`；CI结果以对应PR checks为准。没有把排除该文件的本地结果记为完整套件通过。
+
+A的32实例统计合成对照为161.831→107.406ms；B相关反向累计分配49,876,788→20,494,692B，并且256个预测/诊断tensor和126个参数梯度均与原版完全相同；720×1280源观测的保留验证读取中位数151.147→119.008ms、少物化12,902,400B。训练器原版/新版在六种合成设置中各执行三次更新，模型、优化器、采样/RNG、checkpoint及非计时指标全部相同。全部为CPU合成证据，未测新L20/H20吞吐、真实SpConv反向或机器人效果；本轮未切换正式训练。
+
 ## 2026-11-18 B模型支撑门槛、坐标图与结构身份复核
 
 已对最新B分支逐项核实并修复模型内部缺失的 `min_support_points=100` 门控及 `architecture_metadata()`。此前共享 `infer_instance` 已能拒绝小碎片；仍存在缺口的是直接模型评分、目标动作loss及评价。现在B以实例内有限且正深度的原始XYZ像素计数，法向有效性和另传扁平点表不改变该计数；低于可配置门槛时所有query无效。结构报告记录真实13/5输入、128+64+96+18+12+12=330维融合、577个独立投影位置、精度、归一化和中心权重语义。

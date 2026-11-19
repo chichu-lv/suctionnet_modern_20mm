@@ -1,0 +1,308 @@
+{
+  "device": "CPU only",
+  "torch": "2.5.1+cpu",
+  "numpy": "2.3.5",
+  "threads": 1,
+  "implementation": "current modified worktree; only SUCTION_A_CONTACT_UNION differs",
+  "reference_flag": "0 (default)",
+  "union_flag": "1 (opt-in training compact inputs only)",
+  "scope": "2 synthetic 65536-point instances, 128 queries each, injected Linear/BatchNorm backbone; no optimizer, file I/O, native geometry, IPC or GPU timing",
+  "dense_precision": "fp32",
+  "comparison": {
+    "max_prediction_abs_error": 0.0,
+    "max_parameter_gradient_abs_error": 1.7462298274040222e-09,
+    "parameters_with_gradients": 40,
+    "geometry_exact": true,
+    "bn_buffers_exact": true,
+    "acceptance_rtol": 2e-05,
+    "acceptance_atol": 1e-07
+  },
+  "bf16_comparison": {
+    "max_prediction_abs_error": 0.0,
+    "max_parameter_gradient_abs_error": 5.960464477539063e-08,
+    "parameters_with_gradients": 40,
+    "geometry_exact": true,
+    "bn_buffers_exact": true,
+    "acceptance_rtol": 2e-05,
+    "acceptance_atol": 1e-07
+  },
+  "work": {
+    "raw_support_rows": 131072,
+    "contact_union_rows": 24538,
+    "rows_per_instance": [
+      12269,
+      12269
+    ],
+    "full_interpolated_feature_bytes": 134217728,
+    "union_interpolated_feature_bytes": 25126912,
+    "full_projected_feature_bytes": 33554432,
+    "union_projected_feature_bytes": 6281728
+  },
+  "timing": {
+    "reference": {
+      "median_ms": 874.7510610010067,
+      "rounds_ms": [
+        1095.4086530000495,
+        702.0890110034088,
+        966.0242899990408,
+        874.7510610010067,
+        846.8233740022697
+      ]
+    },
+    "union": {
+      "median_ms": 180.34392499976093,
+      "rounds_ms": [
+        191.5972030001285,
+        178.50382400138187,
+        177.91218999991543,
+        180.34392499976093,
+        191.02341500183684
+      ]
+    }
+  },
+  "allocation": {
+    "reference": {
+      "cumulative_positive_self_cpu_bytes": 2551773112,
+      "operators": {
+        "aten::_to_copy": {
+          "calls": 231,
+          "positive_self_cpu_bytes": 652
+        },
+        "aten::empty_strided": {
+          "calls": 342,
+          "positive_self_cpu_bytes": 58765016
+        },
+        "aten::addmm": {
+          "calls": 72,
+          "positive_self_cpu_bytes": 55908864
+        },
+        "aten::empty": {
+          "calls": 331,
+          "positive_self_cpu_bytes": 377509632
+        },
+        "aten::empty_like": {
+          "calls": 98,
+          "positive_self_cpu_bytes": 17920
+        },
+        "aten::zeros": {
+          "calls": 82,
+          "positive_self_cpu_bytes": 256
+        },
+        "aten::mean": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 2072
+        },
+        "aten::sum": {
+          "calls": 192,
+          "positive_self_cpu_bytes": 134449232
+        },
+        "aten::max": {
+          "calls": 14,
+          "positive_self_cpu_bytes": 595968
+        },
+        "aten::cat": {
+          "calls": 128,
+          "positive_self_cpu_bytes": 328472832
+        },
+        "aten::clamp_min": {
+          "calls": 63,
+          "positive_self_cpu_bytes": 51715584
+        },
+        "aten::index": {
+          "calls": 88,
+          "positive_self_cpu_bytes": 412221440
+        },
+        "aten::mul": {
+          "calls": 172,
+          "positive_self_cpu_bytes": 806893528
+        },
+        "aten::where": {
+          "calls": 190,
+          "positive_self_cpu_bytes": 104347452
+        },
+        "aten::any": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 768
+        },
+        "aten::div": {
+          "calls": 38,
+          "positive_self_cpu_bytes": 4586712
+        },
+        "aten::bitwise_not": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 32768
+        },
+        "aten::clone": {
+          "calls": 64,
+          "positive_self_cpu_bytes": 1536
+        },
+        "aten::sigmoid": {
+          "calls": 16,
+          "positive_self_cpu_bytes": 4096
+        },
+        "aten::clamp": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 1024
+        },
+        "aten::add": {
+          "calls": 58,
+          "positive_self_cpu_bytes": 2074664
+        },
+        "aten::bitwise_and": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 256
+        },
+        "aten::pow": {
+          "calls": 20,
+          "positive_self_cpu_bytes": 10240
+        },
+        "aten::scalar_tensor": {
+          "calls": 62,
+          "positive_self_cpu_bytes": 244
+        },
+        "aten::mm": {
+          "calls": 143,
+          "positive_self_cpu_bytes": 162447360
+        },
+        "aten::threshold_backward": {
+          "calls": 51,
+          "positive_self_cpu_bytes": 51709440
+        },
+        "aten::ge": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 240
+        },
+        "aten::le": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 244
+        },
+        "aten::sigmoid_backward": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 3072
+        }
+      }
+    },
+    "union": {
+      "cumulative_positive_self_cpu_bytes": 721983800,
+      "operators": {
+        "aten::_to_copy": {
+          "calls": 179,
+          "positive_self_cpu_bytes": 520
+        },
+        "aten::empty_strided": {
+          "calls": 290,
+          "positive_self_cpu_bytes": 28937928
+        },
+        "aten::addmm": {
+          "calls": 72,
+          "positive_self_cpu_bytes": 28636160
+        },
+        "aten::empty": {
+          "calls": 279,
+          "positive_self_cpu_bytes": 158842624
+        },
+        "aten::empty_like": {
+          "calls": 98,
+          "positive_self_cpu_bytes": 541188
+        },
+        "aten::zeros": {
+          "calls": 82,
+          "positive_self_cpu_bytes": 256
+        },
+        "aten::mean": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 2088
+        },
+        "aten::sum": {
+          "calls": 140,
+          "positive_self_cpu_bytes": 25358416
+        },
+        "aten::max": {
+          "calls": 14,
+          "positive_self_cpu_bytes": 595968
+        },
+        "aten::cat": {
+          "calls": 128,
+          "positive_self_cpu_bytes": 83018496
+        },
+        "aten::clamp_min": {
+          "calls": 63,
+          "positive_self_cpu_bytes": 24442880
+        },
+        "aten::index": {
+          "calls": 36,
+          "positive_self_cpu_bytes": 84948992
+        },
+        "aten::mul": {
+          "calls": 68,
+          "positive_self_cpu_bytes": 152348104
+        },
+        "aten::where": {
+          "calls": 190,
+          "positive_self_cpu_bytes": 49802048
+        },
+        "aten::any": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 768
+        },
+        "aten::div": {
+          "calls": 38,
+          "positive_self_cpu_bytes": 4586984
+        },
+        "aten::bitwise_not": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 32768
+        },
+        "aten::clone": {
+          "calls": 64,
+          "positive_self_cpu_bytes": 256
+        },
+        "aten::sigmoid": {
+          "calls": 16,
+          "positive_self_cpu_bytes": 4096
+        },
+        "aten::clamp": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 1024
+        },
+        "aten::add": {
+          "calls": 58,
+          "positive_self_cpu_bytes": 2074664
+        },
+        "aten::bitwise_and": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 256
+        },
+        "aten::pow": {
+          "calls": 20,
+          "positive_self_cpu_bytes": 10240
+        },
+        "aten::scalar_tensor": {
+          "calls": 62,
+          "positive_self_cpu_bytes": 240
+        },
+        "aten::mm": {
+          "calls": 143,
+          "positive_self_cpu_bytes": 53356544
+        },
+        "aten::threshold_backward": {
+          "calls": 51,
+          "positive_self_cpu_bytes": 24436736
+        },
+        "aten::ge": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 244
+        },
+        "aten::le": {
+          "calls": 4,
+          "positive_self_cpu_bytes": 240
+        },
+        "aten::sigmoid_backward": {
+          "calls": 12,
+          "positive_self_cpu_bytes": 3072
+        }
+      }
+    }
+  },
+  "limitation": "Cumulative CPU operator allocations are not peak memory; synthetic CPU timing does not establish a GPU throughput gain. BF16 numerical comparison uses the same fixed inputs once."
+}

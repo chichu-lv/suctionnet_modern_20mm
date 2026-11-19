@@ -1,0 +1,77 @@
+{
+  "scope": "Synthetic CPU source preparation only, using identical geometry and fresh RGB each round. Baseline loads the exact previous A model module but uses the same current unchanged neighbor/FPS reference primitives. Native cold recomputes all static geometry; warm binds new RGB to an already computed static geometry object. Timing excludes file reading, augmentation, IPC, cache lookup/storage, H2D and all learned network work. Real training cache hit rate is unknown; warm-bind latency is conditional on a valid hit and is not an end-to-end throughput result.",
+  "baseline_git_commit": "4264e4d14319fcf230bb43a43d27ef582da94ae8",
+  "seed": 20261119,
+  "rgb_seed": 20261120,
+  "support_count": 32000,
+  "query_count": 128,
+  "settings": {
+    "backbone_points": 2048,
+    "min_support_points": 100,
+    "query_chunk_size": 32
+  },
+  "rounds": 7,
+  "order": "rotating baseline/cold/warm",
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "thread_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    },
+    "native_route_a_abi": 1,
+    "native_route_a_source": "route_a_contact_v1"
+  },
+  "initial_static_creation_ms": 245.69039599737152,
+  "all_discrete_arrays_exact": true,
+  "all_rgb_arrays_exact_per_draw": true,
+  "warm_path_static_geometry_recompute_forbidden": true,
+  "comparison_rtol": 2e-13,
+  "comparison_atol": 2e-13,
+  "max_fp64_absolute_error": 8.881784197001252e-16,
+  "nonzero_fp64_absolute_error_by_array": {
+    "chunks/0/6/2": 3.3306690738754696e-16,
+    "chunks/0/6/4": 1.1102230246251565e-16,
+    "chunks/32/6/2": 2.220446049250313e-16,
+    "chunks/32/6/4": 8.881784197001252e-16,
+    "chunks/64/6/2": 2.220446049250313e-16,
+    "chunks/64/6/4": 8.881784197001252e-16,
+    "chunks/96/6/2": 2.220446049250313e-16,
+    "chunks/96/6/4": 8.881784197001252e-16
+  },
+  "baseline_ms": [
+    262.3672080007964,
+    266.4740649997839,
+    264.2246619980142,
+    263.9251789987611,
+    302.32692799836514,
+    295.9394310018979,
+    284.13783500218415
+  ],
+  "native_cold_ms": [
+    224.42140500061214,
+    206.081295000331,
+    205.8181969987345,
+    210.08751000044867,
+    225.23370099952444,
+    258.92897399899084,
+    215.2497159986524
+  ],
+  "static_rgb_bind_ms": [
+    2.4138419976225123,
+    2.144236001186073,
+    3.701534998981515,
+    2.5308080003014766,
+    2.2252779999689665,
+    2.455105000990443,
+    2.5918210012605414
+  ],
+  "medians_ms": {
+    "baseline_ms": 266.4740649997839,
+    "native_cold_ms": 215.2497159986524,
+    "static_rgb_bind_ms": 2.455105000990443
+  },
+  "native_cold_prepare_speedup": 1.2379763836782585,
+  "warm_bind_relative_to_baseline": 108.53876510058936
+}
