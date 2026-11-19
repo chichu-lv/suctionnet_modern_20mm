@@ -167,10 +167,15 @@ def _instance_geometry(observation, backbone_points, min_support_points):
         keys = np.empty((0, 3), np.int64)
     backbone_index = NeighborIndex(points[selected], source_ids[selected], components[selected])
     association = backbone_index.associate(points, components)
+    # These support-wide percentiles depend only on fixed CPU geometry. Prepare
+    # them with the neighbors so a prefetched instance does not repeat NumPy
+    # reductions on the GPU consumer thread after launching its backbone.
+    diagnostics = association_diagnostics(association)
     return dict(points_np=points, rgb_np=rgb, normals_np=normals, normal_valid_np=normal_valid,
                 rgb_valid_np=rgb_valid, source_ids_np=source_ids, components_np=components,
                 centroid_np=centroid, gravity_np=gravity, source_index=source_index,
                 backbone_index=backbone_index, raw_association=association,
+                association_diagnostics=diagnostics,
                 raw_feature_valid_np=association['valid'], backbone_raw_indices=selected,
                 backbone_voxel_keys=keys, support_sufficient=sufficient)
 
@@ -510,7 +515,6 @@ class InstanceSuction3D(nn.Module):
                 'backbone_features': part, 'raw_projected_features': raw_projected,
                 'context': contexts[index], 'backbone_source_ids': geometry['source_ids_np'][selected],
                 'voxel_offset_xyz': voxel_offset, 'sparse_inputs': item_sparse,
-                'association_diagnostics': association_diagnostics(association),
                 'query_points': observation.get('query_points', np.empty((0, 3))),
                 'query_normals': observation.get('query_normals', np.empty((0, 3))),
                 'query_ids': observation.get('query_ids'), 'observation': observation})

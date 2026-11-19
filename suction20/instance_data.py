@@ -28,6 +28,10 @@ from .metadata import without_legacy_checksums
 OBSERVATION_SCHEMA = 'instance_observation_v2'
 MANIFEST_VERSION = 'suction20.instance_manifest.v4'
 READABLE_MANIFEST_VERSIONS = (MANIFEST_VERSION, 'suction20.instance_manifest.v3')
+# These full-camera arrays have no consumer after source observation validation
+# and before either route's compact training payload. Retain the organized XYZ
+# and normal maps used to check canonical query/pixel identity.
+_COMPACT_SOURCE_UNUSED_ARRAYS = frozenset(('depth_m', 'depth_valid', 'eligible_mask', 'component_map'))
 QUERY_FIELDS = ('query_points', 'query_normals', 'query_uv', 'query_ids',
                 'query_source_ids', 'query_components', 'query_valid',
                 'query_cell_ids', 'query_rounds')
@@ -123,20 +127,29 @@ def _save_npz(path, value):
     return path
 
 
-def _read_npz(path):
+def _read_npz(path, *, exclude_arrays=()):
+    exclude_arrays = frozenset(exclude_arrays)
+    if 'metadata_json' in exclude_arrays:
+        raise ValueError('NPZ metadata cannot be excluded')
     arrays = None
     cache_root = os.environ.get('SUCTION_INSTANCE_SELECTION_CACHE')
     if cache_root:
         from .instance_selection_cache import read_cached_arrays
-        arrays = read_cached_arrays(path, cache_root)
+        cached = read_cached_arrays(path, cache_root, exclude_arrays=exclude_arrays)
+        if cached is not None:
+            arrays, members = cached
     if arrays is None:
         with np.load(path, allow_pickle=False) as file:
-            arrays = {key: file[key] for key in file.files}
+            members = tuple(file.files)
+            arrays = {key: file[key] for key in members if key not in exclude_arrays}
     encoded = arrays.pop('metadata_json', None)
     result = without_legacy_checksums(arrays)
     if encoded is not None:
         meta = without_legacy_checksums(json.loads(str(encoded)))
-        if set(meta) & set(result):
+        # A skipped array must not conceal an ambiguous metadata declaration.
+        array_names = without_legacy_checksums(dict.fromkeys(
+            key for key in members if key != 'metadata_json'))
+        if set(meta) & set(array_names):
             raise ValueError('array/metadata key collision')
         result.update(meta)
     return without_legacy_checksums(result)
@@ -151,7 +164,12 @@ def save_observation(path, observation):
 
 def load_observation(path):
     """Load once, then validate geometry in memory; never scan archive bytes."""
-    obs = _read_npz(path)
+    return _load_observation(path)
+
+
+def _load_observation(path, *, exclude_arrays=()):
+    """Keep identical canonical checks for full and compact-source readers."""
+    obs = _read_npz(path, exclude_arrays=exclude_arrays)
     if obs.get('normal_spec') != NORMAL_SPEC or obs.get('sampler_spec') != SAMPLER_SPEC:
         raise ValueError('observation normal/sampler version mismatch')
     if obs.get('precision_spec') != PRECISION_SPEC:
@@ -284,9 +302,10 @@ class InstanceDataset:
                 self._cache.popitem(last=False)
         return result
 
-    def load_uncached(self, index):
+    def load_uncached(self, index, *, _compact_source=False):
         record = copy.deepcopy(self.records[index])
-        obs = load_observation(_path(self.root, record['observation_npz']))
+        excluded = _COMPACT_SOURCE_UNUSED_ARRAYS if _compact_source and record['split'] == 'train' else ()
+        obs = _load_observation(_path(self.root, record['observation_npz']), exclude_arrays=excluded)
         obs['sample_uid'], obs['instance_uid'] = record['sample_id'], record['instance_uid']
         obs['observation_identity']['instance_uid'] = record['instance_uid']
         full_count = len(obs['query_points'])

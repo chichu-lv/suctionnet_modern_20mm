@@ -38,6 +38,9 @@
 
 ## 单物体路线 A/B 设计与实施
 
+- [x] 2026-11-19 [E5问题在新路线中的针对性审查](instance_routes/E5_PROBLEM_AUDIT.md)：落实源训练按需读取、A消费者固定统计前移、B反向切片分配优化和更新边界指标读回；当前证据为CPU合成对照和回归。
+- [ ] 同卡、同有效batch32、同抽样/增强验证上述新增改动的L20吞吐、CUDA/SpConv数值、资源及正常恢复；完成后再更新正式运行记录。
+
 - [x] [A/B独立分支与六部分实施文档](instance_routes/README.md)，v3架构图、几何边界及物理v2目标自碰合同已整理。
 - [x] 共同 `instance_geometry/data/teacher`、官方格式builder、精确p/n标签、对象资产/缓存身份；CPU与合成官方格式验证。
 - [x] A的12通道SpConv包装、raw支持谐波/分组、531融合与精确姿态接口；CPU测试显式注入骨干，真实SpConv尚待GPU检查。

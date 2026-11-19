@@ -16,7 +16,8 @@ from suction20.full_data import DEFAULT_CONFIG, collision_mask_for_instance, tra
 from suction20.instance_data import (InstanceAttemptDataset, InstanceDataset, build_source_instances,
     load_observation, save_observation, source_scene_ids, source_split,
     merge_source_manifests, _save_npz)
-from suction20.instance_data import source_build_output, source_output_lock
+from suction20.instance_data import (source_build_output, source_output_lock,
+                                    _read_npz, _COMPACT_SOURCE_UNUSED_ARRAYS)
 from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M, prepare_instance, stratified_queries_refill
 from suction20.instance_teacher import InstanceTeacher, empty_labels, validate_labels
 
@@ -191,6 +192,83 @@ def test_real_format_builder_prefix_integrity_and_resume(tmp_path):
     label_path.unlink()
     unlabelled = InstanceDataset(manifest, require_labels=False)[0]
     assert unlabelled['labels'] is None and len(unlabelled['observation']['query_points']) == 256
+
+
+def test_compact_source_read_skips_unused_arrays_with_identical_retained_values(tmp_path, monkeypatch):
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    dataset = InstanceDataset(manifest, training_queries=8)
+    expected = dataset.load_uncached(0)
+    path = dataset.root / dataset.records[0]['observation_npz']
+    # The public reader, builder and repacker still expose complete observations.
+    assert _COMPACT_SOURCE_UNUSED_ARRAYS <= load_observation(path).keys()
+    with np.load(path, allow_pickle=False) as archive:
+        archive_type = type(archive)
+    original = archive_type.__getitem__
+    requested = []
+
+    def read_required(self, key):
+        requested.append(key)
+        assert key not in _COMPACT_SOURCE_UNUSED_ARRAYS, 'unused array was materialized'
+        return original(self, key)
+
+    monkeypatch.setattr(archive_type, '__getitem__', read_required)
+    actual = dataset.load_uncached(0, _compact_source=True)
+    assert {'xyz_map', 'normal_map', 'query_points', 'query_normals', 'metadata_json'} <= set(requested)
+    assert actual['record'] == expected['record']
+    for group in ('observation', 'labels'):
+        omitted = _COMPACT_SOURCE_UNUSED_ARRAYS if group == 'observation' else set()
+        assert actual[group].keys() == expected[group].keys() - omitted
+        for key, value in actual[group].items():
+            reference = expected[group][key]
+            if isinstance(value, np.ndarray):
+                assert value.dtype == reference.dtype
+                np.testing.assert_array_equal(value, reference)
+            else:
+                assert value == reference
+
+
+def test_compact_source_hint_does_not_narrow_test_observations(tmp_path):
+    root, release, _ = _assets(tmp_path, scene_id=100)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='test', scenes=[100], frames=[0], with_labels=False)
+    dataset = InstanceDataset(manifest, require_labels=False)
+    assert _COMPACT_SOURCE_UNUSED_ARRAYS <= dataset.load_uncached(0, _compact_source=True)['observation'].keys()
+
+
+@pytest.mark.parametrize('corruption, expected_error', [
+    ('query_point', 'raw source pixels'), ('normal_spec', 'version mismatch'),
+    ('label_pose', 'pose differs'),
+])
+def test_compact_source_read_keeps_geometry_schema_and_label_checks(tmp_path, corruption, expected_error):
+    root, release, _ = _assets(tmp_path)
+    manifest, _ = build_source_instances(root, release, tmp_path / 'cache',
+        split='train', scenes=[0], frames=[0], train_queries=8)
+    dataset = InstanceDataset(manifest, training_queries=8)
+    field = 'label_cache' if corruption == 'label_pose' else 'observation_npz'
+    path = dataset.root / dataset.records[0][field]
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {key: archive[key] for key in archive.files}
+    if corruption == 'normal_spec':
+        metadata = json.loads(str(arrays['metadata_json']))
+        metadata['normal_spec'] = 'unsupported'
+        arrays['metadata_json'] = np.asarray(json.dumps(metadata))
+    else:
+        arrays['points' if corruption == 'label_pose' else 'query_points'][0, 0] += 1e-5
+    np.savez_compressed(path, **arrays)
+    for compact in (False, True):
+        with pytest.raises(ValueError, match=expected_error):
+            dataset.load_uncached(0, _compact_source=compact)
+
+
+@pytest.mark.parametrize('excluded', [(), ('depth_m',)])
+def test_excluded_array_still_collides_with_metadata(tmp_path, excluded):
+    path = tmp_path / 'ambiguous.npz'
+    np.savez_compressed(path, depth_m=np.zeros((3, 3)),
+                        metadata_json=np.asarray(json.dumps({'depth_m': 'ambiguous'})))
+    with pytest.raises(ValueError, match='array/metadata key collision'):
+        _read_npz(path, exclude_arrays=excluded)
 
 
 def test_test_insufficient_support_is_retained(tmp_path):

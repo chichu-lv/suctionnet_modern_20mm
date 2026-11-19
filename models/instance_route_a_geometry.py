@@ -279,9 +279,10 @@ def distance_summary(values):
 def association_diagnostics(association):
     count = len(association['valid'])
     mean = lambda a: float(np.mean(a)) if count else 0.
-    return {'d1_p50_p95_max': distance_summary(association['d1']),
+    nearest = distance_summary(association['d1'])
+    return {'d1_p50_p95_max': nearest,
             'd3_p50_p95_max': distance_summary(association['d3']),
-            'nearest_coverage_radius_max': distance_summary(association['d1'])['max'],
+            'nearest_coverage_radius_max': nearest['max'],
             'within_10mm_feature_valid_fraction': mean(association['valid']),
             'same_component_no_backbone_fraction': mean(association['component_missing']),
             'same_component_fewer_than_three_neighbors_fraction': mean(association['counts'] < 3)}

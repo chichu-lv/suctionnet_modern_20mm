@@ -1,5 +1,24 @@
 # 模型验证与当前训练状态
 
+## 2026-11-19 按 E5 历史问题审查新 A/B 路线
+
+检查基线：A `59e05c0934bf07ea5c6fb47818c61966b3c8bb02`，B `e6d9578f5fb39174cf9a81c769672800c06a9306`。审查结果、适用边界、逐项证据和复现命令见 [E5问题检查报告](instance_routes/E5_PROBLEM_AUDIT.md)，原始 CPU 数值见 [机器可读记录](../research/instance_runs/20261119/e5-problem-audit-cpu.json)。
+
+本轮针对新实现确认的重复开销，分别修改紧凑 source worker 的按需数组读取、A 的固定邻域统计位置、B 的可微批特征拆分，以及训练器的更新边界指标读回。现有模型参数、候选/标签、增强/采样、有效 batch、损失权重及 checkpoint 状态定义保持原样。当前 L20 microbatch32/有效batch32下通常只有一组 source；多组读回问题主要作用于更小microbatch、补采样及目标微调，不能称为当前主要瓶颈。
+
+本轮环境 Python3.12.14、PyTorch2.5.1+cpu、NumPy2.3.5，单线程Torch/BLAS，已用gcc/g++构建本仓库可选CPU扩展。分别在两条独立分支运行：
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m pytest -q --ignore=tests/test_prefetch.py
+```
+
+结果：**A 851 passed / 5 skipped（73.04s）**，**B 861 passed / 4 skipped（82.57s）**。skip为测试原有的真实发布数据/另一条路线条件，不添加新skip。结果包括本轮新增的数组按需读取、完整成员碰撞/损坏query拒绝、A预取诊断、B不等query/多纹理桶/尾块梯度、指标读回及非有限梯度拒绝，以及当前实例执行器真实spawn、pending ticket、预训练/微调恢复测试。两条路线共用的测试不重复累计为独立覆盖。
+
+最初尝试完整 `pytest -q`，两分支均在原有 `tests/test_prefetch.py::test_spawn_prefetch_matches_serial_and_resumes_consumed_state` 停止推进；单独复现的20秒faulthandler栈停在Torch DataLoader的`_try_get_data`等待，45秒后由外部超时终止。该本地阻塞已在此前验证记录出现，本轮未修改旧prefetch实现或测试。完整GitHub CI仍运行未排除任何文件的`python -m pytest -q`；CI结果以对应PR checks为准。没有把排除该文件的本地结果记为完整套件通过。
+
+A的32实例统计合成对照为161.831→107.406ms；B相关反向累计分配49,876,788→20,494,692B，并且256个预测/诊断tensor和126个参数梯度均与原版完全相同；720×1280源观测的保留验证读取中位数151.147→119.008ms、少物化12,902,400B。训练器原版/新版在六种合成设置中各执行三次更新，模型、优化器、采样/RNG、checkpoint及非计时指标全部相同。全部为CPU合成证据，未测新L20/H20吞吐、真实SpConv反向或机器人效果；本轮未切换正式训练。
+
 ## 2026-11-18 B模型支撑门槛、坐标图与结构身份复核
 
 已对最新B分支逐项核实并修复模型内部缺失的 `min_support_points=100` 门控及 `architecture_metadata()`。此前共享 `infer_instance` 已能拒绝小碎片；仍存在缺口的是直接模型评分、目标动作loss及评价。现在B以实例内有限且正深度的原始XYZ像素计数，法向有效性和另传扁平点表不改变该计数；低于可配置门槛时所有query无效。结构报告记录真实13/5输入、128+64+96+18+12+12=330维融合、577个独立投影位置、精度、归一化和中心权重语义。

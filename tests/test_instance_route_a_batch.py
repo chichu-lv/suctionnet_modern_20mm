@@ -170,6 +170,26 @@ def test_worker_output_survives_pickle_and_cannot_be_reused_with_replaced_suppor
         model.encode_instances([prepared[0]])
 
 
+def test_prefetched_geometry_carries_diagnostics_without_consumer_percentiles(monkeypatch):
+    import models.instance_route_a as route_a
+
+    model = InstanceSuction3D(backbone=InjectedBackbone(), backbone_points=32).eval()
+    observations = samples() + [observation(side=7)]
+    reference = model.encode_instances(observations)
+    expected = [item['association_diagnostics'] for item in reference]
+    prepared = [pickle.loads(pickle.dumps(model.prepare_source_geometry(item)))
+                for item in observations]
+    monkeypatch.setattr(route_a, 'association_diagnostics',
+                        lambda *args: pytest.fail('Repeated support-wide percentiles on the consumer'))
+    encoded = model.encode_instances(prepared)
+    assert [item['association_diagnostics'] for item in encoded] == expected
+    assert expected[-1]['within_10mm_feature_valid_fraction'] == 0.
+    assert expected[-1]['nearest_coverage_radius_max'] is None
+    for actual, previous in zip(encoded, reference):
+        torch.testing.assert_close(actual['raw_projected_features'], previous['raw_projected_features'],
+                                   rtol=0, atol=0)
+
+
 def test_bf16_dense_keeps_geometry_double_sparse_float_and_evaluation_float():
     model = InstanceSuction3D(backbone=CaptureBackbone(), backbone_points=32, query_chunk_size=128).train()
     model.configure_execution(precision='bf16_dense', dense_query_chunk=32)

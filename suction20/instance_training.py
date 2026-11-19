@@ -981,11 +981,13 @@ class InstanceTrainer:
                 self.skipped_no_supervision += len(group) - len(losses)
                 if losses:
                     # One instance-normalized loss per supervised observation.
-                    (torch.stack(losses).sum() * weight).backward()
+                    packed_losses = torch.stack(losses)
+                    (packed_losses.sum() * weight).backward()
                     completed += len(losses)
-                    host_losses = torch.stack(losses).detach().float().cpu().tolist()
                     self._source_loss_backward_seconds += time.perf_counter() - forward_end
-                    yield from host_losses
+                    # Retain only detached scalars until the optimizer boundary;
+                    # reading each microbatch back would serialize CPU/CUDA work.
+                    yield from packed_losses.detach().float().unbind()
         if completed < count:
             raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
 
@@ -1009,7 +1011,7 @@ class InstanceTrainer:
                     continue
                 (loss * weight).backward()
                 completed += 1
-                yield float(loss.detach())
+                yield loss.detach()
         if completed < count:
             if target:
                 raise RuntimeError('Insufficient supported historical actions; no zero-label substitution is permitted')
@@ -1069,7 +1071,13 @@ class InstanceTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             raise FloatingPointError('Nonfinite gradients: no successful step or instance budget credited') from error
         self.optimizer.step()
-        grad_norm = float(norm)
+        # One metrics transfer after the successful update, including the
+        # PRE-clip norm. Preserve CPU float64 means over the per-instance values
+        # (and the existing loss weighting), rather than changing the reduction.
+        source_count = len(losses)
+        metrics = torch.stack([*losses, *target_losses, norm.detach()]).cpu().tolist()
+        losses, target_losses = metrics[:source_count], metrics[source_count:-1]
+        grad_norm = metrics[-1]
         optimizer_end = time.perf_counter()
         self.step += 1
         self.supervised_source_instances += count
@@ -1090,7 +1098,7 @@ class InstanceTrainer:
                                 'data_wait_seconds': self._data_wait_seconds,
                                 # Host wall intervals. CUDA work may complete at a later readback.
                                 'source_forward_host_seconds': self._source_forward_seconds,
-                                'source_loss_backward_readback_host_seconds': self._source_loss_backward_seconds,
+                                'source_loss_backward_host_seconds': self._source_loss_backward_seconds,
                                 'clip_optimizer_readback_host_seconds': optimizer_end - optimizer_start}
         return record
 
