@@ -1,5 +1,21 @@
 # 模型验证与当前训练状态
 
+## 2026-11-19 L20三分钟实测后的冷路径与只读缓存优化
+
+本轮代码基线 A `4809d6b39ecf11dc31c0ae14c08acdb316be2e46`、B `d1c600b1b8ee81f49c9b988c51e217a311699e3b`。用户提供17:30:08–17:33:08、L20 GPU2/GPU3、预热2步、batch32的180秒窗口，A13.51/B29.51实例每秒，数据等待86.7%/49.9%。服务器原始文件在当前工作区不可访问；[转录记录](../research/instance_runs/20261119/l20-window180-user-reported.json)明确标为用户提供，未确认测试commit或缓存启用，未将其当作本轮代码的GPU复测。最新命令、缓存预算/覆盖与配对步骤见 [L20执行文档](instance_routes/L20_PIPELINE_OPTIMIZATION.md)。
+
+实现：A有序紧凑支持云免排序查询、连续局部FPS与同序单组件树复用，native来源版本 `route_a_contact_v2_contiguous_fps`；B静态四角有效性表、最近像素ROI索引和环方向复用；A/B独立source NPY/mmap镜像（可选标准稀疏NPY）及单arena持久静态包。缓存均显式离线构建、有磁盘预算、训练只读，保持原manifest、标签和checkpoint身份。不同来源/配置/几何版本失效，数组shape/索引/有限性及读写代际复核保留，无内容摘要。
+
+本地 Python3.12.14/Torch2.5.1+cpu/NumPy2.3.5，Torch/BLAS单线程，gcc/g++原生扩展。最终两路线核心套件执行 `python -m pytest -q --ignore=tests/test_prefetch.py`：**A 927 passed / 5 skipped（124.97s）**、**B 951 passed / 6 skipped（137.48s）**。包括全部新增执行代码、禁止内容校验60项、串行池统计隔离和最后缓存有效性修正；两个工作树 `git diff --check` 通过。旧DataLoader三项在此本地环境曾阻塞，继续交给不排除文件的GitHub完整CI；最终提交结果见 [PR #9](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/9)、[PR #10](https://github.com/chichu-lv/suctionnet_modern_20mm/pull/10) checks，不把本地排除版本记为完整CI。
+
+针对性证据：A native/流式FPS/模型/noSHA 96 passed；B既有模型73 passed、新consumer+noSHA 82 passed；新source镜像最后专项+noSHA70 passed；静态存储/loading/恢复组 A94/B92 passed（另有另一条路线条件skip）；新180秒benchmark+noSHA两路线各94 passed。这些均与最终套件重叠，不累加为独立覆盖。
+
+缓存验证包含：metadata及完整成员冲突、路径碰撞、同长度/mtime源文件原子替换、映射期间替换、布局/形状/索引/有限值拒绝、COW不污染、预算与断点恢复、负零/NaN位模式、A惰性索引任意姿态回退、第一次disk命中与新RGB、serial/spawn，以及pretrain/finetune各3步连续与暂停冷恢复后的模型/AdamW/采样/RNG/pending ticket/source-target trace。180秒假时钟验证截止前完整更新、正好截止、跨线完整执行后排除、CUDA同步计入时间、预算提前耗尽失败与旧20步默认保持。
+
+CPU配对：A旧/新完整接触120.566→91.973ms、冷几何224.874→188.664ms，所有contact/prepared数组逐元素一致。B slot读取41.403→27.746ms、完整contact输入66.909→51.577ms；19个contact tensor/纹理梯度和完整网络256预测诊断tensor/126参数梯度逐元素一致。NPY读取并触达全部选中数组 A128.045→9.643ms、B118.955→8.334ms，所有数组/metadata一致。逐draw重开静态包+语义校验+新RGB+compact A180.071→5.003ms、B12.917→5.061ms，未使用LRU且所有准备值精确一致。后两项为热OS页缓存，不能推定冷随机磁盘或L20端到端收益。
+
+静态包单实例示例 A6.41MB/B4.41MB；源NPY逻辑约60MB/实例，标准稀疏NPY实际分配示例约31–33MB，原NPZ约1.12MB。已记录磁盘权衡，不默认无界展开数据。原始逐轮JSON、存储对照与复现脚本均在[20261119研究目录](../research/instance_runs/20261119/)。本轮未运行真实GPU、切换正式训练、修改模型权重结构/batch/学习率，也未启用未经实机验收的pinned/H2D或A接触并集默认路径。
+
 ## 2026-11-19 第二轮：补齐性能能力适配与静态准备
 
 基线：A `4264e4d14319fcf230bb43a43d27ef582da94ae8`、B `f7a3ffc83f4993e3543dcc8ece7080b3dc905596`。上一轮不是完整性能能力继承验收；本轮逐项结果、启用条件、原始逐轮数据和剩余项见 [定向适配报告](instance_routes/E5_PERFORMANCE_MIGRATION.md)。

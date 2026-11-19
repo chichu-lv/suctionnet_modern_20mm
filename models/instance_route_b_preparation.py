@@ -13,7 +13,28 @@ import numpy as np
 import torch
 
 
-STATIC_INPUTS_SPEC = "route_b_static_image_geometry64_rgb_indices_v1"
+STATIC_INPUTS_SPEC = "route_b_static_image_geometry64_rgb_indices_quad_v2"
+
+
+def bilinear_validity_map(xyz, mask):
+    """Four ORIGINAL pixels valid with <=10 mm depth span at each top-left.
+
+    This depends only on immutable image geometry, never on RGB, query phase
+    or model weights. A rectangle's last row/column cannot begin a valid quad;
+    no geometry outside a compact valid-support rectangle can complete one.
+    The query consumer separately checks original-camera bounds before lookup.
+    """
+    result = torch.zeros_like(mask, dtype=torch.bool)
+    if min(mask.shape) < 2:
+        return result
+    corners = ((slice(None, -1), slice(None, -1)),
+               (slice(None, -1), slice(1, None)),
+               (slice(1, None), slice(None, -1)),
+               (slice(1, None), slice(1, None)))
+    valid = torch.stack([mask[y, x] for y, x in corners], -1).all(-1)
+    depth = torch.stack([xyz[y, x, 2] for y, x in corners], -1)
+    result[:-1, :-1] = valid & ((depth.amax(-1) - depth.amin(-1)) <= .010 + 1e-12)
+    return result
 
 
 def _numpy_owned(value):
@@ -145,6 +166,7 @@ def prepare_source_static_inputs(observation, *, min_support_points=100, sample_
     affine = xyz.new_tensor(((scale, 0., -scale * left - .5),
                              (0., scale, -scale * top - .5), (0., 0., 1.)))
     encoded = dict(xyz_map=xyz, mask=valid, normal_map=normals, normal_valid=nv,
+                   bilinear_valid_map=bilinear_validity_map(xyz, valid),
                    intrinsics=intrinsics, gravity=gravity, centroid=centroid, extent=extent,
                    support_points=points, context_affine=affine,
                    context_affine_inverse=torch.linalg.inv(affine), intrinsics_context=affine @ intrinsics,

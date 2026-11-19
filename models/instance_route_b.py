@@ -18,7 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from suction20.instance_config import B_FEATURE_FRAME, B_LEGACY_FEATURE_FRAME
-from .instance_route_b_preparation import combine_source_images, prepare_source_static_inputs
+from .instance_route_b_preparation import (bilinear_validity_map, combine_source_images,
+                                           prepare_source_static_inputs)
 
 
 RADII_M = (0., .005, .009, .010, .014, .017, .018, .020, .022)
@@ -26,7 +27,7 @@ ANGLES = 72
 BOUNDARY_EPS_M = 1e-12
 GEOMETRY_CONTRACT = "b_v3_supported_projected_rings_float64"
 CPU_INPUTS_SPEC = "route_b_cpu_inputs_fp32_geometry64_v1"
-TRAINING_INPUTS_SPEC = "route_b_training_roi_fp32_geometry64_v2"
+TRAINING_INPUTS_SPEC = "route_b_training_roi_fp32_geometry64_quad_v3"
 _IMAGE_SOURCE_KEYS = ("xyz_map", "mask", "instance_mask", "rgb", "rgb_valid",
                       "normal_map", "normal_valid", "gravity", "intrinsics")
 
@@ -161,15 +162,17 @@ def ring_directions(normals, phase, *, feature_frame=B_FEATURE_FRAME):
     e1, e2, chart = fixed_z_frames(normals, feature_frame=feature_frame)
     theta = 2 * math.pi * (torch.arange(ANGLES, device=normals.device, dtype=torch.float64) + .5) / ANGLES
     theta = theta[None, :] + phase[:, None]
-    radial = e1[:, None, :] * theta.cos()[..., None] + e2[:, None, :] * theta.sin()[..., None]
-    tangent = -e1[:, None, :] * theta.sin()[..., None] + e2[:, None, :] * theta.cos()[..., None]
+    cosine, sine = theta.cos()[..., None], theta.sin()[..., None]
+    radial = e1[:, None, :] * cosine + e2[:, None, :] * sine
+    tangent = -e1[:, None, :] * sine + e2[:, None, :] * cosine
     return radial, tangent, chart
 
 
 def projected_ring_gate(observed_points, observed_valid, points, normals, phase,
-                        *, feature_frame=B_FEATURE_FRAME):
+                        *, feature_frame=B_FEATURE_FRAME, _directions=None):
     """Float64 v3 contact gates, with raw observations retained independently."""
-    radial, angular, chart = ring_directions(normals, phase, feature_frame=feature_frame)
+    radial, angular, chart = (ring_directions(normals, phase, feature_frame=feature_frame)
+                              if _directions is None else _directions)
     delta = torch.where(observed_valid[..., None], observed_points, points[:, None, None, :]) - points[:, None, None, :]
     height = (delta * normals[:, None, None, :]).sum(-1)
     tangent = delta - height[..., None] * normals[:, None, None, :]
@@ -251,35 +254,48 @@ def _nearest_map(image, uv):
     return values, inside, iy * w + ix, torch.stack((ix, iy), dim=-1)
 
 
-def _geometry_at_pixels(encoded, key, iy, ix):
-    """Read compact geometry using ORIGINAL camera indices and edge clamping."""
-    image = encoded[key]
+def _geometry_at_pixels_many(encoded, keys, iy, ix):
+    """Reuse camera/ROI indices when reading several maps at the same pixels."""
+    image = encoded[keys[0]]
     h, w = encoded.get("geometry_image_hw", image.shape[:2])
     cy, cx = iy.clamp(0, h - 1), ix.clamp(0, w - 1)
     y0, x0 = encoded.get("geometry_top_left", (0, 0))
     rh, rw = image.shape[:2]
     if (rh, rw) == (h, w) and (y0, x0) == (0, 0):
-        return image[cy, cx]
+        return {key: encoded[key][cy, cx] for key in keys}
     if not rh or not rw:
-        return image.new_zeros((*iy.shape, *image.shape[2:]))
+        return {key: encoded[key].new_zeros((*iy.shape, *encoded[key].shape[2:])) for key in keys}
     ly, lx = cy - y0, cx - x0
     inside_roi = (ly >= 0) & (ly < rh) & (lx >= 0) & (lx < rw)
-    values = image[ly.clamp(0, rh - 1), lx.clamp(0, rw - 1)]
-    for _ in image.shape[2:]:
-        inside_roi = inside_roi.unsqueeze(-1)
-    return torch.where(inside_roi, values, torch.zeros_like(values))
+    ly, lx = ly.clamp(0, rh - 1), lx.clamp(0, rw - 1)
+    result = {}
+    for key in keys:
+        values = encoded[key][ly, lx]
+        mask = inside_roi.reshape((*inside_roi.shape, *((1,) * (encoded[key].ndim - 2))))
+        result[key] = torch.where(mask, values, torch.zeros_like(values))
+    return result
 
 
-def _nearest_geometry(encoded, key, uv):
+def _geometry_at_pixels(encoded, key, iy, ix):
+    """Read compact geometry using ORIGINAL camera indices and edge clamping."""
+    return _geometry_at_pixels_many(encoded, (key,), iy, ix)[key]
+
+
+def _nearest_geometry_many(encoded, keys, uv):
     """Nearest original pixel, independent of the stored geometry rectangle."""
-    h, w = encoded.get("geometry_image_hw", encoded[key].shape[:2])
+    h, w = encoded.get("geometry_image_hw", encoded[keys[0]].shape[:2])
     finite = torch.isfinite(uv).all(-1)
     safe_uv = torch.where(finite[..., None], uv, torch.zeros_like(uv))
     ix = torch.floor(safe_uv[..., 0] + .5).long()
     iy = torch.floor(safe_uv[..., 1] + .5).long()
     inside = finite & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
-    return (_geometry_at_pixels(encoded, key, iy, ix), inside,
+    return (_geometry_at_pixels_many(encoded, keys, iy, ix), inside,
             iy * w + ix, torch.stack((ix, iy), -1))
+
+
+def _nearest_geometry(encoded, key, uv):
+    values, inside, source_id, nearest_uv = _nearest_geometry_many(encoded, (key,), uv)
+    return values[key], inside, source_id, nearest_uv
 
 
 def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=torch.float32,
@@ -449,7 +465,7 @@ def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_ima
 # camera pixel indices (including off-image and invalid pixels) when decoding.
 _GEOMETRY_MAPS = ("xyz_map", "mask", "normal_map", "normal_valid")
 _TRAINING_ENCODED_KEYS = frozenset((
-    "context", "texture", "xyz_map", "mask", "normal_map", "normal_valid", "intrinsics", "gravity",
+    "context", "texture", "xyz_map", "mask", "normal_map", "normal_valid", "bilinear_valid_map", "intrinsics", "gravity",
     "centroid", "extent", "support_points", "context_affine", "context_affine_inverse", "intrinsics_context",
     "texture_origin_uv", "texture_roi_hw", "texture_padded_hw", "bbox_xyxy", "support_count",
     "support_sufficient", "instance_valid", "sample_uid"))
@@ -472,6 +488,9 @@ def compact_prepared_source_item(item):
         x0, x1 = (int(xs[0]), int(xs[-1])+1) if len(xs) else (0, 0)
         for key in _GEOMETRY_MAPS:
             encoded[key] = np.ascontiguousarray(encoded[key][y0:y1, x0:x1])
+    if "bilinear_valid_map" not in encoded:
+        encoded["bilinear_valid_map"] = bilinear_validity_map(
+            torch.as_tensor(encoded["xyz_map"]), torch.as_tensor(encoded["mask"])).numpy()
     compact = {key: obs[key] for key in ("query_points", "query_normals",
                "sample_uid", "instance_uid", "_route_b_phase_poses") if key in obs}
     if "support_points" in obs:
@@ -521,6 +540,7 @@ def _validate_training_wire(wire):
     array("xyz_map", (rh, rw, 3), "float64")
     array("normal_map", (rh, rw, 3), "float64")
     array("normal_valid", (rh, rw), "bool")
+    array("bilinear_valid_map", (rh, rw), "bool")
     array("context", (1, 13, 128, 128), "float32")
     ph, pw = integers(encoded["texture_padded_hw"], 2, "texture padding")
     th, tw = integers(encoded["texture_roi_hw"], 2, "texture ROI")
@@ -856,29 +876,37 @@ class InstanceSuction2DFastV3(nn.Module):
 
     def _read_slots(self, encoded, unique_points):
         uv, projected = self._project(unique_points, encoded["intrinsics"])
-        actual, inside, source_id, nearest_uv = _nearest_geometry(encoded, "xyz_map", uv)
-        iy, ix = nearest_uv[..., 1], nearest_uv[..., 0]
-        mask = _geometry_at_pixels(encoded, "mask", iy, ix)
-        normal = _geometry_at_pixels(encoded, "normal_map", iy, ix)
-        nv = _geometry_at_pixels(encoded, "normal_valid", iy, ix)
+        nearest_maps, inside, source_id, nearest_uv = _nearest_geometry_many(encoded, _GEOMETRY_MAPS, uv)
+        actual, mask = nearest_maps["xyz_map"], nearest_maps["mask"]
+        normal, nv = nearest_maps["normal_map"], nearest_maps["normal_valid"]
         observed = projected & inside & mask
         actual = torch.where(observed[..., None], actual, torch.zeros_like(actual))
         normal = torch.where((observed & nv)[..., None], normal, torch.zeros_like(normal))
         # Bilinear features are allowed only when all four ORIGINAL pixels
         # belong to this instance and span <=10mm in observed depth.
         floor_uv = torch.floor(uv).long()
-        bilinear_ok = projected.clone()
-        zs = []
         h, w = encoded.get("geometry_image_hw", encoded["mask"].shape)
-        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            cx, cy = floor_uv[..., 0] + dx, floor_uv[..., 1] + dy
-            valid_corner = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h)
-            valid_corner = valid_corner & _geometry_at_pixels(encoded, "mask", cy, cx)
-            bilinear_ok &= valid_corner
-            zs.append(_geometry_at_pixels(encoded, "xyz_map", cy, cx)[..., 2])
-        depth = torch.stack(zs, -1)
-        bilinear_ok &= (depth.amax(-1) - depth.amin(-1)) <= .010 + BOUNDARY_EPS_M
-        bilinear_ok &= observed
+        if "bilinear_valid_map" in encoded:
+            # Worker geometry is immutable. Phase changes the queried pixel,
+            # not the four-corner depth rule stored at that original pixel.
+            fx, fy = floor_uv[..., 0], floor_uv[..., 1]
+            bilinear_ok = _geometry_at_pixels(encoded, "bilinear_valid_map", fy, fx)
+            bilinear_ok &= (fx >= 0) & (fx < w - 1) & (fy >= 0) & (fy < h - 1)
+            bilinear_ok &= projected & observed
+        else:
+            # Public encoded callers can mutate raw maps between queries.
+            # Preserve their live-depth behavior instead of caching a rule.
+            bilinear_ok = projected.clone()
+            zs = []
+            for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+                cx, cy = floor_uv[..., 0] + dx, floor_uv[..., 1] + dy
+                valid_corner = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h)
+                valid_corner = valid_corner & _geometry_at_pixels(encoded, "mask", cy, cx)
+                bilinear_ok &= valid_corner
+                zs.append(_geometry_at_pixels(encoded, "xyz_map", cy, cx)[..., 2])
+            depth = torch.stack(zs, -1)
+            bilinear_ok &= (depth.amax(-1) - depth.amin(-1)) <= .010 + BOUNDARY_EPS_M
+            bilinear_ok &= observed
         tex = encoded["texture_feature"]
         tex_uv = uv - encoded["texture_origin_uv"]
         bilinear = sample_feature_at_indices(tex, tex_uv)
@@ -895,7 +923,8 @@ class InstanceSuction2DFastV3(nn.Module):
 
     def _contact_inputs(self, encoded, points, normals, phase):
         """Construct pose-conditioned tokens and diagnostics in FP64 geometry."""
-        radial, _, _ = ring_directions(normals, phase, feature_frame=self.feature_frame)
+        directions = ring_directions(normals, phase, feature_frame=self.feature_frame)
+        radial = directions[0]
         radii = points.new_tensor(RADII_M[1:])
         ring_points = points[:, None, None, :] + radii[None, :, None, None] * radial[:, None, :, :]
         unique_points = torch.cat((points[:, None, :], ring_points.flatten(1, 2)), 1)
@@ -908,7 +937,7 @@ class InstanceSuction2DFastV3(nn.Module):
 
         slots = {key: expand(value) for key, value in unique.items()}
         gates = projected_ring_gate(slots["points"], slots["observed"], points, normals, phase,
-                                    feature_frame=self.feature_frame)
+                                    feature_frame=self.feature_frame, _directions=directions)
         normal_alignment = (slots["normal"] * normals[:, None, None, :]).sum(-1)
         normal_alignment = torch.where(slots["normal_valid"], normal_alignment, torch.zeros_like(normal_alignment))
         gravity = encoded["gravity"]

@@ -143,7 +143,7 @@ def _save_npz(path, value):
     return path
 
 
-def _read_npz(path, *, exclude_arrays=(), needed_arrays=None):
+def _read_npz(path, *, exclude_arrays=(), needed_arrays=None, cache_route=None):
     exclude_arrays = frozenset(exclude_arrays)
     if 'metadata_json' in exclude_arrays:
         raise ValueError('NPZ metadata cannot be excluded')
@@ -152,14 +152,24 @@ def _read_npz(path, *, exclude_arrays=(), needed_arrays=None):
             raise ValueError('specify needed_arrays or exclude_arrays, not both')
         needed_arrays = frozenset(needed_arrays) | {'metadata_json'}
     arrays = None
+    from .instance_selection_cache import read_cached_arrays, record_reader_cache
+    source_cache = (os.environ.get('SUCTION_INSTANCE_SOURCE_CACHE_' + cache_route.upper())
+                    if cache_route in SOURCE_TRAIN_ARRAYS else None)
+    if source_cache:
+        cached = read_cached_arrays(path, source_cache, exclude_arrays=exclude_arrays,
+                                    needed_arrays=needed_arrays, source_route=cache_route)
+        record_reader_cache('source', cached is not None)
+        if cached is not None:
+            arrays, members = cached
     cache_root = os.environ.get('SUCTION_INSTANCE_SELECTION_CACHE')
-    if cache_root:
-        from .instance_selection_cache import read_cached_arrays
+    if arrays is None and cache_root:
         cached = read_cached_arrays(path, cache_root, exclude_arrays=exclude_arrays,
                                     needed_arrays=needed_arrays)
+        record_reader_cache('selection', cached is not None)
         if cached is not None:
             arrays, members = cached
     if arrays is None:
+        record_reader_cache('npz')
         with np.load(path, allow_pickle=False) as file:
             members = tuple(file.files)
             arrays = {key: file[key] for key in members if key not in exclude_arrays
@@ -190,9 +200,10 @@ def load_observation(path):
     return _load_observation(path)
 
 
-def _load_observation(path, *, exclude_arrays=(), needed_arrays=None):
+def _load_observation(path, *, exclude_arrays=(), needed_arrays=None, cache_route=None):
     """Keep identical canonical checks for full and compact-source readers."""
-    obs = _read_npz(path, exclude_arrays=exclude_arrays, needed_arrays=needed_arrays)
+    obs = _read_npz(path, exclude_arrays=exclude_arrays, needed_arrays=needed_arrays,
+                    cache_route=cache_route)
     if obs.get('normal_spec') != NORMAL_SPEC or obs.get('sampler_spec') != SAMPLER_SPEC:
         raise ValueError('observation normal/sampler version mismatch')
     if obs.get('precision_spec') != PRECISION_SPEC:
@@ -228,8 +239,8 @@ def _load_observation(path, *, exclude_arrays=(), needed_arrays=None):
     return obs
 
 
-def load_labels(path, *, points=None, normals=None):
-    labels = _read_npz(path)
+def load_labels(path, *, points=None, normals=None, cache_route=None):
+    labels = _read_npz(path, cache_route=cache_route)
     validate_labels(labels, expected_points=points, expected_normals=normals)
     if 'identity' in labels:
         labels['identity'] = _label_identity(labels['identity'])
@@ -336,7 +347,8 @@ class InstanceDataset:
         excluded = _COMPACT_SOURCE_UNUSED_ARRAYS if compact and not route_compact else ()
         needed = SOURCE_TRAIN_ARRAYS[source_route] if route_compact else None
         obs = _load_observation(_path(self.root, record['observation_npz']),
-                                exclude_arrays=excluded, needed_arrays=needed)
+                                exclude_arrays=excluded, needed_arrays=needed,
+                                cache_route=source_route if route_compact else None)
         if route_compact:
             if source_route == 'a':
                 # Validation above compared all canonical queries against
@@ -355,7 +367,8 @@ class InstanceDataset:
         count = min(full_count, self.training_queries) if self.training_queries is not None else full_count
         labels = None
         if self.require_labels and record.get('label_cache'):
-            labels = load_labels(_path(self.root, record['label_cache']))
+            labels = load_labels(_path(self.root, record['label_cache']),
+                                 cache_route=source_route if route_compact else None)
             _same_label_identity(labels.get('identity'), record.get('label_identity'))
             available = len(labels['points'])
             if available < count and self.require_labels:

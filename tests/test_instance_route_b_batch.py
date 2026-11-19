@@ -255,7 +255,7 @@ def test_compact_source_ticket_roundtrips_geometry_scores_and_gradients(mask_kin
     small = compact["observation"]
     ref = model._prepare_encoded(prepared)
     restored = model._prepare_encoded(small)
-    assert set(restored) == set(ref) | {"geometry_image_hw", "geometry_top_left"}
+    assert set(restored) == set(ref) | {"geometry_image_hw", "geometry_top_left", "bilinear_valid_map"}
     height, width = ref["mask"].shape
     yy, xx = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
     for key, value in ref.items():

@@ -1,0 +1,153 @@
+{
+  "route": "b",
+  "seed": 20261119,
+  "rounds": 9,
+  "support_count": 32000,
+  "query_count": 128,
+  "scope": "Synthetic CPU geometry preparation and compact packing only. Stored path reopens cache.json, packet.json and the mmap arena and performs semantic validation on every draw. OS file pages are warm; storage-cold performance is not measured. No in-process LRU exists in this probe. NPZ reading, RGB augmentation, IPC, learned network and GPU work are excluded. Fresh exposure arrays are constructed before timing.",
+  "source_identity_scope": "Small synthetic provenance stub with normal path/stat/settings key; full dataset/manifest reader is covered by separate integration tests.",
+  "settings": {
+    "min_support_points": 100
+  },
+  "order": "alternating cold/stored",
+  "all_prepared_values_exact_every_exposure": true,
+  "fresh_rgb_changes_preserved": true,
+  "static_packet_independent_of_rgb_values": true,
+  "a_deferred_indices_unmaterialized": null,
+  "independently_reopened_arenas": 10,
+  "static_store_stats": {
+    "hits": 10,
+    "missing": 0,
+    "stale": 0,
+    "invalid": 0
+  },
+  "first_reopened_draw_ms": {
+    "stored_total_ms": 5.040232001192635,
+    "stored_read_validate_ms": 1.3294849995872937,
+    "stored_bind_ms": 3.6325290020613465,
+    "stored_compact_ms": 0.07821799954399467
+  },
+  "offline_prepare_ms": 24.728017997404095,
+  "offline_write_validate_ms": 17.63014200332691,
+  "entry_bytes": 4413216,
+  "entry_files_bytes": {
+    "packet.json": 3232,
+    "arrays.npy": 4409984
+  },
+  "cache_definition_bytes": 150,
+  "conservative_memory_cache_charge_bytes": 8825576,
+  "preparation_version": {
+    "spec": "route_b_static_image_geometry64_rgb_indices_quad_v2"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "torch": "2.5.1+cpu",
+    "torch_threads": 1,
+    "thread_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    }
+  },
+  "timing": {
+    "cold_total_ms": {
+      "median_ms": 12.916592000692617,
+      "rounds_ms": [
+        12.563439999212278,
+        18.417290000797948,
+        13.497579002432758,
+        13.731751998420805,
+        13.350317000003997,
+        12.916592000692617,
+        12.547436002932955,
+        12.27292099792976,
+        12.513825000496581
+      ]
+    },
+    "cold_prepare_bind_ms": {
+      "median_ms": 12.812354998459341,
+      "rounds_ms": [
+        12.472382997657405,
+        18.326253000850556,
+        13.388644001679495,
+        13.51246099875425,
+        13.262735003081616,
+        12.812354998459341,
+        12.463088001823053,
+        12.199079999845708,
+        12.375416001304984
+      ]
+    },
+    "cold_compact_ms": {
+      "median_ms": 0.09105700155487284,
+      "rounds_ms": [
+        0.09105700155487284,
+        0.09103699994739145,
+        0.10893500075326301,
+        0.21929099966655485,
+        0.08758199692238122,
+        0.10423700223327614,
+        0.08434800110990182,
+        0.07384099808405153,
+        0.1384089991915971
+      ]
+    },
+    "stored_total_ms": {
+      "median_ms": 5.061214000306791,
+      "rounds_ms": [
+        5.061214000306791,
+        4.564285001833923,
+        4.802674000529805,
+        5.048594997788314,
+        4.798096997546963,
+        5.768980998254847,
+        5.0951560006069485,
+        5.101154001749819,
+        5.228406000242103
+      ]
+    },
+    "stored_read_validate_ms": {
+      "median_ms": 1.6112000012071803,
+      "rounds_ms": [
+        1.6200030004256405,
+        1.2781580007867888,
+        1.6112000012071803,
+        1.4558459988620598,
+        1.6426269976363983,
+        1.8751179995888378,
+        1.5895080032350961,
+        1.5137129994400311,
+        1.667193999310257
+      ]
+    },
+    "stored_bind_ms": {
+      "median_ms": 3.4145410027122125,
+      "rounds_ms": [
+        3.381921000254806,
+        3.228990000934573,
+        3.135529997962294,
+        3.5306450008647516,
+        3.102008999121608,
+        3.786671997659141,
+        3.4447159996489063,
+        3.4145410027122125,
+        3.5005399986403063
+      ]
+    },
+    "stored_compact_ms": {
+      "median_ms": 0.060672002291539684,
+      "rounds_ms": [
+        0.05928999962634407,
+        0.05713700011256151,
+        0.05594400136033073,
+        0.06210399806150235,
+        0.05346100078895688,
+        0.10719100100686774,
+        0.06093199772294611,
+        0.17289999959757552,
+        0.060672002291539684
+      ]
+    }
+  }
+}

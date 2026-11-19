@@ -23,6 +23,8 @@
 
 ## Done（已完成）
 
+- [x] [L20三分钟实测后的供数与几何优化](docs/instance_routes/L20_PIPELINE_OPTIMIZATION.md)：A冷原生接触和FPS连续布局；B四角有效性表及ROI索引复用；A/B独立有预算NPY镜像、持久静态几何包、真实命中统计与180秒完整更新窗口。CPU配对与恢复验证已落地，用户GPU窗口单独标明来源。
+
 - [x] [补齐 E5 性能能力定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)：A 完整 FP64 原生三区接触、跨曝光静态几何与可选接触并集投影；B 静态 ROI 准备与 ROI 消费；共同路线白名单、少拷贝和有界缓存。附 CPU 配对及冷缓存恢复验证，未声明新 L20 吞吐。
 
 - [x] [按 E5 问题清单审查新 A/B 实现](docs/instance_routes/E5_PROBLEM_AUDIT.md)：源训练按需解压、A 固定几何统计前移、B 可微批特征按边界拆分、每更新一次指标读回；附 CPU 合成对照与数值/恢复回归，真实 GPU 增益待配对。
@@ -69,6 +71,8 @@
 - [x] [选定正式配方及从头启动](docs/SELECTED_PRETRAINING_RECIPE.md)：`finalize_pretraining.py`支持读取已完成的batch-combo结果，选择各机最快完整候选，生成H20有效batch48、L20有效batch12的六组新配置；不再锁定有效batch8，预算从配置派生，旧final入口保留历史兼容。
 
 ## TODO（待完成）
+
+- [ ] 按[最新L20执行文档](docs/instance_routes/L20_PIPELINE_OPTIMIZATION.md)复测本轮实现：确认原生版本、源镜像/静态包实际覆盖和命中、磁盘与RSS预算，并对照180秒窗口；没有把本轮CPU热页缓存收益写成已测GPU吞吐。
 
 - [ ] 在实际 L20 数据与原训练配置下验证[定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)的 SpConv/CUDA 数值、缓存命中率、暴露等待和端到端吞吐；A 接触并集保持 opt-in，pinned/H2D 优先级由新分段结果确定。
 
