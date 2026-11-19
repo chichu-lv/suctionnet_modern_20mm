@@ -936,7 +936,8 @@ class InstanceTrainer:
                 yield ticket
         pool = InstancePreparationPool(dataset, workers=self.execution['train_workers'],
             prefetch=self.execution['prefetch_factor'],
-            route=self.config['route'], geometry_options=_geometry_options(self.model))
+            route=self.config['route'], geometry_options=_geometry_options(self.model),
+            compact_source=key == 'source' and os.environ.get('SUCTION_COMPACT_SOURCE_IPC') == '1')
         self._preparation_pools[key] = pool
         self._preparation_streams[key] = pool.map(tickets())
         return self._preparation_streams[key]
@@ -963,7 +964,10 @@ class InstanceTrainer:
                              and len(item['observation']['query_points'])]
                 losses = []
                 if supported:
+                    forward_start = time.perf_counter()
                     outputs = self.model.forward_instances([item['observation'] for item in supported])
+                    forward_end = time.perf_counter()
+                    self._source_forward_seconds += forward_end - forward_start
                     if len(outputs) != len(supported):
                         raise ValueError('Model output count differs from the requested instance batch')
                     if self.execution is not None:
@@ -979,7 +983,9 @@ class InstanceTrainer:
                     # One instance-normalized loss per supervised observation.
                     (torch.stack(losses).sum() * weight).backward()
                     completed += len(losses)
-                    yield from torch.stack(losses).detach().float().cpu().tolist()
+                    host_losses = torch.stack(losses).detach().float().cpu().tolist()
+                    self._source_loss_backward_seconds += time.perf_counter() - forward_end
+                    yield from host_losses
         if completed < count:
             raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
 
@@ -1030,6 +1036,8 @@ class InstanceTrainer:
     def _train_one_update(self):
         started = time.perf_counter()
         self._data_wait_seconds = 0.
+        self._source_forward_seconds = 0.
+        self._source_loss_backward_seconds = 0.
         if self.stage == 'pretrain':
             count = source_update_size(self.config['pretrain'], self.supervised_source_instances)
             if count == 0:
@@ -1047,6 +1055,7 @@ class InstanceTrainer:
             count = 2
             target_losses = list(self._target_update_items())
             losses = list(self._source_update_items(2, .25))
+        optimizer_start = time.perf_counter()
         gradients = [p for p in self.model.parameters() if p.grad is not None]
         if not gradients:
             self.optimizer.zero_grad(set_to_none=True)
@@ -1060,12 +1069,14 @@ class InstanceTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             raise FloatingPointError('Nonfinite gradients: no successful step or instance budget credited') from error
         self.optimizer.step()
+        grad_norm = float(norm)
+        optimizer_end = time.perf_counter()
         self.step += 1
         self.supervised_source_instances += count
         self.supervised_target_observations += 2 if self.stage == 'finetune' else 0
         record = {'step': self.step, 'source_loss': float(np.mean(losses)),
                 'target_loss': float(np.mean(target_losses)) if target_losses else None,
-                'grad_norm': float(norm), 'supervised_source_instances': self.supervised_source_instances,
+                'grad_norm': grad_norm, 'supervised_source_instances': self.supervised_source_instances,
                 'supervised_target_observations': self.supervised_target_observations,
                 'source_draws': self.source_schedule.draws - len(self._pending_tickets['source']),
                 'target_draws': (self.target_schedule.draws - len(self._pending_tickets['target'])) if self.target_schedule else 0,
@@ -1076,7 +1087,11 @@ class InstanceTrainer:
             record['source_draws_issued'] = self.source_schedule.draws
             record['pending_source_tickets'] = len(self._pending_tickets['source'])
             record['timing'] = {'update_wall_seconds': time.perf_counter() - started,
-                                'data_wait_seconds': self._data_wait_seconds}
+                                'data_wait_seconds': self._data_wait_seconds,
+                                # Host wall intervals. CUDA work may complete at a later readback.
+                                'source_forward_host_seconds': self._source_forward_seconds,
+                                'source_loss_backward_readback_host_seconds': self._source_loss_backward_seconds,
+                                'clip_optimizer_readback_host_seconds': optimizer_end - optimizer_start}
         return record
 
     def state_dict(self, *, kind='last'):

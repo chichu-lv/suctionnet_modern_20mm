@@ -232,3 +232,44 @@ def test_compile_is_optional_and_does_not_add_checkpoint_keys_or_parameters(monk
     model.configure_execution(compile_mode=None)
     assert not model._compiled_dense
     assert tuple(model.state_dict()) == names
+
+@pytest.mark.parametrize("mask_kind", ["interior", "empty", "full"])
+def test_compact_source_ticket_roundtrips_geometry_scores_and_gradients(mask_kind):
+    obs = observations()[0]
+    if mask_kind == "interior":
+        obs["mask"][:8] = False
+        obs["mask"][:, :10] = False
+        obs["mask"][-3:] = False
+    elif mask_kind == "empty":
+        obs["mask"][:] = False
+    prepared = prepare_source_inputs_cpu(obs)
+    item = {"observation": prepared, "record": {"id": 1}, "labels": {"seal": 2}}
+    candidate = dict(item, observation=prepare_source_inputs_cpu(obs, sample_image_channels=True))
+    compact = pickle.loads(pickle.dumps(route_b.compact_prepared_source_item(candidate)))
+    assert compact["record"] == item["record"] and compact["labels"] == item["labels"]
+    model = InstanceSuction2DFastV3().train()
+    model.set_training_context(7)
+    small = compact["observation"]
+    ref = model._prepare_encoded(prepared)
+    restored = model._prepare_encoded(small)
+    assert set(restored) == set(ref)
+    for key, value in ref.items():
+        if isinstance(value, torch.Tensor):
+            torch.testing.assert_close(restored[key], value, rtol=0, atol=0)
+        elif key != "observation":
+            assert restored[key] == value
+    torch.testing.assert_close(model._canonical_phase(small), model._canonical_phase(prepared), rtol=0, atol=0)
+    if mask_kind == "empty":
+        return
+    def score(row):
+        model.zero_grad(set_to_none=True)
+        result = model(row)
+        loss = result["q_inst"].sum()
+        loss.backward()
+        return result, [p.grad.detach().clone() for p in model.parameters() if p.grad is not None]
+    full_pred, full_grad = score(prepared)
+    new_pred, new_grad = score(small)
+    assert_predictions_close([new_pred], [full_pred], rtol=0, atol=0)
+    assert len(new_grad) == len(full_grad) > 0
+    for actual, expected in zip(new_grad, full_grad):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)

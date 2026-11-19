@@ -250,7 +250,7 @@ def _nearest_map(image, uv):
 
 
 def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=torch.float32,
-                          min_support_points=100):
+                          min_support_points=100, sample_image_channels=False):
     """Build context13 and native texture5 without changing the raw geometry.
 
     RGB photometric augmentation, when requested, must already have been
@@ -313,25 +313,38 @@ def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=t
     std = rgb.new_tensor((.229, .224, .225))
     rgb_norm = (rgb - mean) / std
     rgb_norm = torch.where(rgb_valid[..., None], rgb_norm, torch.zeros_like(rgb_norm))
-    channels = torch.cat((rgb_norm, ((xyz - centroid) / .1).to(feature_dtype),
-                          normals.to(feature_dtype), gravity.to(feature_dtype).expand(h, w, 3),
-                          valid[..., None].to(feature_dtype)), dim=-1)
-    channels = torch.where(valid[..., None], channels, torch.zeros_like(channels))
     yy, xx = torch.meshgrid(torch.arange(128, device=device, dtype=torch.float64),
                             torch.arange(128, device=device, dtype=torch.float64), indexing="ij")
     uv_source = torch.stack((left + (xx + .5) / scale, top + (yy + .5) / scale), -1)
-    context, inside, _, _ = _nearest_map(channels, uv_source)
-    context = torch.where(inside[..., None], context, torch.zeros_like(context)).permute(2, 0, 1)[None]
-    z_med = torch.quantile(points[:, 2], .5) if len(points) else xyz.new_zeros(())
-    native = torch.cat((rgb_norm, ((xyz[..., 2] - z_med) / .1)[..., None].to(feature_dtype),
-                        valid[..., None].to(feature_dtype)), -1)
-    native = torch.where(valid[..., None], native, torch.zeros_like(native))
     x0, y0 = xmin - 3, ymin - 3
     roi_w, roi_h = width + 6, height + 6
     pad_w, pad_h = 32 * math.ceil(roi_w / 32), 32 * math.ceil(roi_h / 32)
     ry, rx = torch.meshgrid(torch.arange(pad_h, device=device), torch.arange(pad_w, device=device), indexing="ij")
     roi_uv = torch.stack((rx + x0, ry + y0), -1).to(torch.float64)
-    texture, texture_inside, _, _ = _nearest_map(native, roi_uv)
+    # Channel formation is pointwise. In the CPU worker gather exactly the
+    # same nearest source pixels first, retaining original full-frame bounds.
+    if sample_image_channels:
+        cv, inside, _, idx = _nearest_map(valid, uv_source)
+        cy, cx = idx[..., 1].clamp(0, h-1), idx[..., 0].clamp(0, w-1)
+        crgb, cxyz, cnormals = rgb_norm[cy, cx], xyz[cy, cx], normals[cy, cx]
+        tv, texture_inside, _, idx = _nearest_map(valid, roi_uv)
+        ty, tx = idx[..., 1].clamp(0, h-1), idx[..., 0].clamp(0, w-1)
+        trgb, tz = rgb_norm[ty, tx], xyz[..., 2][ty, tx]
+    else:
+        cv, crgb, cxyz, cnormals = valid, rgb_norm, xyz, normals
+        tv, trgb, tz = valid, rgb_norm, xyz[..., 2]
+    channels = torch.cat((crgb, ((cxyz - centroid) / .1).to(feature_dtype),
+                          cnormals.to(feature_dtype), gravity.to(feature_dtype).expand(*cv.shape, 3),
+                          cv[..., None].to(feature_dtype)), dim=-1)
+    context = torch.where(cv[..., None], channels, torch.zeros_like(channels))
+    z_med = torch.quantile(points[:, 2], .5) if len(points) else xyz.new_zeros(())
+    native = torch.cat((trgb, ((tz - z_med) / .1)[..., None].to(feature_dtype),
+                        tv[..., None].to(feature_dtype)), -1)
+    texture = torch.where(tv[..., None], native, torch.zeros_like(native))
+    if not sample_image_channels:
+        context, inside, _, _ = _nearest_map(context, uv_source)
+        texture, texture_inside, _, _ = _nearest_map(texture, roi_uv)
+    context = torch.where(inside[..., None], context, torch.zeros_like(context)).permute(2, 0, 1)[None]
     roi_valid = texture_inside & (rx < roi_w) & (ry < roi_h)
     texture = torch.where(roi_valid[..., None], texture, torch.zeros_like(texture)).permute(2, 0, 1)[None]
     affine = xyz.new_tensor(((scale, 0., -scale * left - .5),
@@ -369,7 +382,7 @@ def prepare_source_phase_cpu(observation):
     return result
 
 
-def prepare_source_inputs_cpu(observation, *, min_support_points=100):
+def prepare_source_inputs_cpu(observation, *, min_support_points=100, sample_image_channels=False):
     """Prepare a single immutable loader ticket using only CPU/NumPy outputs.
 
     The original arrays remain read-only for this ticket's lifetime. A copied
@@ -379,7 +392,8 @@ def prepare_source_inputs_cpu(observation, *, min_support_points=100):
     """
     result = prepare_source_phase_cpu(observation)
     prepared = prepare_shared_images(result, device="cpu", feature_dtype=torch.float32,
-                                     min_support_points=min_support_points)
+                                     min_support_points=min_support_points,
+                                     sample_image_channels=sample_image_channels)
     prepared.pop("observation")
     prepared = {key: value.numpy() if torch.is_tensor(value) else value
                 for key, value in prepared.items()}
@@ -389,6 +403,46 @@ def prepare_source_inputs_cpu(observation, *, min_support_points=100):
         "encoded": prepared,
     }
     return result
+
+
+# Prepared geometry is exactly zero outside the valid instance. Preserve the
+# camera pixel indices (including off-image and invalid pixels) when decoding.
+_GEOMETRY_MAPS = ("xyz_map", "mask", "normal_map", "normal_valid")
+
+
+def compact_prepared_source_item(item):
+    """Private training wire format, after augmentation and source validation."""
+    obs = item["observation"]
+    prepared = obs["_route_b_inputs"]
+    encoded = dict(prepared["encoded"])
+    mask = encoded["mask"]
+    ys = np.flatnonzero(mask.any(axis=1))
+    xs = np.flatnonzero(mask.any(axis=0))
+    y0, y1 = (int(ys[0]), int(ys[-1])+1) if len(ys) else (0, 0)
+    x0, x1 = (int(xs[0]), int(xs[-1])+1) if len(xs) else (0, 0)
+    for key in _GEOMETRY_MAPS:
+        encoded[key] = np.ascontiguousarray(encoded[key][y0:y1, x0:x1])
+    compact = {key: obs[key] for key in ("query_points", "query_normals", "support_points",
+               "sample_uid", "instance_uid", "_route_b_phase_poses") if key in obs}
+    compact["_route_b_training_inputs"] = {
+        "min_support_points": prepared["min_support_points"], "encoded": encoded,
+        "image_hw": mask.shape, "top_left": (y0, x0)}
+    return dict(item, observation=compact)
+
+
+def _restore_training_encoded(wire, device):
+    height, width = wire["image_hw"]
+    y0, x0 = wire["top_left"]
+    encoded = {key: torch.as_tensor(value).to(device, non_blocking=True)
+               if isinstance(value, np.ndarray) else value for key, value in wire["encoded"].items()}
+    for key in _GEOMETRY_MAPS:
+        roi = encoded[key]
+        rh, rw = roi.shape[:2]
+        if (rh, rw) != (height, width):
+            restored = roi.new_zeros((height, width, *roi.shape[2:]))
+            restored[y0:y0+rh, x0:x0+rw] = roi
+            encoded[key] = restored
+    return encoded
 
 
 class InstanceSuction2DFastV3(nn.Module):
@@ -529,6 +583,13 @@ class InstanceSuction2DFastV3(nn.Module):
         return self.encode_instances([observation])[0]
 
     def _prepare_encoded(self, observation):
+        wire = observation.get("_route_b_training_inputs")
+        if wire is not None:
+            if self.feature_dtype != torch.float32 or wire["min_support_points"] != self.min_support_points:
+                raise ValueError("Compact training inputs do not match the model preparation profile")
+            prepared = _restore_training_encoded(wire, self.device)
+            prepared["observation"] = observation
+            return prepared
         cache = observation.get("_route_b_inputs")
         source_keys = {key for key in _IMAGE_SOURCE_KEYS if key in observation}
         if (cache is not None and self.feature_dtype == torch.float32

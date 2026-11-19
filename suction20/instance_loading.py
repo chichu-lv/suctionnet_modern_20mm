@@ -78,8 +78,12 @@ def _reader_spec(dataset):
 
 def _prepare_observation(item, rgb, spec):
     if rgb is not None:
-        from .instance_training import _apply_rgb
-        item = dict(item, observation=_apply_rgb(item['observation'], rgb))
+        if spec['kind'] == 'source':
+            from .instance_photometry import apply_source_rgb
+            item = dict(item, observation=apply_source_rgb(item['observation'], rgb))
+        else:
+            from .instance_training import _apply_rgb
+            item = dict(item, observation=_apply_rgb(item['observation'], rgb))
     if spec['kind'] == 'source':
         if spec.get('route') == 'a':
             from models.instance_route_a import prepare_source_geometry
@@ -90,7 +94,8 @@ def _prepare_observation(item, rgb, spec):
             # Prepared context/texture arrays remain NumPy through IPC. Phase
             # caches contain only pose identity, never a guessed future step.
             item = dict(item, observation=prepare_source_inputs_cpu(
-                item['observation'], **spec.get('geometry_options', {})))
+                item['observation'], sample_image_channels=spec.get('compact_source', False),
+                **spec.get('geometry_options', {})))
     return item
 
 
@@ -106,7 +111,14 @@ def _worker_prepare(payload):
                              training_queries=spec.get('training_queries'),
                              require_labels=spec.get('require_labels', True))
     cls = InstanceDataset if spec['kind'] == 'source' else InstanceAttemptDataset
-    return _prepare_observation(cls.load_uncached(reader, 0), rgb, spec)
+    item = _prepare_observation(cls.load_uncached(reader, 0), rgb, spec)
+    if spec.get('compact_source') and spec['kind'] == 'source':
+        if spec['route'] == 'a':
+            from models.instance_route_a import compact_prepared_source_item
+        else:
+            from models.instance_route_b import compact_prepared_source_item
+        item = compact_prepared_source_item(item)
+    return item
 
 
 def _worker_loop(spec, threads, requests, results):
@@ -154,7 +166,7 @@ class InstancePreparationPool:
     an iterator from one coordinator thread; concurrent maps are rejected.
     """
     def __init__(self, dataset, *, workers, prefetch=2, route=None,
-                 geometry_options=None, thread_limit=1):
+                 geometry_options=None, thread_limit=1, compact_source=False):
         self.workers = _positive_int(workers, 'workers', allow_zero=True)
         self.prefetch = _positive_int(prefetch, 'prefetch')
         self.thread_limit = _positive_int(thread_limit, 'thread_limit')
@@ -176,7 +188,10 @@ class InstancePreparationPool:
                 spec = _reader_spec(dataset)
             except TypeError:
                 spec = {'kind': 'custom'}
-        spec.update(route=route, geometry_options=copy.deepcopy(geometry_options or {}))
+        if compact_source and route not in ('a', 'b'):
+            raise ValueError('Compact source training requires an explicit model route')
+        spec.update(route=route, geometry_options=copy.deepcopy(geometry_options or {}),
+                    compact_source=bool(compact_source))
         self.reader_spec = spec
         if self.workers:
             # These lightweight coordinator threads only send/receive private
