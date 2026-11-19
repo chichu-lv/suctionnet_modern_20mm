@@ -12,6 +12,32 @@ import math
 import numpy as np
 from scipy.spatial import cKDTree
 
+try:
+    from . import _fps_cpu
+except ImportError:
+    _fps_cpu = None
+
+
+def _fps_axis_order():
+    """Match this NumPy build's einsum reduction order for three FP64 squares.
+
+    Each small square rounds away when added to 1 separately. Adding both
+    first instead produces the next float above 1. Row i identifies whether
+    dimension i is added last. Keep the reference loop for other reductions.
+    """
+    probe = np.full((3, 3), 1e-8, dtype=np.float64)
+    np.fill_diagonal(probe, 1.)
+    reference = np.einsum('ij,ij->i', probe, probe)
+    squares = probe * probe
+    for order in ((0, 1, 2), (0, 2, 1), (1, 2, 0)):
+        a, b, c = order
+        if np.array_equal(reference, (squares[:, a] + squares[:, b]) + squares[:, c]):
+            return order
+    return None
+
+
+_FPS_AXES = _fps_axis_order()
+
 from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M
 
 ZONE_BOUNDS = ((0., .010), (.010, .018), (.018, .022))
@@ -39,6 +65,11 @@ def deterministic_fps(points, source_ids, count):
     limit = min(int(count), len(points))
     order = np.argsort(ids, kind='stable')
     ordered = points[order]
+    if _fps_cpu is not None and _FPS_AXES is not None:
+        if _FPS_AXES != (0, 1, 2):
+            ordered = np.ascontiguousarray(ordered[:, _FPS_AXES])
+        positions = _fps_cpu.fps_positions(ordered, limit, 0)
+        return order[np.asarray(positions, dtype=np.intp)]
     result = np.empty(limit, dtype=np.int64)
     minimum = np.full(len(points), np.inf, dtype=np.float64)
     next_row = 0

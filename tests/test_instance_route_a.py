@@ -299,3 +299,40 @@ def test_active_voxel_survives_all_four_unpadded_strides():
             return super().forward(inputs)
 
     InstanceSuction3D(backbone=Capture()).encode_instance(observation())
+
+
+def test_worker_geometry_preserves_outputs_and_gradients_after_rgb_augmentation():
+    obs = observation()
+    model = InstanceSuction3D(backbone=InjectedBackbone(), query_chunk_size=2)
+    worker_obs = model.prepare_source_geometry(obs)
+    assert '_route_a_geometry' not in obs
+    expected = model(obs)
+    expected['q_inst'].sum().backward()
+    grads = {k:p.grad.clone() for k,p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none=True)
+    actual = model(worker_obs)
+    actual['q_inst'].sum().backward()
+    for key,value in actual.items():
+        if isinstance(value,torch.Tensor):
+            torch.testing.assert_close(value,expected[key],rtol=0,atol=0,equal_nan=True)
+    for name,p in model.named_parameters():
+        if name in grads:
+            torch.testing.assert_close(p.grad,grads[name],rtol=0,atol=0)
+    # A subsequent off-grid action must never reuse a canonical contact ring.
+    moved = obs['query_points'] + .001
+    torch.testing.assert_close(model(worker_obs,moved,obs['query_normals'])['q_inst'],
+                               model(obs,moved,obs['query_normals'])['q_inst'],rtol=0,atol=0)
+
+
+def test_compiled_fps_keeps_einsum_rounding_duplicate_xyz_and_stable_id_ties(monkeypatch):
+    from models import instance_route_a_geometry as geom
+    native = pytest.importorskip('models._fps_cpu')
+    # These three distances differ by one ULP depending on summation order.
+    points = np.full((3,3),1e-8)
+    np.fill_diagonal(points,1.)
+    points = np.vstack(([0,0,0],points,[0,0,0]))
+    ids = np.array([0,7,9,2,8])
+    monkeypatch.setattr(geom,'_fps_cpu',None)
+    expected = geom.deterministic_fps(points,ids,len(ids))
+    monkeypatch.setattr(geom,'_fps_cpu',native)
+    np.testing.assert_array_equal(geom.deterministic_fps(points,ids,len(ids)),expected)

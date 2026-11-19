@@ -85,6 +85,174 @@ def _interpolate(features, association, *, chunk=2048):
     return torch.cat(output, dim=0)
 
 
+def _support(observation):
+    points = numpy_array(observation['support_points'], np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
+        raise ValueError('support_points must be finite [M,3] original camera points')
+    count = len(points)
+    rgb = numpy_array(observation['support_rgb'], np.float64)
+    normals = numpy_array(observation['support_normals'], np.float64)
+    normal_valid = numpy_array(observation['support_normal_valid'], bool)
+    components = numpy_array(observation['support_components'])
+    if components.dtype.kind not in 'iu' or np.any(components < 0):
+        raise ValueError('Support components must be nonnegative integer IDs')
+    components = components.astype(np.int64, copy=False)
+    if rgb.shape != points.shape or normals.shape != points.shape:
+        raise ValueError('Raw RGB/normals must follow support row identity')
+    if normal_valid.shape != (count,) or components.shape != (count,):
+        raise ValueError('Support validity/components must have shape [M]')
+    if 'support_source_ids' in observation:
+        source_ids = numpy_array(observation['support_source_ids'])
+        if source_ids.dtype.kind not in 'iu':
+            raise ValueError('Support source IDs must be integers')
+        source_ids = source_ids.astype(np.int64, copy=False)
+    else:
+        uv = numpy_array(observation['support_uv'], np.int64)
+        if uv.shape != (count, 2):
+            raise ValueError('support_uv must be [M,2] in u,v order')
+        source_ids = uv[:, 1] * int(observation['rgb'].shape[1]) + uv[:, 0]
+    if source_ids.shape != (count,) or np.any(source_ids < 0):
+        raise ValueError('Support source IDs must be nonnegative [M]')
+    rgb_valid = numpy_array(observation.get('support_rgb_valid', np.isfinite(rgb).all(1)), bool)
+    if rgb_valid.shape != (count,):
+        raise ValueError('support_rgb_valid must have shape [M]')
+    if not np.isfinite(rgb[rgb_valid]).all() or np.any((rgb[rgb_valid] < 0) | (rgb[rgb_valid] > 1)):
+        raise ValueError('Valid RGB must be finite in [0,1]')
+    if not np.isfinite(normals[normal_valid]).all():
+        raise ValueError('Valid observed normals must be finite')
+    length = np.linalg.norm(normals[normal_valid], axis=-1)
+    if np.any(length <= 1e-12) or not np.isfinite(length).all():
+        raise ValueError('Valid observed normals must be nonzero')
+    normals = normals.copy()
+    normals[normal_valid] /= length[:, None]
+    normals[~normal_valid] = 0.
+    rgb = rgb.copy()
+    rgb[~rgb_valid] = 0.
+    order = np.argsort(source_ids, kind='stable')
+    points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
+        value[order] for value in (points, rgb, normals, normal_valid, rgb_valid, source_ids, components))
+    duplicate = source_ids[1:] == source_ids[:-1]
+    if np.any(duplicate):
+        for value in (points, rgb, normals):
+            if np.any(np.max(np.abs(value[1:] - value[:-1]), axis=1)[duplicate] > BOUNDARY_ROUNDOFF_M):
+                raise ValueError('One source ID cannot identify different support attributes')
+        if any(np.any((value[1:] != value[:-1])[duplicate]) for value in
+               (normal_valid, rgb_valid, components)):
+            raise ValueError('One source ID cannot identify conflicting masks/components')
+        unique = np.r_[True, ~duplicate]
+        points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
+            value[unique] for value in (points, rgb, normals, normal_valid, rgb_valid, source_ids, components))
+    return points, rgb, normals, normal_valid, rgb_valid, source_ids, components
+
+
+def _instance_geometry(observation, backbone_points, min_support_points):
+    points, rgb, normals, normal_valid, rgb_valid, source_ids, components = _support(observation)
+    centroid = points.mean(0) if len(points) else np.zeros(3, np.float64)
+    supplied_centroid = numpy_array(observation.get('centroid', centroid), np.float64)
+    if supplied_centroid.shape != (3,) or not np.allclose(supplied_centroid, centroid, rtol=0, atol=1e-9):
+        raise ValueError('centroid must be the full visible support mean, not a CAD/teacher centre')
+    gravity = numpy_array(observation['gravity'], np.float64)
+    if (gravity.shape != (3,) or not np.isfinite(gravity).all()
+            or not np.isfinite(np.linalg.norm(gravity)) or np.linalg.norm(gravity) <= 1e-12):
+        raise ValueError('gravity must be a finite nonzero camera direction')
+    gravity = gravity / np.linalg.norm(gravity)
+    source_index = NeighborIndex(points, source_ids, components)
+    representatives, voxel_keys = voxel_representatives(points, source_ids, centroid)
+    chosen = deterministic_fps(points[representatives], source_ids[representatives], backbone_points)
+    selected = representatives[chosen]
+    keys = voxel_keys[chosen]
+    sufficient = len(points) >= min_support_points
+    if not sufficient:
+        selected = np.empty(0, np.int64)
+        keys = np.empty((0, 3), np.int64)
+    backbone_index = NeighborIndex(points[selected], source_ids[selected], components[selected])
+    association = backbone_index.associate(points, components)
+    return dict(points_np=points, rgb_np=rgb, normals_np=normals, normal_valid_np=normal_valid,
+                rgb_valid_np=rgb_valid, source_ids_np=source_ids, components_np=components,
+                centroid_np=centroid, gravity_np=gravity, source_index=source_index,
+                backbone_index=backbone_index, raw_association=association,
+                raw_feature_valid_np=association['valid'], backbone_raw_indices=selected,
+                backbone_voxel_keys=keys, support_sufficient=sufficient)
+
+
+def _contact_geometry(encoded, points, normals, components, valid):
+    count = len(points)
+    slots = sum(ZONE_SAMPLES)
+    indices = np.zeros((count, slots), np.int64)
+    masks = np.zeros((count, slots), bool)
+    descriptor = np.zeros((count, slots, 8), np.float64)
+    raw_count = np.zeros((count, 3), np.int64)
+    summary = np.zeros((count, 8), np.float64)
+    angular_support = np.zeros(count, np.int64)
+    for row in np.flatnonzero(valid):
+        support = encoded['source_index'].support_ball(points[row], components[row])
+        rho, height, tangent, zones = contact_coordinates(encoded['points_np'][support], points[row], normals[row])
+        summary[row], angular_support[row] = lip_summary(height[zones[2]], tangent[zones[2]], normals[row])
+        offset = 0
+        for zone, (mask, budget) in enumerate(zip(zones, ZONE_SAMPLES)):
+            local = np.flatnonzero(mask)
+            raw_count[row, zone] = len(local)
+            rows = support[local]
+            chosen = deterministic_fps(encoded['points_np'][rows], encoded['source_ids_np'][rows], budget)
+            rows, local = rows[chosen], local[chosen]
+            selected_slice = slice(offset, offset + len(rows))
+            indices[row, selected_slice] = rows
+            masks[row, selected_slice] = True
+            outer_radius = ZONE_BOUNDS[zone][1]
+            observed_normal = encoded['normals_np'][rows]
+            descriptor[row, selected_slice] = np.column_stack((
+                rho[local] / outer_radius, height[local] / HEIGHT_LIMIT_M,
+                observed_normal @ normals[row], tangent[local] @ encoded['gravity_np'] / outer_radius,
+                observed_normal @ encoded['gravity_np'], encoded['raw_feature_valid_np'][rows],
+                encoded['normal_valid_np'][rows], encoded['rgb_valid_np'][rows]))
+            offset += budget
+    return indices, masks, descriptor, raw_count, summary, angular_support
+
+
+def _query_geometry(encoded, points, normals, pose_valid):
+    safe_points = np.where(pose_valid[:, None], points, 0.)
+    anchors, anchor_distance = encoded['source_index'].nearest_anchor(safe_points)
+    valid = pose_valid & (anchors >= 0) & encoded['support_sufficient']
+    # Invalid poses are never allowed to introduce Inf/NaN into the dense
+    # graph before a final mask; 0 * Inf in a backward pass is still NaN.
+    safe_points = np.where(valid[:, None], points, encoded['centroid_np'])
+    normals = np.where(valid[:, None], normals, 0.)
+    components = np.full(len(points), -1, np.int64)
+    components[valid] = encoded['components_np'][anchors[valid]]
+    association = encoded['backbone_index'].associate(safe_points, components)
+    contact = _contact_geometry(encoded, safe_points, normals, components, valid)
+    return safe_points, normals, anchors, anchor_distance, valid, association, contact
+
+
+def _normalize_queries(points, normals):
+    lengths = np.linalg.norm(normals, axis=1)
+    pose_valid = (np.isfinite(points).all(1) & np.isfinite(normals).all(1)
+                  & np.isfinite(lengths) & (lengths > 1e-12))
+    normalized = np.zeros_like(normals)
+    normalized[pose_valid] = normals[pose_valid] / lengths[pose_valid, None]
+    return pose_valid, normalized
+
+
+def prepare_source_geometry(observation, *, backbone_points=2048, min_support_points=100, query_chunk_size=32):
+    """Prepare final per-instance CPU geometry after query selection and RGB jitter.
+
+    This is transient worker output. Keep it attached to its own observation
+    for the upcoming forward pass, never across augmentation or resampling.
+    Each worker can handle a different instance with the same model settings.
+    """
+    geometry = _instance_geometry(observation, backbone_points, min_support_points)
+    points = numpy_array(observation['query_points'], np.float64).copy()
+    normals = numpy_array(observation['query_normals'], np.float64).copy()
+    pose_valid, normalized = _normalize_queries(points, normals)
+    chunks = {}
+    for start in range(0, len(points), query_chunk_size):
+        part = slice(start, start + query_chunk_size)
+        chunks[start] = _query_geometry(geometry, points[part], normalized[part], pose_valid[part])
+    cache = dict(geometry=geometry, settings=(backbone_points, min_support_points, query_chunk_size),
+                 points=points, normals=normals, chunks=chunks)
+    return dict(observation, _route_a_geometry=cache)
+
+
 class InstanceSuction3D(nn.Module):
     """A's 531D query fusion and separate 200D Seal head.
 
@@ -154,84 +322,28 @@ class InstanceSuction3D(nn.Module):
                 'singleton_bn_policy': self.singleton_bn_policy,
                 'scale_semantics': 'ell=log_laplace_scale; log_variance=log(2)+2*ell'}
 
-    def _support(self, observation):
-        points = numpy_array(observation['support_points'], np.float64)
-        if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
-            raise ValueError('support_points must be finite [M,3] original camera points')
-        count = len(points)
-        rgb = numpy_array(observation['support_rgb'], np.float64)
-        normals = numpy_array(observation['support_normals'], np.float64)
-        normal_valid = numpy_array(observation['support_normal_valid'], bool)
-        components = numpy_array(observation['support_components'])
-        if components.dtype.kind not in 'iu' or np.any(components < 0):
-            raise ValueError('Support components must be nonnegative integer IDs')
-        components = components.astype(np.int64, copy=False)
-        if rgb.shape != points.shape or normals.shape != points.shape:
-            raise ValueError('Raw RGB/normals must follow support row identity')
-        if normal_valid.shape != (count,) or components.shape != (count,):
-            raise ValueError('Support validity/components must have shape [M]')
-        if 'support_source_ids' in observation:
-            source_ids = numpy_array(observation['support_source_ids'])
-            if source_ids.dtype.kind not in 'iu':
-                raise ValueError('Support source IDs must be integers')
-            source_ids = source_ids.astype(np.int64, copy=False)
-        else:
-            uv = numpy_array(observation['support_uv'], np.int64)
-            if uv.shape != (count, 2):
-                raise ValueError('support_uv must be [M,2] in u,v order')
-            source_ids = uv[:, 1] * int(observation['rgb'].shape[1]) + uv[:, 0]
-        if source_ids.shape != (count,) or np.any(source_ids < 0):
-            raise ValueError('Support source IDs must be nonnegative [M]')
-        rgb_valid = numpy_array(observation.get('support_rgb_valid', np.isfinite(rgb).all(1)), bool)
-        if rgb_valid.shape != (count,):
-            raise ValueError('support_rgb_valid must have shape [M]')
-        if not np.isfinite(rgb[rgb_valid]).all() or np.any((rgb[rgb_valid] < 0) | (rgb[rgb_valid] > 1)):
-            raise ValueError('Valid RGB must be finite in [0,1]')
-        if not np.isfinite(normals[normal_valid]).all():
-            raise ValueError('Valid observed normals must be finite')
-        length = np.linalg.norm(normals[normal_valid], axis=-1)
-        if np.any(length <= 1e-12) or not np.isfinite(length).all():
-            raise ValueError('Valid observed normals must be nonzero')
-        normals = normals.copy()
-        normals[normal_valid] /= length[:, None]
-        normals[~normal_valid] = 0.
-        rgb = rgb.copy()
-        rgb[~rgb_valid] = 0.
-        order = np.argsort(source_ids, kind='stable')
-        points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
-            value[order] for value in (points, rgb, normals, normal_valid, rgb_valid, source_ids, components))
-        duplicate = source_ids[1:] == source_ids[:-1]
-        if np.any(duplicate):
-            for value in (points, rgb, normals):
-                if np.any(np.max(np.abs(value[1:] - value[:-1]), axis=1)[duplicate] > BOUNDARY_ROUNDOFF_M):
-                    raise ValueError('One source ID cannot identify different support attributes')
-            if any(np.any((value[1:] != value[:-1])[duplicate]) for value in
-                   (normal_valid, rgb_valid, components)):
-                raise ValueError('One source ID cannot identify conflicting masks/components')
-            unique = np.r_[True, ~duplicate]
-            points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
-                value[unique] for value in (points, rgb, normals, normal_valid, rgb_valid, source_ids, components))
-        return points, rgb, normals, normal_valid, rgb_valid, source_ids, components
+    def prepare_source_geometry(self, observation):
+        return prepare_source_geometry(observation, backbone_points=self.backbone_points,
+                                       min_support_points=self.min_support_points,
+                                       query_chunk_size=self.query_chunk_size)
 
     def encode_instance(self, observation):
-        points, rgb, normals, normal_valid, rgb_valid, source_ids, components = self._support(observation)
-        centroid = points.mean(0) if len(points) else np.zeros(3, np.float64)
-        supplied_centroid = numpy_array(observation.get('centroid', centroid), np.float64)
-        if supplied_centroid.shape != (3,) or not np.allclose(supplied_centroid, centroid, rtol=0, atol=1e-9):
-            raise ValueError('centroid must be the full visible support mean, not a CAD/teacher centre')
-        gravity = numpy_array(observation['gravity'], np.float64)
-        if (gravity.shape != (3,) or not np.isfinite(gravity).all()
-                or not np.isfinite(np.linalg.norm(gravity)) or np.linalg.norm(gravity) <= 1e-12):
-            raise ValueError('gravity must be a finite nonzero camera direction')
-        gravity = gravity / np.linalg.norm(gravity)
-        source_index = NeighborIndex(points, source_ids, components)
-        representatives, voxel_keys = voxel_representatives(points, source_ids, centroid)
-        chosen = deterministic_fps(points[representatives], source_ids[representatives], self.backbone_points)
-        selected = representatives[chosen]
-        keys = voxel_keys[chosen]
+        prepared = observation.get('_route_a_geometry')
+        if prepared is None:
+            geometry = _instance_geometry(observation, self.backbone_points, self.min_support_points)
+        else:
+            if prepared['settings'] != (self.backbone_points, self.min_support_points, self.query_chunk_size):
+                raise ValueError('Prepared route-A geometry has different model settings')
+            geometry = prepared['geometry']
+        points, rgb, normals, normal_valid, rgb_valid, source_ids, components = (
+            geometry[name] for name in ('points_np', 'rgb_np', 'normals_np', 'normal_valid_np',
+                                        'rgb_valid_np', 'source_ids_np', 'components_np'))
+        centroid, gravity = geometry['centroid_np'], geometry['gravity_np']
+        source_index, backbone_index = geometry['source_index'], geometry['backbone_index']
+        selected, keys = geometry['backbone_raw_indices'], geometry['backbone_voxel_keys']
+        sufficient = geometry['support_sufficient']
         normalized_rgb = (rgb - np.array([.485, .456, .406])) / np.array([.229, .224, .225])
         normalized_rgb[~rgb_valid] = 0.
-        sufficient = len(points) >= self.min_support_points
         if len(selected) and sufficient:
             offset = keys.min(0)
             nonnegative = keys - offset
@@ -263,13 +375,12 @@ class InstanceSuction3D(nn.Module):
                              'g_cam': self._tensor(gravity[None])}
             features = self._tensor(np.empty((0, 256)))
             context = self._tensor(np.zeros(64))
-        backbone_index = NeighborIndex(points[selected], source_ids[selected], components[selected])
-        association = backbone_index.associate(points, components)
+        association = geometry['raw_association']
         raw_features = _interpolate(features, association)
         feature_valid = self._tensor(association['valid'], dtype=torch.bool)
         projected = self.local_projection(raw_features)
         projected = torch.where(feature_valid[:, None], projected, torch.zeros_like(projected))
-        return {'source_index': source_index, 'backbone_index': backbone_index,
+        return {'source_index': source_index, 'backbone_index': backbone_index, 'prepared': prepared,
                 'points_np': points, 'rgb': self._tensor(normalized_rgb),
                 'normals_np': normals, 'normal_valid_np': normal_valid,
                 'rgb_valid_np': rgb_valid, 'source_ids_np': source_ids,
@@ -284,37 +395,9 @@ class InstanceSuction3D(nn.Module):
                 'query_normals': observation.get('query_normals', np.empty((0, 3))),
                 'query_ids': observation.get('query_ids'), 'observation': observation}
 
-    def _contact_batch(self, encoded, points, normals, components, valid):
-        count = len(points)
-        slots = sum(ZONE_SAMPLES)
-        indices = np.zeros((count, slots), np.int64)
-        masks = np.zeros((count, slots), bool)
-        descriptor = np.zeros((count, slots, 8), np.float64)
-        raw_count = np.zeros((count, 3), np.int64)
-        summary = np.zeros((count, 8), np.float64)
-        angular_support = np.zeros(count, np.int64)
-        for row in np.flatnonzero(valid):
-            support = encoded['source_index'].support_ball(points[row], components[row])
-            rho, height, tangent, zones = contact_coordinates(encoded['points_np'][support], points[row], normals[row])
-            summary[row], angular_support[row] = lip_summary(height[zones[2]], tangent[zones[2]], normals[row])
-            offset = 0
-            for zone, (mask, budget) in enumerate(zip(zones, ZONE_SAMPLES)):
-                local = np.flatnonzero(mask)
-                raw_count[row, zone] = len(local)
-                rows = support[local]
-                chosen = deterministic_fps(encoded['points_np'][rows], encoded['source_ids_np'][rows], budget)
-                rows, local = rows[chosen], local[chosen]
-                selected_slice = slice(offset, offset + len(rows))
-                indices[row, selected_slice] = rows
-                masks[row, selected_slice] = True
-                outer_radius = ZONE_BOUNDS[zone][1]
-                observed_normal = encoded['normals_np'][rows]
-                descriptor[row, selected_slice] = np.column_stack((
-                    rho[local] / outer_radius, height[local] / HEIGHT_LIMIT_M,
-                    observed_normal @ normals[row], tangent[local] @ encoded['gravity_np'] / outer_radius,
-                    observed_normal @ encoded['gravity_np'], encoded['raw_feature_valid_np'][rows],
-                    encoded['normal_valid_np'][rows], encoded['rgb_valid_np'][rows]))
-                offset += budget
+    def _contact_batch(self, encoded, points, contact):
+        count, slots = len(points), sum(ZONE_SAMPLES)
+        indices, masks, descriptor, raw_count, summary, angular_support = contact
         mask = self._tensor(masks, dtype=torch.bool)
         if len(encoded['points_np']):
             index = self._tensor(indices, dtype=torch.long)
@@ -342,19 +425,12 @@ class InstanceSuction3D(nn.Module):
             offset += budget
         return torch.cat(zone_output, -1), self._tensor(summary), raw_count, angular_support
 
-    def _score_chunk(self, encoded, points, normals, pose_valid):
-        safe_points = np.where(pose_valid[:, None], points, 0.)
-        anchors, anchor_distance = encoded['source_index'].nearest_anchor(safe_points)
-        valid = pose_valid & (anchors >= 0) & encoded['support_sufficient']
-        # Invalid poses are never allowed to introduce Inf/NaN into the dense
-        # graph before a final mask; 0 * Inf in a backward pass is still NaN.
-        safe_points = np.where(valid[:, None], points, encoded['centroid_np'])
-        normals = np.where(valid[:, None], normals, 0.)
-        components = np.full(len(points), -1, np.int64)
-        components[valid] = encoded['components_np'][anchors[valid]]
-        association = encoded['backbone_index'].associate(safe_points, components)
+    def _score_chunk(self, encoded, points, normals, pose_valid, geometry=None):
+        if geometry is None:
+            geometry = _query_geometry(encoded, points, normals, pose_valid)
+        safe_points, normals, anchors, anchor_distance, valid, association, contact = geometry
         query_features = _interpolate(encoded['backbone_features'], association)
-        zones, lip, raw_counts, angular_support = self._contact_batch(encoded, safe_points, normals, components, valid)
+        zones, lip, raw_counts, angular_support = self._contact_batch(encoded, safe_points, contact)
         context = encoded['context'].expand(len(points), -1)
         delta = self._tensor((safe_points - encoded['centroid_np']) / .1)
         axis = self._tensor(normals)
@@ -398,14 +474,14 @@ class InstanceSuction3D(nn.Module):
             batch = numpy_array(query_batch_index)
             if batch.shape != (len(points),) or np.any(batch != 0):
                 raise ValueError('encode_instance contains one object; query_batch_index must be all zero')
-        lengths = np.linalg.norm(normals, axis=1)
-        pose_valid = (np.isfinite(points).all(1) & np.isfinite(normals).all(1)
-                      & np.isfinite(lengths) & (lengths > 1e-12))
-        normalized = np.zeros_like(normals)
-        normalized[pose_valid] = normals[pose_valid] / lengths[pose_valid, None]
+        pose_valid, normalized = _normalize_queries(points, normals)
+        prepared = encoded.get('prepared')
+        use_cached = (prepared is not None and np.array_equal(points, prepared['points'], equal_nan=True)
+                      and np.array_equal(normals, prepared['normals'], equal_nan=True))
         outputs = [self._score_chunk(encoded, points[start:start + self.query_chunk_size],
                                       normalized[start:start + self.query_chunk_size],
-                                      pose_valid[start:start + self.query_chunk_size])
+                                      pose_valid[start:start + self.query_chunk_size],
+                                      prepared['chunks'][start] if use_cached else None)
                    for start in range(0, len(points), self.query_chunk_size)]
         if not outputs:
             # Execute zero-width dense layers to retain well-defined tensor types.
