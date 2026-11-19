@@ -124,13 +124,21 @@ def _save_npz(path, value):
 
 
 def _read_npz(path):
-    with np.load(path, allow_pickle=False) as file:
-        result = without_legacy_checksums({key: file[key] for key in file.files if key != 'metadata_json'})
-        if 'metadata_json' in file:
-            meta = without_legacy_checksums(json.loads(str(file['metadata_json'])))
-            if set(meta) & set(result):
-                raise ValueError('array/metadata key collision')
-            result.update(meta)
+    arrays = None
+    cache_root = os.environ.get('SUCTION_INSTANCE_SELECTION_CACHE')
+    if cache_root:
+        from .instance_selection_cache import read_cached_arrays
+        arrays = read_cached_arrays(path, cache_root)
+    if arrays is None:
+        with np.load(path, allow_pickle=False) as file:
+            arrays = {key: file[key] for key in file.files}
+    encoded = arrays.pop('metadata_json', None)
+    result = without_legacy_checksums(arrays)
+    if encoded is not None:
+        meta = without_legacy_checksums(json.loads(str(encoded)))
+        if set(meta) & set(result):
+            raise ValueError('array/metadata key collision')
+        result.update(meta)
     return without_legacy_checksums(result)
 
 
