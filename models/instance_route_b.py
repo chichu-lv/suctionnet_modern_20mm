@@ -619,17 +619,19 @@ class InstanceSuction2DFastV3(nn.Module):
             global_features = self.global_projection(masked_mean_max(l4.flatten(2), mask))
             levels = [module(x) for module, x in zip(self.midlevel_query_projections, (l1, l2))]
         groups = {}
-        for i, item in enumerate(prepared):
-            g = global_features[i:i + 1]
+        # Split each learned batch once. Independent slices give every instance
+        # a SliceBackward that allocates a gradient for the entire source batch.
+        query_features = zip(*(level.split(1) for level in levels))
+        for i, (item, g, query) in enumerate(zip(prepared, global_features.split(1), query_features)):
             item['global_feature'] = g if item['instance_valid'] else g * 0
-            item['query_features'] = tuple(x[i:i + 1] for x in levels)
+            item['query_features'] = query
             groups.setdefault(item['texture'].shape[-2:], []).append(i)
         # Padding dissimilar ROIs to a common size would change GroupNorm statistics.
         for indices in groups.values():
             with self._network_autocast():
                 features = self.texture_stem(torch.cat([prepared[i]['texture'] for i in indices]))
-            for j, index in enumerate(indices):
-                prepared[index]['texture_feature'] = features[j:j + 1]
+            for index, feature in zip(indices, features.split(1)):
+                prepared[index]['texture_feature'] = feature
         return prepared
 
     def forward_instances(self, observations):
@@ -839,11 +841,11 @@ class InstanceSuction2DFastV3(nn.Module):
     def _encode_contact_tokens(self, tokens, contact):
         ring_features = []
         with self._network_autocast():
-            for i, encoder in enumerate(self.ring_encoders):
-                zone = slice(3 * i, 3 * i + 3)
-                region_tokens = tokens[:, zone].permute(0, 1, 3, 2).reshape(len(tokens), 75, ANGLES)
+            regions = zip(self.ring_encoders, tokens.split(3, dim=1), contact.split(3, dim=1))
+            for i, (encoder, region_tokens, region_contact) in enumerate(regions):
+                region_tokens = region_tokens.permute(0, 1, 3, 2).reshape(len(tokens), 75, ANGLES)
                 ring_features.append(self._network_call(f"ring_{i}", encoder, region_tokens,
-                                                        contact[:, zone].any(1)))
+                                                        region_contact.any(1)))
         return torch.cat(ring_features, -1)
 
     def contact_features(self, encoded, points, normals, phase):
@@ -887,13 +889,16 @@ class InstanceSuction2DFastV3(nn.Module):
         batch = {key: torch.cat([item[key] for item in prepared]) for key in keys}
         chunk = self.dense_query_chunk or self.query_chunk
         predictions, fusions = [], []
-        for start in range(0, sum(lengths), chunk):
-            sl = slice(start, start + chunk)
-            ring = self._encode_contact_tokens(batch["tokens"][sl], batch["contact"][sl])
-            fq = batch["fq"][sl]
-            fusion = torch.cat((batch["global_feature"][sl].to(fq.dtype), fq, ring.to(fq.dtype),
-                                batch["support"][sl].to(fq.dtype), batch["raw"][sl].to(fq.dtype),
-                                batch["descriptor"][sl]), -1)
+        # One split node assembles each source gradient once, including a short
+        # final chunk, instead of zero-filling the whole query batch per chunk.
+        chunks = zip(*(batch[key].split(chunk) for key in keys))
+        for values in chunks:
+            part = dict(zip(keys, values))
+            ring = self._encode_contact_tokens(part["tokens"], part["contact"])
+            fq = part["fq"]
+            fusion = torch.cat((part["global_feature"].to(fq.dtype), fq, ring.to(fq.dtype),
+                                part["support"].to(fq.dtype), part["raw"].to(fq.dtype),
+                                part["descriptor"]), -1)
             with self._network_autocast():
                 latent = self._network_call("query_fusion", self.query_fusion, fusion)
                 heads = {name: self._network_call(f"head_{name}", head, latent).squeeze(-1)
@@ -910,18 +915,17 @@ class InstanceSuction2DFastV3(nn.Module):
             fusions.append(fusion)
         merged = {name: torch.cat([part[name] for part in predictions]) for name in predictions[0]}
         fusion = torch.cat(fusions)
-        results, start = [], 0
-        for item, count in zip(prepared, lengths):
-            sl = slice(start, start + count)
+        instance_predictions = {name: value.split(lengths) for name, value in merged.items()}
+        results = []
+        for index, (item, instance_fusion) in enumerate(zip(prepared, fusion.split(lengths))):
             valid = item["valid"]
-            result = {name: torch.where(valid, value[sl], torch.zeros_like(value[sl]))
-                      for name, value in merged.items()}
+            result = {name: torch.where(valid, values[index], torch.zeros_like(values[index]))
+                      for name, values in instance_predictions.items()}
             result.update(log_scale=result["ell"], log_variance=math.log(2.) + 2 * result["ell"],
                           valid=valid, query_valid=valid, points_cam_m=item["points_cam_m"],
                           normals_out_cam=item["normals_out_cam"],
-                          diagnostics={**item["diagnostics"], "fusion": fusion[sl]})
+                          diagnostics={**item["diagnostics"], "fusion": instance_fusion})
             results.append(result)
-            start += count
         return results
 
     def _score_chunk(self, encoded, points, normals, phase):

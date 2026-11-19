@@ -73,13 +73,16 @@ def _loss(outputs):
                         for part in outputs]).mean()
 
 
-def test_batched_gradient_matches_instance_normalized_serial_training():
+@pytest.mark.parametrize("dense_chunk", [3, 8])
+def test_batched_gradient_matches_instance_normalized_serial_training(dense_chunk):
     torch.manual_seed(52)
     serial = InstanceSuction2DFastV3(query_chunk=2).train()
-    batched = deepcopy(serial).configure_execution(dense_query_chunk=8)
+    batched = deepcopy(serial).configure_execution(dense_query_chunk=dense_chunk)
     serial.set_training_context(13)
     batched.set_training_context(13)
-    rows = observations()[:2]
+    # Unequal query counts, two exact-size texture buckets, and a short final
+    # dense chunk must preserve all parameter gradients through batch splitting.
+    rows = observations()
     _loss([serial(row) for row in rows]).backward()
     _loss(batched.forward_instances(rows)).backward()
     for (name, a), (other, b) in zip(serial.named_parameters(), batched.named_parameters()):

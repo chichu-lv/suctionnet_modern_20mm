@@ -15,7 +15,12 @@ def _source_root(root):
     return Path(config['source_root'])
 
 
-def read_cached_arrays(path, root):
+def read_cached_arrays(path, root, *, exclude_arrays=()):
+    """Return selected arrays and the full member inventory, or fall back.
+
+    The inventory lets the caller retain metadata collision checks without
+    opening arrays unused by the compact source-training path.
+    """
     source = Path(os.path.abspath(path))
     try:
         if not source.is_relative_to(_source_root(root)):
@@ -25,7 +30,9 @@ def read_cached_arrays(path, root):
         stat = source.stat()
         if receipt['source'] != [str(source), stat.st_size, stat.st_mtime_ns]:
             return None
-        return {key: np.load(location/(key+'.npy'), allow_pickle=False, mmap_mode='c')
-                for key in receipt['members']}
+        members = tuple(receipt['members'])
+        arrays = {key: np.load(location/(key+'.npy'), allow_pickle=False, mmap_mode='c')
+                  for key in members if key not in exclude_arrays}
+        return arrays, members
     except (ValueError, KeyError, TypeError, OSError, EOFError):
         return None

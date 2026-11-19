@@ -110,8 +110,12 @@ def _worker_prepare(payload):
     reader = SimpleNamespace(root=Path(spec['root']), records=[record],
                              training_queries=spec.get('training_queries'),
                              require_labels=spec.get('require_labels', True))
-    cls = InstanceDataset if spec['kind'] == 'source' else InstanceAttemptDataset
-    item = _prepare_observation(cls.load_uncached(reader, 0), rgb, spec)
+    if spec['kind'] == 'source':
+        item = InstanceDataset.load_uncached(reader, 0,
+            _compact_source=bool(spec.get('compact_source')))
+    else:
+        item = InstanceAttemptDataset.load_uncached(reader, 0)
+    item = _prepare_observation(item, rgb, spec)
     if spec.get('compact_source') and spec['kind'] == 'source':
         if spec['route'] == 'a':
             from models.instance_route_a import compact_prepared_source_item
