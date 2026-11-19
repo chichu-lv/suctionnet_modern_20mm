@@ -11,6 +11,7 @@ import math
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.spatial.distance import cdist
 
 try:
     from . import _fps_cpu
@@ -62,19 +63,23 @@ def deterministic_fps(points, source_ids, count):
         raise ValueError('FPS source IDs must already be unique')
     if isinstance(count, bool) or not isinstance(count, (int, np.integer)) or count < 0:
         raise ValueError('FPS count must be a nonnegative integer')
-    limit = min(int(count), len(points))
     order = np.argsort(ids, kind='stable')
-    ordered = points[order]
+    return order[fps_positions_in_source_order(points[order], count)]
+
+
+def fps_positions_in_source_order(ordered, count):
+    """Greedy FPS on previously validated points in ascending unique source-ID order."""
+    limit = min(int(count), len(ordered))
     if _fps_cpu is not None and _FPS_AXES is not None:
         if _FPS_AXES != (0, 1, 2):
             ordered = np.ascontiguousarray(ordered[:, _FPS_AXES])
         positions = _fps_cpu.fps_positions(ordered, limit, 0)
-        return order[np.asarray(positions, dtype=np.intp)]
+        return np.asarray(positions, dtype=np.intp)
     result = np.empty(limit, dtype=np.int64)
-    minimum = np.full(len(points), np.inf, dtype=np.float64)
+    minimum = np.full(len(ordered), np.inf, dtype=np.float64)
     next_row = 0
     for step in range(limit):
-        result[step] = order[next_row]
+        result[step] = next_row
         delta = ordered - ordered[next_row]
         minimum = np.minimum(minimum, np.einsum('ij,ij->i', delta, delta))
         # All selected rows stay negative, including duplicate XYZ positions.
@@ -118,9 +123,13 @@ class NeighborIndex:
                 or not np.isfinite(self.points).all()):
             raise ValueError('Invalid component neighbor index')
         self.groups = {}
+        self._tied_source_ids = set()
         for comp in np.unique(self.components):
             rows = np.flatnonzero(self.components == comp)
             rows = rows[np.argsort(self.source_ids[rows], kind='stable')]
+            ids = self.source_ids[rows]
+            if np.any(ids[1:] == ids[:-1]):
+                self._tied_source_ids.add(int(comp))
             self.groups[int(comp)] = (rows, cKDTree(self.points[rows]))
         self.all_tree = cKDTree(self.points) if len(self.points) else None
 
@@ -242,7 +251,20 @@ class NeighborIndex:
             return np.empty(0, np.int64)
         rows, tree = self.groups[int(component)]
         bound = math.hypot(.022, HEIGHT_LIMIT_M) + 2 * BOUNDARY_ROUNDOFF_M
-        selected = rows[np.asarray(tree.query_ball_point(point, bound), np.int64)]
+        tied = getattr(self, '_tied_source_ids', None)
+        if tied is not None and int(component) not in tied:
+            # For a compact support cloud, a C distance scan avoids boxing and
+            # sorting thousands of Python indices for every contact query.
+            if len(rows) <= 32768:
+                distance2 = cdist(np.asarray(point)[None, :], tree.data, metric='sqeuclidean')[0]
+                radius2 = bound * bound
+                tolerance = 16 * np.finfo(np.float64).eps * radius2
+                # Preserve the tree's rounding rule on the decision boundary.
+                if not np.any(np.abs(distance2 - radius2) <= tolerance):
+                    return rows[distance2 < radius2]
+            # Tree row positions were assigned in source-ID order at construction.
+            return rows[np.asarray(tree.query_ball_point(point, bound, return_sorted=True), np.intp)]
+        selected = rows[np.asarray(tree.query_ball_point(point, bound), np.intp)]
         return selected[np.argsort(self.source_ids[selected], kind='stable')]
 
 

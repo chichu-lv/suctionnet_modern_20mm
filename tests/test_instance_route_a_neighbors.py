@@ -149,3 +149,26 @@ def test_neighbors_resolve_internal_ties_without_scalar_ball_query():
     anchors, distance = index.nearest_anchor(points)
     assert np.all(anchors == 0) and np.all(distance == .001)
     assert index.all_tree.calls == 0
+
+
+def test_contact_ball_matches_tree_at_boundary_duplicate_ids_and_large_components():
+    import math
+    from models.instance_route_a_geometry import NeighborIndex, HEIGHT_LIMIT_M
+    from suction20.instance_geometry import BOUNDARY_ROUNDOFF_M
+    radius = math.hypot(.022, HEIGHT_LIMIT_M) + 2 * BOUNDARY_ROUNDOFF_M
+    rng = np.random.default_rng(23)
+    for count, tied in ((200, False), (200, True), (32769, False)):
+        points = rng.uniform(-.05, .05, (count, 3))
+        points[:3] = [[radius, 0., 0.], [np.nextafter(radius, 0.), 0., 0.],
+                      [np.nextafter(radius, np.inf), 0., 0.]]
+        ids = rng.permutation(count)
+        if tied:
+            ids[1] = ids[0]
+        index = NeighborIndex(points, ids, np.zeros(count, int))
+        rows, tree = index.groups[0]
+        for center in (np.zeros(3), np.array([.00123, .00456, -.00789])):
+            found = rows[np.array(tree.query_ball_point(center, radius), dtype=np.intp)]
+            ordered = found[np.argsort(ids[found], kind='stable')]
+            np.testing.assert_array_equal(index.support_ball(center, 0), ordered)
+        del index._tied_source_ids  # transient geometry prepared before this optimization
+        assert len(index.support_ball(points[0], 0))

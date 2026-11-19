@@ -222,3 +222,60 @@ def test_optional_dense_compile_does_not_register_new_weight_names(monkeypatch):
     model.parameter_groups()
     model.configure_execution()
     assert model._compiled_dense == {}
+
+
+def test_compact_prepared_source_survives_ipc_with_same_loss_gradients_and_bn():
+    from models.instance_route_a import compact_prepared_source_item
+    from suction20.instance_training import batched_source_losses
+
+    original = InstanceSuction3D(backbone=InjectedBackbone(with_bn=True), backbone_points=64,
+                                 query_chunk_size=2).train()
+    compact_model = copy.deepcopy(original)
+    rows = []
+    for obs in samples():
+        obs['normal_map'] = np.zeros_like(obs['rgb'])
+        obs['other_metadata'] = {'kept': True}
+        count = len(obs['query_points'])
+        labels = {key: np.linspace(.2, .8, count) for key in ('q_inst', 'seal', 'wrench')}
+        labels['label_valid'] = np.ones(count, bool)
+        rows.append(dict(observation=original.prepare_source_geometry(obs), labels=labels, record={'split':'train'}))
+
+    outgoing = [compact_prepared_source_item(row) for row in rows]
+    assert all('rgb' in row['observation'] and 'normal_map' in row['observation'] for row in rows)
+    assert all('rgb' not in row['observation'] and 'normal_map' not in row['observation'] for row in outgoing)
+    received = pickle.loads(pickle.dumps(outgoing))
+    for item in received:
+        assert item['record'] == {'split':'train'} and item['observation']['other_metadata'] == {'kept': True}
+        geometry = item['observation']['_route_a_geometry']
+        assert geometry['source_references']['support_rgb'] is item['observation']['support_rgb']
+
+    def forward_backward(model, items):
+        output = model.forward_instances([row['observation'] for row in items])
+        loss = batched_source_losses(output, [row['labels'] for row in items]).mean()
+        loss.backward()
+        return output, loss
+
+    expected, expected_loss = forward_backward(original, rows)
+    actual, actual_loss = forward_backward(compact_model, received)
+    torch.testing.assert_close(actual_loss, expected_loss, rtol=0, atol=0)
+    for prediction, reference in zip(actual, expected):
+        assert_scores(prediction, reference, atol=0, rtol=0)
+    for p, q in zip(original.parameters(), compact_model.parameters()):
+        if p.grad is None:
+            assert q.grad is None
+        else:
+            torch.testing.assert_close(p.grad, q.grad, atol=0, rtol=0)
+    for left, right in zip(original.buffers(), compact_model.buffers()):
+        torch.testing.assert_close(left, right, atol=0, rtol=0)
+
+
+def test_compact_prepared_source_preserves_full_unprepared_and_legacy_inputs():
+    from models.instance_route_a import compact_prepared_source_item
+
+    obs = observation()
+    item = {'observation': obs}
+    assert compact_prepared_source_item(item) is item
+    del obs['support_source_ids']
+    item['observation'] = prepare_source_geometry_cpu(obs)
+    assert compact_prepared_source_item(item) is item
+    assert 'rgb' in item['observation']

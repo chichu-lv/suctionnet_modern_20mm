@@ -18,7 +18,7 @@ from .backbones.spconv_resunet14 import SpconvResUNet14
 from .instance_route_a_geometry import (
     BOUNDARY_ROUNDOFF_M, HEIGHT_LIMIT_M, ZONE_BOUNDS, ZONE_SAMPLES,
     NeighborIndex, association_diagnostics, contact_coordinates,
-    deterministic_fps, lip_summary, numpy_array, voxel_representatives,
+    deterministic_fps, fps_positions_in_source_order, lip_summary, numpy_array, voxel_representatives,
 )
 
 
@@ -193,7 +193,9 @@ def _contact_geometry(encoded, points, normals, components, valid):
             local = np.flatnonzero(mask)
             raw_count[row, zone] = len(local)
             rows = support[local]
-            chosen = deterministic_fps(encoded['points_np'][rows], encoded['source_ids_np'][rows], budget)
+            # support_ball returns unique support rows in source-ID order;
+            # taking a zone mask preserves that order.
+            chosen = fps_positions_in_source_order(encoded['points_np'][rows], budget)
             rows, local = rows[chosen], local[chosen]
             selected_slice = slice(offset, offset + len(rows))
             indices[row, selected_slice] = rows
@@ -259,6 +261,23 @@ def prepare_source_geometry(observation, *, backbone_points=2048, min_support_po
     cache = dict(geometry=geometry, settings=(backbone_points, min_support_points, query_chunk_size),
                  points=points, normals=normals, chunks=chunks, source_references=references)
     return dict(observation, _route_a_geometry=cache)
+
+
+def compact_prepared_source_item(item):
+    """Discard organized images after validating the source row and preparing A geometry.
+
+    Source training consumes the support and query arrays plus the prepared
+    geometry. Preserve those references together for the receiving process.
+    Legacy inputs without source IDs still need the RGB width for UV fallback.
+    """
+    observation = item['observation']
+    if observation.get('_route_a_geometry') is None or 'support_source_ids' not in observation:
+        return item
+    image_fields = {'rgb', 'rgb_valid', 'depth_m', 'depth_valid', 'xyz_map',
+                    'mask', 'instance_mask', 'normal_map', 'normal_valid',
+                    'eligible_mask', 'component_map'}
+    return dict(item, observation={key: value for key, value in observation.items()
+                                   if key not in image_fields})
 
 
 # Explicit worker-facing name; both spellings are pure CPU functions and do
