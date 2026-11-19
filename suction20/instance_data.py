@@ -269,6 +269,14 @@ class InstanceDataset:
         if index in self._cache:
             self._cache.move_to_end(index)
             return copy.deepcopy(self._cache[index])
+        result = self.load_uncached(index)
+        if self.cache_size:
+            self._cache[index] = copy.deepcopy(result)
+            if len(self._cache) > self.cache_size:
+                self._cache.popitem(last=False)
+        return result
+
+    def load_uncached(self, index):
         record = copy.deepcopy(self.records[index])
         obs = load_observation(_path(self.root, record['observation_npz']))
         obs['sample_uid'], obs['instance_uid'] = record['sample_id'], record['instance_uid']
@@ -296,10 +304,6 @@ class InstanceDataset:
         obs['query_identity'] = query_descriptor(obs['query_source_ids'])
         record['has_supervision'] = bool(labels is not None and labels['label_valid'].any())
         result = {'observation': obs, 'labels': labels, 'record': record}
-        if self.cache_size:
-            self._cache[index] = copy.deepcopy(result)
-            if len(self._cache) > self.cache_size:
-                self._cache.popitem(last=False)
         return result
 
 
@@ -753,6 +757,14 @@ class InstanceAttemptDataset:
         if index in self._cache:
             self._cache.move_to_end(index)
             return copy.deepcopy(self._cache[index])
+        result = self.load_uncached(index)
+        if self.cache_size > 0:
+            self._cache[index] = copy.deepcopy(result)
+            if len(self._cache) > self.cache_size:
+                self._cache.popitem(last=False)
+        return result
+
+    def load_uncached(self, index):
         record = copy.deepcopy(self.records[index])
         source = record['observation']
         with Image.open(_path(self.root, source['rgb_path'])) as im:
@@ -798,8 +810,4 @@ class InstanceAttemptDataset:
                 bool(r.get('actual_execution_verified', False)) for r in record['rows']], bool),
             original_normal_out_cam=normals.copy())
         result = dict(observation=obs, attempts=attempts, record=record)
-        if self.cache_size > 0:
-            self._cache[index] = copy.deepcopy(result)
-            if len(self._cache) > self.cache_size:
-                self._cache.popitem(last=False)
         return result

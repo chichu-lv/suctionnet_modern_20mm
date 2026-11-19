@@ -441,6 +441,32 @@ class InstanceSuction2DFastV3(nn.Module):
         encoded["texture_feature"] = self.texture_stem(encoded["texture"])
         return encoded
 
+    def forward_instances(self, observations):
+        """Batch independent context encodings and exact-size texture ROIs."""
+        if len(observations) == 1:
+            return [self(observations[0])]
+        prepared = [prepare_shared_images(obs, device=self.device, feature_dtype=self.feature_dtype,
+                                          min_support_points=self.min_support_points)
+                    for obs in observations]
+        context = torch.cat([item['context'] for item in prepared])
+        l1, l2, l4 = self.encoder(context)
+        mask = F.adaptive_max_pool2d(context[:, -1:], l4.shape[-2:])[:, 0].flatten(1) > 0
+        global_features = self.global_projection(masked_mean_max(l4.flatten(2), mask))
+        levels = [module(x) for module, x in zip(self.midlevel_query_projections, (l1, l2))]
+        groups = {}
+        for i, item in enumerate(prepared):
+            g = global_features[i:i + 1]
+            item['global_feature'] = g if item['instance_valid'] else g * 0
+            item['query_features'] = tuple(x[i:i + 1] for x in levels)
+            groups.setdefault(item['texture'].shape[-2:], []).append(i)
+        # Padding dissimilar ROIs to a common size would change GroupNorm statistics.
+        for indices in groups.values():
+            features = self.texture_stem(torch.cat([prepared[i]['texture'] for i in indices]))
+            for j, index in enumerate(indices):
+                prepared[index]['texture_feature'] = features[j:j + 1]
+        return [self.score_at_pose(item, obs['query_points'], obs['query_normals'])
+                for item, obs in zip(prepared, observations)]
+
     def _phase(self, encoded, points, normals):
         if not self.training or not self.training_phase:
             return points.new_zeros(len(points))

@@ -267,3 +267,28 @@ def test_subpixel_sample_zero_padding_without_border_fabrication():
     sampled.sum().backward()
     assert torch.isfinite(feature.grad).all()
     assert feature.grad.sum() == 1
+
+
+def test_microbatch_preserves_pose_ids_phase_outputs_and_gradients():
+    torch.manual_seed(27)
+    model = InstanceSuction2DFastV3()
+    model.train()
+    model.set_training_context(update=7, seed=42)
+    observations = [plane_observation(61, 79), plane_observation(61, 79), plane_observation(79, 120)]
+    for i, obs in enumerate(observations):
+        obs['sample_uid'] = f'fixed-{i}'
+        obs['rgb'] *= 1. - .1 * i
+    single = [model(obs) for obs in observations]
+    torch.stack([p['q_inst'].mean() for p in single]).mean().backward()
+    reference = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
+    model.zero_grad(set_to_none=True)
+    batch = model.forward_instances(observations)
+    for one, many in zip(single, batch):
+        for key in ('points_cam_m', 'normals_out_cam', 'valid'):
+            assert torch.equal(one[key], many[key])
+        assert torch.equal(one['diagnostics']['phase'], many['diagnostics']['phase'])
+        for key in ('q_inst', 'seal', 'wrench', 'task_logit', 'ell'):
+            torch.testing.assert_close(one[key], many[key], atol=2e-6, rtol=2e-5)
+    torch.stack([p['q_inst'].mean() for p in batch]).mean().backward()
+    actual = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
+    assert torch.linalg.vector_norm(actual-reference) <= 1e-4 * torch.linalg.vector_norm(reference)

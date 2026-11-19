@@ -122,6 +122,10 @@ class SourceEvaluationSelection:
     def __getitem__(self, index):
         return self.dataset[self.indices[index]]
 
+    def load_uncached(self, index):
+        read = getattr(self.dataset, 'load_uncached', self.dataset.__getitem__)
+        return read(self.indices[index])
+
 
 def select_source_evaluation(dataset, frames_per_scene, *, allow_partial=False):
     """Select a fixed test-frame set, validating its actual required coverage.
