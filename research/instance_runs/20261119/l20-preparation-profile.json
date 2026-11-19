@@ -1,0 +1,157 @@
+{
+  "route": "B",
+  "device": "one NVIDIA L20",
+  "source_budget": 140000,
+  "effective_batch": 32,
+  "microbatch": 32,
+  "workers": 8,
+  "prefetch_factor": 2,
+  "dense_precision": "BF16",
+  "code_commit": "0dd0be70f807970a4a85c9f774b222fe7a0750d9",
+  "activation": "SUCTION_COMPACT_SOURCE_IPC=1",
+  "measurement": "Formal pretraining. Each update consumes 32 supervised instances. Original and resumed windows are consecutive training updates on the same card. Startup of the resumed pool is shown in the CSV and omitted from steady-state means.",
+  "original_formal_50_updates": {
+    "first": 32,
+    "last": 81,
+    "count": 50,
+    "total_s": {
+      "mean": 6.424145491877571,
+      "p50": 6.3318389239721,
+      "p95": 7.090607634279877
+    },
+    "wait_s": {
+      "mean": 3.9070049944892524,
+      "p50": 3.8868421770166606,
+      "p95": 4.437363701337016
+    },
+    "outside_wait_s": {
+      "mean": 2.517140497388318,
+      "p50": 2.5693842377513647,
+      "p95": 3.0103955297032368
+    },
+    "wait_fraction": 0.6081750482502477,
+    "items_s": 4.981207234558978
+  },
+  "formal_original_before_checkpoint": {
+    "first": 419,
+    "last": 438,
+    "mean_step_s": 6.157304507284425,
+    "median_step_s": 6.007897016592324,
+    "mean_data_wait_s": 3.714666141779162,
+    "effective_instances_s": 5.197079332708373
+  },
+  "formal_optimized_after_checkpoint": {
+    "first": 440,
+    "last": 459,
+    "mean_step_s": 1.5301777031505481,
+    "median_step_s": 1.5536590064875782,
+    "mean_data_wait_s": 0.9919913022313267,
+    "effective_instances_s": 20.912603767597606
+  },
+  "formal_throughput_ratio": 4.0239146699150625,
+  "resource_window_before": {
+    "seconds": 61.85630087926984,
+    "samples": 100,
+    "board_gpu_percent_mean": 3.03,
+    "board_memory_peak_mib": 5576,
+    "aggregate_worker_cpu_cores": 3.783284753104726,
+    "aggregate_worker_wchar_mib_s": 584.7076457240765,
+    "parent_rchar_mib_s": 585.0167287468346,
+    "measured_updates": {
+      "first": 72,
+      "last": 81,
+      "count": 10,
+      "total_s": {
+        "mean": 6.390405311901122,
+        "p50": 6.42897293693386,
+        "p95": 7.007939348742366
+      },
+      "wait_s": {
+        "mean": 3.9551435108762236,
+        "p50": 3.885056374594569,
+        "p95": 4.317962310323492
+      },
+      "outside_wait_s": {
+        "mean": 2.435261801024899,
+        "p50": 2.3210574148688465,
+        "p95": 3.102806070796214
+      },
+      "wait_fraction": 0.6189190384388283,
+      "items_s": 5.0075071045032225
+    }
+  },
+  "resource_window_after": {
+    "seconds": 61.45601440407336,
+    "samples": 100,
+    "board_gpu_percent_mean": 9.73,
+    "board_memory_peak_mib": 5628,
+    "aggregate_worker_cpu_cores": 7.2324898435089455,
+    "aggregate_worker_wchar_mib_s": 127.04391147342608,
+    "parent_rchar_mib_s": 127.12422282435585,
+    "measured_updates": {
+      "first": 440,
+      "last": 479,
+      "count": 40,
+      "total_s": {
+        "mean": 1.521932494745124,
+        "p50": 1.508068403461948,
+        "p95": 1.6516567481448874
+      },
+      "wait_s": {
+        "mean": 1.0011511676944793,
+        "p50": 0.9891208740882576,
+        "p95": 1.1363264127634465
+      },
+      "outside_wait_s": {
+        "mean": 0.520781327050645,
+        "p50": 0.5125897268299013,
+        "p95": 0.575446538371034
+      },
+      "wait_fraction": 0.6578157514549556,
+      "items_s": 21.025899710064994,
+      "source_forward_host_seconds": {
+        "mean": 0.41103668201249094,
+        "p50": 0.40727522736415267,
+        "p95": 0.4530216535553336
+      },
+      "source_loss_backward_readback_host_seconds": {
+        "mean": 0.09621253077639266,
+        "p50": 0.09014791483059525,
+        "p95": 0.11550566954538223
+      },
+      "clip_optimizer_readback_host_seconds": {
+        "mean": 0.005285991018172354,
+        "p50": 0.004426694940775633,
+        "p95": 0.00933651868253946
+      }
+    }
+  },
+  "cpu_input_profile": {
+    "mean_numeric_stages": {
+      "obs_read": 18.14538531471044,
+      "obs_file_bytes": 1432268.1666666667,
+      "obs_decode": 140.98454224100956,
+      "label_read": 2.138568088412285,
+      "label_file_bytes": 16823.25,
+      "label_decode": 3.06972519805034,
+      "load_total": 167.26181551348418,
+      "load_validation_residual": 2.9235946713015437,
+      "augment": 88.56371223616104,
+      "b_prepare": 302.8385973690699,
+      "fast_augment": 6.799728066350023,
+      "fast_b_prepare": 155.04693298134953,
+      "compact": 0.5748363910242915,
+      "reference_pickle": 94.36547104269266,
+      "reference_pipe_bytes": 122675691.33333333,
+      "reference_pipe_copy": 149.57277166346708,
+      "reference_unpickle": 14.66494177778562,
+      "compact_pickle": 2.893726729477445,
+      "compact_pipe_bytes": 5633401.166666667,
+      "compact_pipe_copy": 6.259053014218807,
+      "compact_unpickle": 1.1039005670075615
+    },
+    "scope": "Single-worker stages on 12 real draws from updates 62\u201365. Ordered eight-worker crossover on 128 real draws; CPU consumer restores full camera geometry.",
+    "pipeline_instances_per_s_original": 5.55,
+    "pipeline_instances_per_s_optimized": 21.09
+  }
+}
