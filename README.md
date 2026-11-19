@@ -23,6 +23,8 @@
 
 ## Done（已完成）
 
+- [x] [补齐 E5 性能能力定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)：A 完整 FP64 原生三区接触、跨曝光静态几何与可选接触并集投影；B 静态 ROI 准备与 ROI 消费；共同路线白名单、少拷贝和有界缓存。附 CPU 配对及冷缓存恢复验证，未声明新 L20 吞吐。
+
 - [x] [按 E5 问题清单审查新 A/B 实现](docs/instance_routes/E5_PROBLEM_AUDIT.md)：源训练按需解压、A 固定几何统计前移、B 可微批特征按边界拆分、每更新一次指标读回；附 CPU 合成对照与数值/恢复回归，真实 GPU 增益待配对。
 
 - [x] 按项目约束移除 SHA-256 计算与校验，覆盖数据、缓存、checkpoint、备份、导出、原生扩展和基准脚本；保留实际结构/配置/事务检查，并增加 [永久约束](AGENTS.md) 与 [回归门禁](tests/test_no_sha256_verification.py)。兼容范围见[当前读取规则](docs/NO_CONTENT_CHECKSUMS.md)。
@@ -67,6 +69,8 @@
 - [x] [选定正式配方及从头启动](docs/SELECTED_PRETRAINING_RECIPE.md)：`finalize_pretraining.py`支持读取已完成的batch-combo结果，选择各机最快完整候选，生成H20有效batch48、L20有效batch12的六组新配置；不再锁定有效batch8，预算从配置派生，旧final入口保留历史兼容。
 
 ## TODO（待完成）
+
+- [ ] 在实际 L20 数据与原训练配置下验证[定向适配](docs/instance_routes/E5_PERFORMANCE_MIGRATION.md)的 SpConv/CUDA 数值、缓存命中率、暴露等待和端到端吞吐；A 接触并集保持 opt-in，pinned/H2D 优先级由新分段结果确定。
 
 - [ ] 在原 L20 配置、有效 batch 32 和相同数据/增强顺序下验收本轮[针对性优化](docs/instance_routes/E5_PROBLEM_AUDIT.md)，确认真实 SpConv/CUDA 数值与端到端收益后用于正式断点续训；此前 L20 提速不计作本轮成果。
 

@@ -40,6 +40,8 @@ _ENVIRONMENT_NAMES = (
     'SUCTION20_INSTANCE_TRAIN_WORKERS', 'SUCTION20_INSTANCE_EVAL_WORKERS',
     'SUCTION20_INSTANCE_B_MICROBATCH',
     'SUCTION_COMPACT_SOURCE_IPC', 'SUCTION_INSTANCE_SELECTION_CACHE',
+    'SUCTION_INSTANCE_STATIC_CACHE_MB',
+    'SUCTION_A_CONTACT_BACKEND', 'SUCTION_A_CONTACT_UNION',
 )
 
 
@@ -227,6 +229,8 @@ def _run_trial(index, config, args, microbatch, workers, device):
             (row['parent_rss_bytes'] for row in rss if row['parent_rss_bytes'] is not None), default=None)
         result['sampled_children_rss_max_bytes'] = max(
             (row['children_rss_bytes'] for row in rss if row['children_rss_bytes'] is not None), default=None)
+        result['preparation_caches'] = {name: pool.preparation_cache_stats()
+            for name, pool in getattr(trainer, '_preparation_pools', {}).items()}
         try:
             if trainer is not None:
                 trainer.close()

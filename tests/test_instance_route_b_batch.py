@@ -255,9 +255,14 @@ def test_compact_source_ticket_roundtrips_geometry_scores_and_gradients(mask_kin
     small = compact["observation"]
     ref = model._prepare_encoded(prepared)
     restored = model._prepare_encoded(small)
-    assert set(restored) == set(ref)
+    assert set(restored) == set(ref) | {"geometry_image_hw", "geometry_top_left"}
+    height, width = ref["mask"].shape
+    yy, xx = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
     for key, value in ref.items():
-        if isinstance(value, torch.Tensor):
+        if key in route_b._GEOMETRY_MAPS:
+            logical = route_b._geometry_at_pixels(restored, key, yy, xx)
+            torch.testing.assert_close(logical, value, rtol=0, atol=0)
+        elif isinstance(value, torch.Tensor):
             torch.testing.assert_close(restored[key], value, rtol=0, atol=0)
         elif key != "observation":
             assert restored[key] == value

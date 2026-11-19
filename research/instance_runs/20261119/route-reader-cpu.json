@@ -1,0 +1,386 @@
+{
+  "scope": "Synthetic CPU, in-memory compressed NPZ. No disk I/O, labels, GPU, or production training.",
+  "fixture": {
+    "image_hw": [
+      720,
+      1280
+    ],
+    "support": 32000,
+    "queries": 256,
+    "repeats": 8,
+    "random_seed": 7,
+    "compressed_bytes": 1120826,
+    "all_array_bytes": 74810576,
+    "metadata_json_chars": 5698,
+    "numpy_version": "2.3.5"
+  },
+  "omitted_bytes": 12902400,
+  "route_member_protocol": {
+    "full": {
+      "read_fields": [
+        "bbox_pixel_edges",
+        "bbox_xyxy",
+        "centroid",
+        "component_map",
+        "depth_m",
+        "depth_valid",
+        "eligible_mask",
+        "gravity",
+        "image_shape",
+        "instance_mask",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "normal_valid",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_components",
+        "support_normal_valid",
+        "support_normals",
+        "support_points",
+        "support_rgb",
+        "support_rgb_valid",
+        "support_source_ids",
+        "support_uv",
+        "xyz_map"
+      ],
+      "omitted_fields": [],
+      "read_array_bytes": 74810576,
+      "omitted_array_bytes": 0
+    },
+    "selective": {
+      "read_fields": [
+        "bbox_pixel_edges",
+        "bbox_xyxy",
+        "centroid",
+        "gravity",
+        "image_shape",
+        "instance_mask",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "normal_valid",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_components",
+        "support_normal_valid",
+        "support_normals",
+        "support_points",
+        "support_rgb",
+        "support_rgb_valid",
+        "support_source_ids",
+        "support_uv",
+        "xyz_map"
+      ],
+      "omitted_fields": [
+        "component_map",
+        "depth_m",
+        "depth_valid",
+        "eligible_mask"
+      ],
+      "read_array_bytes": 61908176,
+      "omitted_array_bytes": 12902400
+    },
+    "route_a": {
+      "read_fields": [
+        "centroid",
+        "gravity",
+        "image_shape",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_components",
+        "support_normal_valid",
+        "support_normals",
+        "support_points",
+        "support_rgb",
+        "support_rgb_valid",
+        "support_source_ids",
+        "support_uv",
+        "xyz_map"
+      ],
+      "omitted_fields": [
+        "bbox_pixel_edges",
+        "bbox_xyxy",
+        "component_map",
+        "depth_m",
+        "depth_valid",
+        "eligible_mask",
+        "instance_mask",
+        "normal_valid"
+      ],
+      "read_array_bytes": 60064912,
+      "omitted_array_bytes": 14745664
+    },
+    "route_b": {
+      "read_fields": [
+        "gravity",
+        "image_shape",
+        "instance_mask",
+        "intrinsics",
+        "mask",
+        "metadata_json",
+        "normal_map",
+        "normal_valid",
+        "query_cell_ids",
+        "query_components",
+        "query_ids",
+        "query_normals",
+        "query_points",
+        "query_rounds",
+        "query_source_ids",
+        "query_uv",
+        "query_valid",
+        "rgb",
+        "rgb_valid",
+        "support_points",
+        "xyz_map"
+      ],
+      "omitted_fields": [
+        "bbox_pixel_edges",
+        "bbox_xyxy",
+        "centroid",
+        "component_map",
+        "depth_m",
+        "depth_valid",
+        "eligible_mask",
+        "support_components",
+        "support_normal_valid",
+        "support_normals",
+        "support_rgb",
+        "support_rgb_valid",
+        "support_source_ids",
+        "support_uv"
+      ],
+      "read_array_bytes": 59796088,
+      "omitted_array_bytes": 15014488
+    }
+  },
+  "array_member_read_ms": {
+    "full": {
+      "runs": [
+        159.0509710003971,
+        158.34534800160327,
+        150.50254200104973,
+        144.91320500019356,
+        134.63177499943413,
+        141.74759999878006,
+        159.32422200057772,
+        145.86168399910093
+      ],
+      "median": 148.18211300007533
+    },
+    "selective": {
+      "runs": [
+        134.0049899990845,
+        225.61876999679953,
+        144.60598699952243,
+        124.46060199727071,
+        107.34611599764321,
+        116.43011799969827,
+        119.9340739985928,
+        115.85309799920651
+      ],
+      "median": 122.19733799793175
+    },
+    "route_a": {
+      "runs": [
+        157.58210499916459,
+        154.52941699913936,
+        122.21771700205863,
+        116.74024699823349,
+        102.78260199993383,
+        118.25675399813917,
+        113.32885099909618,
+        114.47725299876765
+      ],
+      "median": 117.49850049818633
+    },
+    "route_b": {
+      "runs": [
+        140.76836200183607,
+        183.74651900012395,
+        109.75704099837458,
+        111.02291100178263,
+        102.00017199895228,
+        109.75738400156843,
+        116.25141900003655,
+        116.06933399889385
+      ],
+      "median": 113.54612250033824
+    }
+  },
+  "validated_observation_read_ms": {
+    "full": {
+      "runs": [
+        200.62227900052676,
+        148.73440500014112,
+        146.09403199938242,
+        155.46743500090088,
+        151.33891599907656,
+        166.17047900217585,
+        139.55172600253718,
+        148.43898200342664
+      ],
+      "median": 150.03666049960884
+    },
+    "selective": {
+      "runs": [
+        187.8135349979857,
+        116.92795799899613,
+        116.06243200003519,
+        117.35009700350929,
+        118.58070300149848,
+        124.33409100049175,
+        111.19290799979353,
+        120.120074996521
+      ],
+      "median": 117.96540000250388
+    },
+    "route_a": {
+      "runs": [
+        151.49165899856598,
+        107.09397399841691,
+        124.21922599969548,
+        111.51790900112246,
+        116.7126449981879,
+        109.33338799804915,
+        144.50735100035672,
+        141.65948500158265
+      ],
+      "median": 120.46593549894169
+    },
+    "route_b": {
+      "runs": [
+        159.47495699947467,
+        129.5767169976898,
+        113.24008500014315,
+        126.13579900062177,
+        125.44275400068727,
+        110.28800300118746,
+        113.48151000129292,
+        119.68980500023463
+      ],
+      "median": 122.56627950046095
+    }
+  },
+  "json_decode_and_cleanup_ms": {
+    "runs": [
+      0.29492400062736124,
+      0.27967200003331527,
+      0.24584099810454063,
+      0.25778900089790113,
+      0.5088870020699687,
+      0.34944700018968433,
+      2.1464880010171328,
+      0.28637200011871755
+    ],
+    "median": 0.2906480003730394
+  },
+  "omitted_fields": {
+    "component_map": {
+      "bytes": 3686400,
+      "member_read_ms": {
+        "runs": [
+          10.24942000003648,
+          9.74052299716277,
+          7.9772030003368855,
+          7.995890999154653,
+          7.738301999779651,
+          7.809459999407409,
+          8.811351999611361,
+          7.9580649980925955
+        ],
+        "median": 7.986546999745769
+      }
+    },
+    "depth_m": {
+      "bytes": 7372800,
+      "member_read_ms": {
+        "runs": [
+          17.424655001377687,
+          18.414286998449825,
+          17.53077399916947,
+          16.135990001203027,
+          15.443035001226235,
+          16.14523399985046,
+          18.095036000886466,
+          16.13997599997674
+        ],
+        "median": 16.784944500614074
+      }
+    },
+    "depth_valid": {
+      "bytes": 921600,
+      "member_read_ms": {
+        "runs": [
+          2.2431130018958356,
+          2.555304999987129,
+          2.193006999732461,
+          2.209703001426533,
+          2.0213990028423723,
+          2.0204070024192333,
+          2.6538030033407267,
+          2.136112001608126
+        ],
+        "median": 2.201355000579497
+      }
+    },
+    "eligible_mask": {
+      "bytes": 921600,
+      "member_read_ms": {
+        "runs": [
+          2.3556730011478066,
+          2.6644089994078968,
+          1.990262000617804,
+          2.190483999584103,
+          2.002231001824839,
+          2.161199998226948,
+          2.350545000808779,
+          2.2022119992470834
+        ],
+        "median": 2.196347999415593
+      }
+    }
+  },
+  "all_retained_arrays_and_metadata_equal": true,
+  "notes": [
+    "The original four-field selective mode is retained as a baseline.",
+    "Both routes still read organized XYZ/normal maps for canonical source checks.",
+    "Route A releases these validation-only maps before augmentation and geometry preparation.",
+    "Route B still reads support_points to preserve the original trainer support-count gate; its private worker observation retains that count, not the array.",
+    "These are decode/validation timings, not steady-state worker IPC or GPU throughput."
+  ]
+}

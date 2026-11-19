@@ -29,7 +29,8 @@ def main():
     # This process uses BytesIO, not a path in the optional selection mirror.
     os.environ.pop('SUCTION_INSTANCE_SELECTION_CACHE', None)
     import numpy as np
-    from suction20.instance_data import _COMPACT_SOURCE_UNUSED_ARRAYS, _load_observation
+    from suction20.instance_data import (_COMPACT_SOURCE_UNUSED_ARRAYS, _load_observation,
+                                        SOURCE_TRAIN_ARRAYS)
     from suction20.instance_geometry import prepare_instance
     from suction20.metadata import without_legacy_checksums
 
@@ -51,22 +52,26 @@ def main():
     np.savez_compressed(buffer, **arrays)
     compressed = buffer.getvalue()
     excluded = _COMPACT_SOURCE_UNUSED_ARRAYS
+    selections = {'full': set(arrays), 'selective': set(arrays) - excluded,
+                  **{f'route_{route}': (set(arrays) & needed) | {'metadata_json'}
+                     for route, needed in SOURCE_TRAIN_ARRAYS.items()}}
     per_member = {key: [] for key in arrays}
-    member_reads = {'full': [], 'selective': []}
-    validated_reads = {'full': [], 'selective': []}
+    member_reads = {mode: [] for mode in selections}
+    validated_reads = {mode: [] for mode in selections}
     metadata_times = []
 
     for repeat in range(args.repeats):
         loaded = {}
-        # Alternate full/selective order to avoid assigning every first read
-        # to the same mode. All runs still use the same in-memory source.
-        modes = ('full', 'selective') if repeat % 2 == 0 else ('selective', 'full')
+        # Rotate execution order, using exactly the same in-memory source.
+        modes = list(selections)
+        start_mode = repeat % len(modes)
+        modes = modes[start_mode:] + modes[:start_mode]
         for mode in modes:
             start = time.perf_counter()
             with np.load(io.BytesIO(compressed), allow_pickle=False) as archive:
                 values = {}
                 for key in archive.files:
-                    if mode == 'selective' and key in excluded:
+                    if key not in selections[mode]:
                         continue
                     before = time.perf_counter()
                     values[key] = archive[key]
@@ -74,23 +79,27 @@ def main():
                         per_member[key].append(1000 * (time.perf_counter() - before))
             member_reads[mode].append(1000 * (time.perf_counter() - start))
             loaded[mode] = values
-        for key, value in loaded['selective'].items():
-            np.testing.assert_array_equal(value, loaded['full'][key])
+        for mode in modes:
+            for key, value in loaded[mode].items():
+                np.testing.assert_array_equal(value, loaded['full'][key])
         before = time.perf_counter()
         without_legacy_checksums(json.loads(str(loaded['full']['metadata_json'])))
         metadata_times.append(1000 * (time.perf_counter() - before))
         checked = {}
         for mode in modes:
             before = time.perf_counter()
-            checked[mode] = _load_observation(io.BytesIO(compressed),
-                exclude_arrays=excluded if mode == 'selective' else ())
+            options = ({'exclude_arrays': excluded} if mode == 'selective' else
+                       {'needed_arrays': SOURCE_TRAIN_ARRAYS[mode[-1]]} if mode.startswith('route_') else {})
+            checked[mode] = _load_observation(io.BytesIO(compressed), **options)
             validated_reads[mode].append(1000 * (time.perf_counter() - before))
-        assert checked['selective'].keys() == checked['full'].keys() - excluded
-        for key, value in checked['selective'].items():
-            if isinstance(value, np.ndarray):
-                np.testing.assert_array_equal(value, checked['full'][key])
-            else:
-                assert value == checked['full'][key]
+        for mode in modes:
+            omitted = set(arrays) - selections[mode]
+            assert checked[mode].keys() == checked['full'].keys() - omitted
+            for key, value in checked[mode].items():
+                if isinstance(value, np.ndarray):
+                    np.testing.assert_array_equal(value, checked['full'][key])
+                else:
+                    assert value == checked['full'][key]
 
     def summary(values):
         return {'runs': values, 'median': statistics.median(values)}
@@ -103,6 +112,12 @@ def main():
                     'all_array_bytes': sum(value.nbytes for value in arrays.values()),
                     'metadata_json_chars': len(text), 'numpy_version': np.__version__},
         'omitted_bytes': sum(arrays[key].nbytes for key in excluded),
+        'route_member_protocol': {
+            mode: {'read_fields': sorted(selected),
+                   'omitted_fields': sorted(set(arrays) - selected),
+                   'read_array_bytes': sum(arrays[key].nbytes for key in selected),
+                   'omitted_array_bytes': sum(arrays[key].nbytes for key in arrays if key not in selected)}
+            for mode, selected in selections.items()},
         'array_member_read_ms': {mode: summary(values) for mode, values in member_reads.items()},
         'validated_observation_read_ms': {mode: summary(values) for mode, values in validated_reads.items()},
         'json_decode_and_cleanup_ms': summary(metadata_times),
@@ -110,6 +125,14 @@ def main():
                                 'member_read_ms': summary(per_member[key])}
                            for key in sorted(excluded)},
         'all_retained_arrays_and_metadata_equal': True,
+        'notes': [
+            'The original four-field selective mode is retained as a baseline.',
+            'Both routes still read organized XYZ/normal maps for canonical source checks.',
+            'Route A releases these validation-only maps before augmentation and geometry preparation.',
+            'Route B still reads support_points to preserve the original trainer support-count gate;'
+            ' its private worker observation retains that count, not the array.',
+            'These are decode/validation timings, not steady-state worker IPC or GPU throughput.',
+        ],
     }
     report = json.dumps(output, indent=2, allow_nan=False) + '\n'
     if args.output is not None:

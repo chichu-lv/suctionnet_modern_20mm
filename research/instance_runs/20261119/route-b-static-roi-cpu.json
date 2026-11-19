@@ -1,0 +1,125 @@
+{
+  "baseline_commit": "f7a3ffc83f4993e3543dcc8ece7080b3dc905596",
+  "implementation": "current modified worktree",
+  "device": "CPU only",
+  "threads": 1,
+  "scope": "Synthetic 720x1280 camera, 32000 visible pixels, 128 queries; no file I/O, augmentation, IPC or GPU timing",
+  "static_reuse_scope": "Warm case assumes a cache hit. Actual training hit rate is not measured.",
+  "python": "3.12.14",
+  "torch": "2.5.1+cpu",
+  "numpy": "2.3.5",
+  "rounds": 9,
+  "shape": {
+    "camera": [
+      720,
+      1280
+    ],
+    "geometry_roi": [
+      160,
+      200
+    ],
+    "context": [
+      1,
+      13,
+      128,
+      128
+    ],
+    "texture": [
+      1,
+      5,
+      192,
+      224
+    ]
+  },
+  "numerical_comparison": "All encoded values exactly equal at every exposure, geometry compared at matching original ROI pixels",
+  "timing": {
+    "baseline_prepare_pack": {
+      "median_ms": 125.23513700216427,
+      "mean_ms": 132.71028844529712,
+      "rounds_ms": [
+        165.23039000094286,
+        139.51351500145392,
+        121.91941300261533,
+        116.1636830001953,
+        124.19347499962896,
+        155.52335699976538,
+        126.4992340002209,
+        120.11439200068708,
+        125.23513700216427
+      ]
+    },
+    "current_cold_prepare_pack": {
+      "median_ms": 12.42416199966101,
+      "mean_ms": 13.02490288839585,
+      "rounds_ms": [
+        12.652708999667084,
+        11.801223001384642,
+        11.957087997870985,
+        12.733658997603925,
+        13.055102997896029,
+        12.42416199966101,
+        20.086219999939203,
+        11.063969999668188,
+        11.449992001871578
+      ]
+    },
+    "current_warm_prepare_pack": {
+      "median_ms": 3.6018739992869087,
+      "mean_ms": 3.6367549991054045,
+      "rounds_ms": [
+        3.7350739985413384,
+        3.49703499887255,
+        3.591027001675684,
+        4.267999000148848,
+        3.6024539986101445,
+        3.565678998711519,
+        3.6018739992869087,
+        3.7050289975013584,
+        3.164623998600291
+      ]
+    },
+    "baseline_restore": {
+      "median_ms": 10.411766001197975,
+      "mean_ms": 10.486968444941644,
+      "rounds_ms": [
+        11.09492699833936,
+        10.784509002405684,
+        10.362552002334269,
+        10.011362002842361,
+        10.526168000069447,
+        10.411766001197975,
+        10.933342997304862,
+        10.186154999246355,
+        10.071934000734473
+      ]
+    },
+    "current_restore": {
+      "median_ms": 0.1731510019453708,
+      "mean_ms": 0.17944400032219063,
+      "rounds_ms": [
+        0.18131300021195784,
+        0.28485000075306743,
+        0.18872500004363246,
+        0.14917500084266067,
+        0.1731510019453708,
+        0.14972599819884636,
+        0.18041200019069947,
+        0.13604500054498203,
+        0.1715990001684986
+      ]
+    }
+  },
+  "numeric_bytes": {
+    "baseline_wire": 4860792,
+    "current_wire": 4092792,
+    "baseline_consumer_geometry": 46080000,
+    "current_consumer_geometry": 1600000,
+    "static_cache_entry": 4377464
+  },
+  "work_counts": {
+    "full_camera_pixels": 921600,
+    "geometry_roi_pixels": 32000,
+    "baseline_rgb_normalization_pixels": 921600,
+    "current_rgb_normalization_pixels": 59392
+  }
+}
