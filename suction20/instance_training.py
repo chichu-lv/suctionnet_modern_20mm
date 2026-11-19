@@ -5,7 +5,10 @@ paper AP are different protocols; the radius-only proposal remains deferred.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
+import os
 from contextlib import contextmanager
 from copy import deepcopy
 import gzip
@@ -227,24 +230,36 @@ class InstanceSchedule:
 
 def augment_rgb(observation, rng):
     """One color transform for both model paths; geometry and validity are unchanged."""
+    return _apply_rgb(observation, _draw_rgb(rng))
+
+
+def _draw_rgb(rng):
+    # The coordinator samples these in consumption order, including skipped draws.
+    factors = [float(rng.uniform(.8, 1.2)) for _ in range(3)]
+    order = rng.permutation(3)
+    hue = int(round(float(rng.uniform(-.05, .05)) * 255))
+    return factors, order, hue, rng.random() < .2
+
+
+def _apply_rgb(observation, parameters):
+    factors, order, hue, grayscale = parameters
     obs = dict(observation)
     rgb = np.asarray(obs['rgb'], dtype=np.float32).copy()
-    valid = np.asarray(obs.get('rgb_valid', np.isfinite(rgb).all(-1)), bool)
+    valid = (np.asarray(obs['rgb_valid'], bool).copy() if 'rgb_valid' in obs
+             else np.isfinite(rgb).all(-1))
     valid &= np.asarray(obs['mask'], bool)
     # PIL HSV conversion provides deterministic CPU color jitter without torchvision.
     from PIL import Image, ImageEnhance
     clean = np.nan_to_num(rgb, nan=0., posinf=0., neginf=0.)
     clean[~valid] = 0
     im = Image.fromarray(np.round(np.clip(clean, 0, 1) * 255).astype(np.uint8))
-    factors = [float(rng.uniform(.8, 1.2)) for _ in range(3)]
     transforms = [ImageEnhance.Brightness, ImageEnhance.Contrast, ImageEnhance.Color]
-    for i in rng.permutation(3):
+    for i in order:
         im = transforms[int(i)](im).enhance(factors[int(i)])
     hsv = np.asarray(im.convert('HSV')).copy()
-    hue = int(round(float(rng.uniform(-.05, .05)) * 255))
     hsv[..., 0] = (hsv[..., 0].astype(np.int16) + hue) % 256
     im = Image.fromarray(hsv, mode='HSV').convert('RGB')
-    if rng.random() < .2:
+    if grayscale:
         im = im.convert('L').convert('RGB')
     result = np.asarray(im, dtype=np.float32) / 255.
     result[~valid] = 0.
@@ -354,12 +369,46 @@ def aggregate_instance_rows(rows):
     return accumulator.result()
 
 
+def _workers(name):
+    count = int(os.environ.get(name, '0'))
+    if count < 0:
+        raise ValueError(f'{name} must be nonnegative')
+    return count
+
+
+def _ordered_map(fn, tickets, workers):
+    """At most workers reads in flight; retain input order and propagate errors."""
+    tickets = iter(tickets)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = deque(pool.submit(fn, item) for item in islice(tickets, workers))
+        while pending:
+            result = pending.popleft().result()
+            for item in islice(tickets, 1):
+                pending.append(pool.submit(fn, item))
+            yield result
+            del result
+
+
+def _evaluation_items(dataset, prepare_geometry=None):
+    workers = _workers('SUCTION20_INSTANCE_EVAL_WORKERS')
+    if not workers:
+        yield from dataset
+        return
+    read = getattr(dataset, 'load_uncached', dataset.__getitem__)
+    def prepare(index):
+        item = read(index)
+        if prepare_geometry is not None:
+            item = dict(item, observation=prepare_geometry(item['observation']))
+        return item
+    yield from _ordered_map(prepare, range(len(dataset)), workers)
+
+
 @torch.no_grad()
 def evaluate_instance_source(model, dataset, *, collect_records=True, record_sink=None):
     rows, overall, subsets = [], _InstanceMetrics(), {}
     threshold = minimum_support_points(model)
     with evaluation_mode(model):
-        for item in dataset:
+        for item in _evaluation_items(dataset, getattr(model, 'prepare_source_geometry', None)):
             obs, labels, record = item['observation'], item['labels'], item['record']
             count = len(obs['query_points'])
             if labels is None:
@@ -403,7 +452,7 @@ def evaluate_instance_attempts(model, dataset, *, collect_records=True, record_s
     scores, outcomes, rows = [], [], []
     total = 0
     with evaluation_mode(model):
-        for item in dataset:
+        for item in _evaluation_items(dataset):
             a = item['attempts']
             p, n = _array(a, 'point_cam_m', 'points'), _array(a, 'normal_out_cam', 'normal_out')
             pred = model.score_at_pose(model.encode_instance(item['observation']), p, n)
@@ -712,40 +761,91 @@ class InstanceTrainer:
             return result
         return item
 
-    def _source_update_items(self, count, weight):
-        completed = 0
+    def _draw_batch(self, dataset, schedule, count):
+        workers = _workers('SUCTION20_INSTANCE_TRAIN_WORKERS')
+        if not workers:
+            for _ in range(count):
+                yield self._observation(dataset[schedule.next()])
+            return
+        read = getattr(dataset, 'load_uncached', dataset.__getitem__)
+        geometry = getattr(self.model, 'prepare_source_geometry', None) if dataset is self.source else None
+        def prepare(ticket):
+            index, rgb = ticket
+            item = read(index)
+            if rgb is not None:
+                item = dict(item, observation=_apply_rgb(item['observation'], rgb))
+            if geometry is not None:
+                item = dict(item, observation=geometry(item['observation']))
+            return item
+        augment = self.config.get('rgb_augmentation', True)
+        tickets = ((schedule.next(), _draw_rgb(self.augmentation_rng) if augment else None)
+                   for _ in range(count))
+        yield from _ordered_map(prepare, tickets, min(workers, count))
+
+    def _microbatch_source(self, count, weight, microbatch):
+        completed = draws = 0
         limit = max(100, count * int(self.config.get('max_draw_multiplier', 20)))
-        for _ in range(limit):
-            item = self._observation(self.source[self.source_schedule.next()])
-            obs = item['observation']
-            if len(obs['support_points']) < minimum_support_points(self.model) or not len(obs['query_points']):
-                self.skipped_no_supervision += 1
-                continue
-            loss = source_loss(self.model(obs), item['labels'])
-            if loss is None:
-                self.skipped_no_supervision += 1
-                continue
-            (loss * weight).backward()
-            completed += 1
-            yield float(loss.detach())
-            if completed == count:
-                return
-        raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
+        while completed < count and draws < limit:
+            items = self._draw_batch(self.source, self.source_schedule,
+                                     min(count - completed, limit - draws))
+            while group := list(islice(items, microbatch)):
+                draws += len(group)
+                supported = [item for item in group if
+                             len(item['observation']['support_points']) >= minimum_support_points(self.model)
+                             and len(item['observation']['query_points'])]
+                losses = []
+                if supported:
+                    outputs = self.model.forward_instances([item['observation'] for item in supported])
+                    for output, item in zip(outputs, supported):
+                        loss = source_loss(output, item['labels'])
+                        if loss is not None:
+                            losses.append(loss)
+                    del outputs, output
+                self.skipped_no_supervision += len(group) - len(losses)
+                if losses:
+                    # One instance-normalized loss per supervised observation.
+                    (torch.stack(losses).sum() * weight).backward()
+                    completed += len(losses)
+                    yield from [float(loss.detach()) for loss in losses]
+        if completed < count:
+            raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
+
+    def _update_items(self, dataset, schedule, count, weight, *, target):
+        completed = draws = 0
+        limit = max(100, count * int(self.config.get('max_draw_multiplier', 20)))
+        while draws < limit and completed < count:
+            # Draw at most the remaining successful budget. All queued tickets are
+            # consumed before checkpointing, including draws later found invalid.
+            for item in self._draw_batch(dataset, schedule, min(count - completed, limit - draws)):
+                draws += 1
+                obs = item['observation']
+                if target:
+                    loss = attempt_loss(self.model, item)
+                elif len(obs['support_points']) >= minimum_support_points(self.model) and len(obs['query_points']):
+                    loss = source_loss(self.model(obs), item['labels'])
+                else:
+                    loss = None
+                if loss is None:
+                    self.skipped_no_supervision += 1
+                    continue
+                (loss * weight).backward()
+                completed += 1
+                yield float(loss.detach())
+        if completed < count:
+            if target:
+                raise RuntimeError('Insufficient supported historical actions; no zero-label substitution is permitted')
+            raise RuntimeError('Insufficient supervised source draws; check masks/teacher/support before training')
+
+    def _source_update_items(self, count, weight):
+        size = int(os.environ.get('SUCTION20_INSTANCE_B_MICROBATCH', '1'))
+        if size < 1:
+            raise ValueError('SUCTION20_INSTANCE_B_MICROBATCH must be positive')
+        if size > 1 and hasattr(self.model, 'forward_instances'):
+            return self._microbatch_source(count, weight, size)
+        return self._update_items(self.source, self.source_schedule, count, weight, target=False)
 
     def _target_update_items(self):
-        completed = 0
-        for _ in range(max(100, 2 * int(self.config.get('max_draw_multiplier', 20)))):
-            item = self._observation(self.target[self.target_schedule.next()])
-            loss = attempt_loss(self.model, item)
-            if loss is None:
-                self.skipped_no_supervision += 1
-                continue
-            (.5 * loss).backward()
-            completed += 1
-            yield float(loss.detach())
-            if completed == 2:
-                return
-        raise RuntimeError('Insufficient supported historical actions; no zero-label substitution is permitted')
+        return self._update_items(self.target, self.target_schedule, 2, .5, target=True)
 
     def train_one_update(self):
         self._apply_phase()

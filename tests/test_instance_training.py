@@ -222,7 +222,7 @@ def test_frame_scene_macro_keeps_no_pose():
 
 
 @pytest.mark.parametrize('stage', ['pretrain', 'finetune'])
-def test_full_vs_resume_keeps_rng_parameters_adam_and_budgets(tmp_path, stage):
+def test_full_vs_resume_keeps_rng_parameters_adam_and_budgets(tmp_path, stage, monkeypatch):
     torch.set_num_threads(1)
     seed_all(73)
     full = trainer(tmp_path/'full', stage=stage)
@@ -230,6 +230,8 @@ def test_full_vs_resume_keeps_rng_parameters_adam_and_budgets(tmp_path, stage):
     seed_all(73)
     part = trainer(tmp_path/'part', stage=stage)
     part.run(stop_after=1)
+    monkeypatch.setenv('SUCTION20_INSTANCE_TRAIN_WORKERS', '2')
+    monkeypatch.setenv('SUCTION20_INSTANCE_EVAL_WORKERS', '2')
     resumed = trainer(tmp_path/'resumed', stage=stage)
     resumed.resume(tmp_path/'part/last.pt')
     resumed.run()
@@ -495,3 +497,26 @@ def test_legacy_resume_still_checks_available_dataset_fields(tmp_path, dataset, 
     resumed = trainer(tmp_path/'resumed', stage='finetune')
     with pytest.raises(ValueError, match=f'Resume dataset definition differs: {dataset}'):
         resumed.resume(path)
+
+def test_parallel_draw_preserves_augmented_pixels_and_rng(tmp_path, monkeypatch):
+    class RGBSource(MemorySource):
+        def __getitem__(self, index):
+            item = super().__getitem__(index)
+            rgb = np.linspace(0, 1, 72, dtype=np.float32).reshape(4, 6, 3)
+            item['observation'].update(rgb=rgb, mask=np.ones((4, 6), bool),
+                                       support_uv=np.array([[1, 1], [2, 3]]))
+            return item
+
+    def draw(workers):
+        monkeypatch.setenv('SUCTION20_INSTANCE_TRAIN_WORKERS', str(workers))
+        t = trainer(tmp_path/str(workers))
+        t.config['rgb_augmentation'] = True
+        data = RGBSource()
+        items = list(t._draw_batch(data, t.source_schedule, 9))
+        return items, t.source_schedule.state_dict(), t.augmentation_rng.bit_generator.state
+
+    sequential, serial_schedule, serial_rng = draw(0)
+    parallel, worker_schedule, worker_rng = draw(3)
+    assert_nested_equal(sequential, parallel)
+    assert_nested_equal(serial_schedule, worker_schedule)
+    assert_nested_equal(serial_rng, worker_rng)
