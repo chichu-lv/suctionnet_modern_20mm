@@ -56,6 +56,10 @@ def _worker_initialize(spec, threads):
     _WORKER_SPEC = spec
     from .instance_preparation_cache import StaticGeometryCache
     _WORKER_STATIC_CACHE = StaticGeometryCache(spec.get('static_cache_bytes', 0))
+    from .instance_selection_cache import reset_reader_cache_stats
+    from .instance_static_store import reset_static_store_stats
+    reset_reader_cache_stats()
+    reset_static_store_stats()
     for name in _THREAD_VARIABLES:
         os.environ[name] = str(threads)
     # CPU tensors can be used by helpers, but workers never initialize CUDA.
@@ -79,6 +83,19 @@ def _reader_spec(dataset):
                     '(optionally wrapped by SourceEvaluationSelection); use workers=0 for custom datasets')
 
 
+def _read_or_prepare_static(item, spec, key, prepare):
+    root = spec.get('static_geometry_root')
+    if root:
+        from .instance_static_store import read_static_geometry
+        source = Path(item['record']['observation_npz'])
+        if not source.is_absolute():
+            source = Path(spec['root']) / source
+        value = read_static_geometry(root, source, key=key, route=spec['route'])
+        if value is not None:
+            return value
+    return prepare()
+
+
 def _prepare_observation(item, rgb, spec, *, static_cache=None, static_key=None):
     route = spec.get('route')
     compact = bool(spec.get('compact_source')) and spec['kind'] == 'source'
@@ -86,8 +103,9 @@ def _prepare_observation(item, rgb, spec, *, static_cache=None, static_key=None)
     static = None
     if compact and route == 'b' and static_cache is not None:
         from models.instance_route_b import prepare_source_static_inputs
-        static = static_cache.get_or_prepare(static_key, lambda: prepare_source_static_inputs(
-            item['observation'], sample_image_channels=True, **options))
+        static = static_cache.get_or_prepare(static_key, lambda: _read_or_prepare_static(
+            item, spec, static_key, lambda: prepare_source_static_inputs(
+                item['observation'], sample_image_channels=True, **options)))
     if rgb is not None:
         if spec['kind'] == 'source':
             from .instance_photometry import apply_source_rgb
@@ -103,8 +121,9 @@ def _prepare_observation(item, rgb, spec, *, static_cache=None, static_key=None)
             if compact and static_cache is not None:
                 # RGB-only augmentation preserves geometry and validity. The
                 # cached object excludes colors; bind this ticket's RGB below.
-                static = static_cache.get_or_prepare((static_key, rgb is not None),
-                    lambda: prepare_source_static_geometry(item['observation'], **options))
+                key = (static_key, rgb is not None)
+                static = static_cache.get_or_prepare(key, lambda: _read_or_prepare_static(
+                    item, spec, key, lambda: prepare_source_static_geometry(item['observation'], **options)))
             item = dict(item, observation=prepare_source_geometry(
                 item['observation'], static_geometry=static, **options))
         elif route == 'b':
@@ -174,7 +193,10 @@ def _worker_loop(spec, threads, requests, results):
                 return
             try:
                 item = _worker_prepare(payload)
-                results.send(('ok', item, _WORKER_STATIC_CACHE.stats()))
+                from .instance_selection_cache import reader_cache_stats
+                from .instance_static_store import static_store_stats
+                results.send(('ok', item, dict(_WORKER_STATIC_CACHE.stats(),
+                    reader=reader_cache_stats(), geometry_store=static_store_stats())))
                 del item
             except Exception as error:
                 detail = traceback.format_exc()
@@ -222,6 +244,10 @@ class InstancePreparationPool:
             static_cache_bytes = int(os.environ.get('SUCTION_INSTANCE_STATIC_CACHE_MB', '64')) * 1024 * 1024
         from .instance_preparation_cache import StaticGeometryCache
         self._static_cache = StaticGeometryCache(static_cache_bytes)
+        from .instance_selection_cache import reader_cache_stats
+        from .instance_static_store import static_store_stats
+        self._serial_reader_stats = dict.fromkeys(reader_cache_stats(), 0)
+        self._serial_store_stats = dict.fromkeys(static_store_stats(), 0)
         if self.workers:
             spec = _reader_spec(dataset)
         else:
@@ -233,6 +259,8 @@ class InstancePreparationPool:
             raise ValueError('Compact source training requires an explicit model route')
         spec.update(route=route, geometry_options=copy.deepcopy(geometry_options or {}),
                     compact_source=bool(compact_source), static_cache_bytes=static_cache_bytes)
+        spec['static_geometry_root'] = (os.environ.get(f'SUCTION_INSTANCE_GEOMETRY_CACHE_{route.upper()}')
+            if compact_source and spec['kind'] == 'source' else None)
         self.reader_spec = spec
         if self.workers:
             # These lightweight coordinator threads only send/receive private
@@ -282,12 +310,15 @@ class InstancePreparationPool:
         pending = deque()
         try:
             if not self.workers:
+                from .instance_selection_cache import reader_cache_stats
+                from .instance_static_store import static_store_stats
                 read = getattr(self.dataset, 'load_uncached', self.dataset.__getitem__)
                 for ticket in tickets:
                     if self.closed:
                         raise RuntimeError('Instance preparation pool is closed')
                     index, rgb = self._ticket(ticket)
                     self.submitted += 1
+                    reader_before, store_before = reader_cache_stats(), static_store_stats()
                     compact = self.reader_spec.get('compact_source') and self.reader_spec['kind'] == 'source'
                     if compact:
                         from .instance_preparation_cache import source_geometry_key, unchanged_source_key
@@ -303,6 +334,10 @@ class InstancePreparationPool:
                         result = compact_prepared_source_item(result)
                     else:
                         result = _prepare_observation(read(index), rgb, self.reader_spec)
+                    for name, value in reader_cache_stats().items():
+                        self._serial_reader_stats[name] += value - reader_before[name]
+                    for name, value in static_store_stats().items():
+                        self._serial_store_stats[name] += value - store_before[name]
                     self.completed += 1
                     yield result
                 return
@@ -367,9 +402,18 @@ class InstancePreparationPool:
 
     def preparation_cache_stats(self):
         """Completed worker diagnostics; cache residency is never resume state."""
-        rows = list(self._cache_stats.values()) if self.workers else [self._static_cache.stats()]
-        return {name: sum(row[name] for row in rows)
-                for name in ('hits', 'misses', 'evictions', 'entries', 'retained_bytes', 'max_bytes')}
+        from .instance_selection_cache import reader_cache_stats
+        from .instance_static_store import static_store_stats
+        if self.workers:
+            rows = list(self._cache_stats.values())
+        else:
+            rows = [dict(self._static_cache.stats(),
+                reader=self._serial_reader_stats, geometry_store=self._serial_store_stats)]
+        result = {name: sum(row[name] for row in rows)
+                  for name in ('hits', 'misses', 'evictions', 'entries', 'retained_bytes', 'max_bytes')}
+        for section, names in (('reader', reader_cache_stats()), ('geometry_store', static_store_stats())):
+            result[section] = {name: sum(row.get(section, {}).get(name, 0) for row in rows) for name in names}
+        return result
 
     def _result(self, future):
         # Private child pipes let EOF interrupt even a partially transmitted

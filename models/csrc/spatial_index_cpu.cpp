@@ -749,7 +749,8 @@ PyMODINIT_FUNC PyInit__spatial_index_cpu() {
     if (PyModule_AddIntConstant(m, "GRID_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "CONTACT_ABI_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "ROUTE_A_CONTACT_ABI_VERSION", 1) < 0 ||
-        PyModule_AddStringConstant(m, "ROUTE_A_CONTACT_SOURCE_VERSION", "route_a_contact_v1") < 0 ||
+        PyModule_AddStringConstant(m, "ROUTE_A_CONTACT_SOURCE_VERSION", "route_a_contact_v2_contiguous_fps") < 0 ||
+        PyModule_AddIntConstant(m, "ROUTE_A_CONTACT_PROFILE_VERSION", 1) < 0 ||
         PyModule_AddIntConstant(m, "GEOMETRY_FLOAT32_VERSION", 1) < 0 ||
         PyModule_AddStringConstant(m, "SOURCE_VERSION", GRID_SOURCE_VERSION) < 0 ||
         PyModule_AddStringConstant(m, "COMPILE_FLAGS", GRID_COMPILE_FLAGS) < 0 ||

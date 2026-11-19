@@ -67,6 +67,12 @@ def static_bytes(value, seen=None):
     if type(value).__module__.startswith('scipy.spatial') and hasattr(value, 'size'):
         return (size + int(value.size) * 128 + static_bytes(value.data, seen)
                 + static_bytes(value.indices, seen))
+    if (type(value).__module__ == 'suction20.instance_static_store'
+            and type(value).__name__ == 'DeferredNeighborIndex'):
+        # Reserve tree storage before an optional arbitrary-pose query creates
+        # it. Canonical training keeps the index deferred, but the LRU budget
+        # must also cover a serial consumer materializing its private trees.
+        return size + 256 * len(value.points) + static_bytes(vars(value), seen)
     if hasattr(value, '__dict__'):
         return size + static_bytes(vars(value), seen)
     return size

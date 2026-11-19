@@ -136,7 +136,15 @@ class NeighborIndex:
             if np.any(ids[1:] == ids[:-1]):
                 self._tied_source_ids.add(int(comp))
             self.groups[int(comp)] = (rows, cKDTree(self.points[rows]))
-        self.all_tree = cKDTree(self.points) if len(self.points) else None
+        self.all_tree = None
+        if len(self.groups) == 1:
+            rows, tree = next(iter(self.groups.values()))
+            if np.array_equal(rows, np.arange(len(self.points))):
+                # Source preparation has already sorted unique source IDs.
+                # The component tree then has the exact all-point row order.
+                self.all_tree = tree
+        if self.all_tree is None and len(self.points):
+            self.all_tree = cKDTree(self.points)
 
     def nearest_anchor(self, points, radius=.005):
         """Nearest raw point, resolving exact ties without modifying the pose."""
@@ -376,7 +384,7 @@ def reference_contact_geometry(encoded, points, normals, components, valid):
     return indices, masks, descriptor, raw_count, summary, angular_support
 
 
-def native_contact_geometry(encoded, points, normals, components, valid, *, workers=1):
+def native_contact_geometry(encoded, points, normals, components, valid, *, workers=1, profile=None):
     """Batch A's complete contact preparation on the shared native CPU grid.
 
     Return None when the optional extension or the current NumPy FPS arithmetic
@@ -389,10 +397,21 @@ def native_contact_geometry(encoded, points, normals, components, valid, *, work
     allow tight roundoff from native versus NumPy math. Queries within a small
     roundoff guard of region or angular-support decisions use the full original
     reference, retaining its exact boundary and tie behavior.
+
+    An optional ``profile`` dict receives summed candidate-worker milliseconds
+    for query, region filtering, raw-lip summary and FPS/packing. These are CPU
+    work durations (not wall time with multiple workers); grid construction and
+    ambiguous-row reference correction are excluded. The default does not read
+    a clock. Profiling requires an extension advertising its profile version.
     """
     native = _spatial_index_cpu
     if native is None or getattr(native, 'ROUTE_A_CONTACT_ABI_VERSION', None) != 1 or _FPS_AXES is None:
         return None
+    if profile is not None:
+        if not isinstance(profile, dict):
+            raise TypeError('native contact profile must be a dict')
+        if getattr(native, 'ROUTE_A_CONTACT_PROFILE_VERSION', None) != 1:
+            raise RuntimeError('native contact profiling requires the current extension')
     if isinstance(workers, bool) or not isinstance(workers, (int, np.integer)) or not 1 <= workers <= 256:
         raise ValueError('native contact workers must be an integer in [1,256]')
     points = np.ascontiguousarray(points, dtype=np.float64)
@@ -410,6 +429,8 @@ def native_contact_geometry(encoded, points, normals, components, valid, *, work
                'summary': np.zeros((count, 8), np.float64),
                'angular_support': np.zeros(count, np.int64),
                'uncertain': np.zeros(count, bool)}
+    if profile is not None:
+        outputs['profile_ms'] = np.zeros((count, 4), np.float64)
     inputs = {'points': points, 'normals': normals, 'components': components,
               'selected': np.flatnonzero(valid).astype(np.int64, copy=False),
               'fps_axes': np.asarray(_FPS_AXES, np.int64), 'boundary': BOUNDARY_ROUNDOFF_M}
@@ -424,6 +445,9 @@ def native_contact_geometry(encoded, points, normals, components, valid, *, work
         inputs[name] = np.ascontiguousarray(encoded[source], dtype=dtype)
     grid = native.create(support, 0, len(support), .02)
     native.route_a_contact_query(grid, inputs, outputs, int(workers))
+    if profile is not None:
+        profile.update(zip(('query_ms', 'regions_ms', 'lip_ms', 'fps_and_pack_ms'),
+                           outputs['profile_ms'].sum(axis=0).tolist()))
     result = tuple(outputs[name] for name in
                    ('indices', 'mask', 'descriptor', 'counts', 'summary', 'angular_support'))
     uncertain = np.flatnonzero(outputs['uncertain'])

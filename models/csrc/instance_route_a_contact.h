@@ -17,6 +17,7 @@ struct RouteAOutputs {
     Row *indices = nullptr, *counts = nullptr, *angular_support = nullptr;
     unsigned char *mask = nullptr, *uncertain = nullptr;
     double *descriptor = nullptr, *summary = nullptr;
+    double *profile_ms = nullptr;
 };
 
 struct RouteAPoint {
@@ -29,6 +30,7 @@ struct RouteAScratch {
     std::array<std::vector<RouteAPoint>, 3> regions;
     std::vector<std::size_t> selected;
     std::vector<double> distance, angles, heights, work;
+    std::array<std::vector<double>, 3> fps_xyz;
 };
 
 // NumPy's contiguous 1D reductions use this eight-lane pairwise shape. Keeping
@@ -70,27 +72,54 @@ static void route_a_fps(const std::vector<RouteAPoint> &region, std::size_t budg
                         const double *xyz, const Row *axes, RouteAScratch &scratch) {
     const auto size = region.size(), count = std::min(size, budget);
     scratch.selected.resize(count);
+    if (!count) return;
+    // Gather each region once. Every FPS iteration then streams contiguous
+    // coordinates instead of repeatedly gathering through the wide contact
+    // structs and the original support cloud. Preserve NumPy's axis order.
+    for (int axis=0; axis<3; ++axis) {
+        auto &values = scratch.fps_xyz[axis];
+        values.resize(size);
+        for (std::size_t j=0; j<size; ++j) values[j] = xyz[3*region[j].row+axes[axis]];
+    }
+    const auto *x = scratch.fps_xyz[0].data();
+    const auto *y = scratch.fps_xyz[1].data();
+    const auto *z = scratch.fps_xyz[2].data();
     scratch.distance.assign(size, std::numeric_limits<double>::infinity());
     std::size_t current = 0;
     for (std::size_t step=0; step<count; ++step) {
         scratch.selected[step] = current;
+        if (step+1 == count) break;
         scratch.distance[current] = -1.;
-        const auto *center = xyz+3*region[current].row;
+        const double cx = x[current], cy = y[current], cz = z[current];
+        // Separate the independent distance update from argmax. This permits
+        // vectorization without reassociation/fast-math, while negative marks
+        // stay selected because every squared candidate distance is >= 0.
+        for (std::size_t j=0; j<size; ++j) {
+            const double dx = x[j]-cx, dy = y[j]-cy, dz = z[j]-cz;
+            const double candidate = (dx*dx+dy*dy)+dz*dz;
+            if (candidate < scratch.distance[j]) scratch.distance[j] = candidate;
+        }
+        // Independent argmax lanes avoid one long comparison dependency.
+        // Merge exact ties by the lowest position, preserving source-ID order.
+        constexpr std::size_t lanes = 8;
+        double lane_best[lanes];
+        std::size_t lane_next[lanes]{};
+        std::fill_n(lane_best, lanes, -2.);
+        std::size_t j = 0;
+        for (; j+lanes<=size; j+=lanes) for (std::size_t k=0; k<lanes; ++k) {
+            if (scratch.distance[j+k] > lane_best[k]) {
+                lane_best[k] = scratch.distance[j+k]; lane_next[k] = j+k;
+            }
+        }
         double best = -2.;
         std::size_t next = 0;
-        for (std::size_t j=0; j<size; ++j) {
-            if (scratch.distance[j] >= 0.) {
-                const auto *point = xyz+3*region[j].row;
-                const double dx = point[axes[0]]-center[axes[0]];
-                const double dy = point[axes[1]]-center[axes[1]];
-                const double dz = point[axes[2]]-center[axes[2]];
-                const double candidate = (dx*dx+dy*dy)+dz*dz;
-                if (candidate < scratch.distance[j]) scratch.distance[j] = candidate;
+        for (std::size_t k=0; k<lanes; ++k) {
+            if (lane_best[k] > best || (lane_best[k] == best && lane_next[k] < next)) {
+                best = lane_best[k]; next = lane_next[k];
             }
-            // Regions are in source-ID order. Strict > retains the first ID
-            // on exact ties, including distinct source pixels with equal XYZ.
-            if (scratch.distance[j] > best) { best = scratch.distance[j]; next = j; }
         }
+        for (; j<size; ++j)
+            if (scratch.distance[j] > best) { best = scratch.distance[j]; next = j; }
         current = next;
     }
 }
@@ -161,18 +190,44 @@ static void route_a_lip(Row q, const double *normal, RouteAScratch &scratch,
 
 static void route_a_process(Row q, const Grid &grid, const RouteAInputs &in,
                             RouteAOutputs &out, RouteAScratch &scratch) {
+    using Clock = std::chrono::steady_clock;
+    auto stamp = out.profile_ms ? Clock::now() : Clock::time_point{};
+    const auto profile = [&](int stage) {
+        if (out.profile_ms) {
+            const auto now = Clock::now();
+            out.profile_ms[4*q+stage] = std::chrono::duration<double, std::milli>(now-stamp).count();
+            stamp = now;
+        }
+    };
     const auto *xyz = grid.coordinates<double>();
     const auto *center = in.points+3*q, *normal = in.normals+3*q;
     const double bound = std::hypot(.022, .040)+2.*in.boundary;
     // A slightly conservative ball cannot add a contact outside the explicit
     // cylinder below, and avoids grid-cell/radius roundoff dropping its corners.
-    query_into(grid, center, bound+16.*std::numeric_limits<double>::epsilon()*bound, scratch.ball);
+    const double radius = bound+16.*std::numeric_limits<double>::epsilon()*bound;
+    if (in.source_count <= 32768 && in.source_ids_ordered) {
+        // Compact source clouds already follow source ID. A contiguous scan
+        // keeps this order without sorting a large ball for every query. The
+        // exact squared-distance predicate is identical to query_into.
+        scratch.ball.clear();
+        const double radius2 = radius*radius;
+        for (Row row=0; row<in.source_count; ++row) {
+            if (in.source_components[row] != in.components[q]) continue;
+            const double dx = xyz[3*row]-center[0];
+            const double dy = xyz[3*row+1]-center[1];
+            const double dz = xyz[3*row+2]-center[2];
+            if ((dx*dx+dy*dy)+dz*dz <= radius2) scratch.ball.push_back(row);
+        }
+    } else {
+        query_into(grid, center, radius, scratch.ball);
+    }
     // Normal A support is already in source-ID order; query_into sorted raw
     // rows, so avoid repeating the same sort for every candidate.
     if (!in.source_ids_ordered)
         std::stable_sort(scratch.ball.begin(), scratch.ball.end(), [&](Row left, Row right) {
             return in.source_ids[left] < in.source_ids[right];
         });
+    profile(0);
     for (auto &region : scratch.regions) region.clear();
     static const double boundaries[] = {0., .010, .018, .022};
     for (const auto row : scratch.ball) {
@@ -203,7 +258,9 @@ static void route_a_process(Row q, const Grid &grid, const RouteAInputs &in,
         int zone = membership < .010 ? 0 : membership < .018 ? 1 : membership <= .022 ? 2 : -1;
         if (zone >= 0) scratch.regions[zone].push_back(projected);
     }
+    profile(1);
     route_a_lip(q, normal, scratch, out);
+    profile(2);
     static const std::size_t budgets[] = {32, 32, 64};
     static const double outer[] = {.010, .018, .022};
     std::size_t offset = 0;
@@ -229,6 +286,7 @@ static void route_a_process(Row q, const Grid &grid, const RouteAInputs &in,
         }
         offset += budgets[zone];
     }
+    profile(3);
 }
 
 static PyObject *route_a_contact_query(PyObject *, PyObject *args, PyObject *kwargs) {
@@ -295,6 +353,9 @@ static PyObject *route_a_contact_query(PyObject *, PyObject *args, PyObject *kwa
         A_OUTPUT(summary, "summary", BufferType::F64, double, in.count, 8);
         A_OUTPUT(angular_support, "angular_support", BufferType::I64, Row, in.count);
         A_OUTPUT(uncertain, "uncertain", BufferType::Bool, unsigned char, in.count);
+        if (PyDict_GetItemString(output_dict, "profile_ms")) {
+            A_OUTPUT(profile_ms, "profile_ms", BufferType::F64, double, in.count, 4);
+        }
 #undef A_OUTPUT
         Row previous = -1;
         for (Py_ssize_t i=0; i<in.selected_count; ++i) {
