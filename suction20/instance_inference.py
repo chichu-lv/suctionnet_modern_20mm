@@ -101,9 +101,19 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None, query_ch
 
     runtime_config = apply_model_runtime_overrides(config, backbone_root=backbone_root,
                                                     query_chunk_size=query_chunk_size)
+    from .instance_execution import DEFAULT_EXECUTION, resolve_execution
+    training_execution = resolve_execution(runtime_config)
+    # Training AMP/compilation/workers are provenance, not dependencies of a
+    # deployment machine. Inference starts as FP32 eager without spawning work.
+    runtime_config.pop('execution', None)
     model = create_instance_model(runtime_config, device=device)
     model.load_state_dict(state['model'], strict=True)
     model.eval()
+    if training_execution is not None:
+        # Retain explicit FP32/TF32-off evaluation scopes without activating
+        # compile, AMP, host thread changes or background workers on load.
+        model._instance_execution = deepcopy(DEFAULT_EXECUTION)
+        model._instance_execution['main_threads'] = torch.get_num_threads()
     architecture = getattr(model, 'architecture_metadata', None)
     architecture = architecture() if callable(architecture) else architecture
     if (route == 'b' and 'model_architecture' in identity and
@@ -125,6 +135,10 @@ def load_instance_checkpoint(path, device='cpu', *, backbone_root=None, query_ch
         },
         'architecture': architecture,
     }
+    if training_execution is not None:
+        metadata['checkpoint_training_execution'] = deepcopy(training_execution)
+        metadata['runtime_inference_execution'] = {'precision': 'fp32', 'compile_mode': None,
+                                                    'preparation_workers': 0, 'allow_tf32': False}
     return model, metadata
 
 

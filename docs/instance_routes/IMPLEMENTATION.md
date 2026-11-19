@@ -1,5 +1,7 @@
 # A/B 代码运行说明
 
+> **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（各在对应分支），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
+
 当前分支已经实现单实例数据、v3预处理、同姿态物理teacher、对应路线网络、预训练/微调、checkpoint恢复、推理与native评价。A在 `route-a-3d-rgb`，B在 `route-b-2d-projected-rings`；每分支只包含自己的模型、测试与运行配置，共同模块同步维护。
 
 **当前政策：直接使用source全部100个训练场景；每875步在90个test场景各固定8帧上选best，标记 `test_selected` 和 `fixed_test_subset`；保留last。训练后用独立CLI对固定best评价完整test，不重新选模。公开评价只参数化吸盘半径的方案待定，不作为开训门槛。** 目标1676 train /399 val /87 test保持原划分。
@@ -235,3 +237,4 @@ source评价保留少支持/无输出实例的失败分母；所需teacher标签
 运行 `python -m pytest -q`。新的 `tests/test_instance_*.py`覆盖几何、缓存、teacher、真实B网络前后向、A显式测试骨干、损失、参数冻结、精确resume和CLI。B集成测试以合成的官方文件格式执行teacher→训练更新→256-query选best→保存/恢复→推理/评价。它验证接线与数值一致性，不是正式数据准确率实验。
 
 当前未执行完整真实数据预训练/微调、A真实SpConv GPU验收、GPU时延或ONNX/TensorRT导出。训练数据与训练权重不提交GitHub。详细证据见[MODEL_VALIDATION.md](../MODEL_VALIDATION.md)。
+

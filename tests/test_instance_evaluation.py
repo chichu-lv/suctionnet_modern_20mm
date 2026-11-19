@@ -85,6 +85,36 @@ def test_source_partial_and_physics_mismatch_fail_explicitly(tmp_path, monkeypat
                   '--output', str(tmp_path / 'bad.json'), '--device', 'cpu', '--allow-partial-manifests'])
 
 
+def test_explicit_fp32_evaluation_batch_preserves_report(tmp_path, monkeypatch):
+    manifest, identity = _source_fixture(tmp_path)
+    class BatchedPrediction(_FixedPrediction):
+        def __init__(self):
+            super().__init__()
+            self.batch_calls = []
+
+        def forward_instances(self, observations):
+            self.batch_calls.append(len(observations))
+            assert not torch.backends.cuda.matmul.allow_tf32
+            assert not torch.backends.cudnn.allow_tf32
+            return [self(observation) for observation in observations]
+
+    model = BatchedPrediction()
+    monkeypatch.setattr(cli, 'load_instance_checkpoint',
+                        lambda *a, **k: (model, _metadata(identity)))
+    args = ['--checkpoint', 'own.pt', '--manifest', str(manifest), '--domain', 'source',
+            '--device', 'cpu', '--allow-partial-manifests']
+    original = cli.main(args + ['--output', str(tmp_path / 'original.json')])
+    batched = cli.main(args + ['--output', str(tmp_path / 'batched.json'),
+        '--microbatch-instances', '32', '--preparation-workers', '0'])
+    assert model.batch_calls == [1]
+    assert original['metrics'] == batched['metrics']
+    assert original['records'] == batched['records']
+    runtime = batched['checkpoint']['runtime_evaluation_execution']
+    assert runtime['evaluation_microbatch_instances'] == 32
+    assert runtime['evaluation_workers'] == 0 and runtime['precision'] == 'fp32'
+    assert runtime['compile_mode'] is None and not runtime['allow_tf32']
+
+
 def test_pretrain_cannot_report_target_probabilities(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, 'load_instance_checkpoint', lambda *a, **k: (_FixedPrediction(), _metadata({})))
     with pytest.raises(ValueError, match='source task head is untrained'):

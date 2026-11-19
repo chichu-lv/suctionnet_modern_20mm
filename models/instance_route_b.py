@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+from numbers import Integral
 from typing import Mapping
 
+import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -22,6 +24,9 @@ RADII_M = (0., .005, .009, .010, .014, .017, .018, .020, .022)
 ANGLES = 72
 BOUNDARY_EPS_M = 1e-12
 GEOMETRY_CONTRACT = "b_v3_supported_projected_rings_float64"
+CPU_INPUTS_SPEC = "route_b_cpu_inputs_fp32_geometry64_v1"
+_IMAGE_SOURCE_KEYS = ("xyz_map", "mask", "instance_mask", "rgb", "rgb_valid",
+                      "normal_map", "normal_valid", "gravity", "intrinsics")
 
 
 def _tensor(value, device, dtype):
@@ -83,6 +88,9 @@ class ResNet18GN(nn.Module):
 
 def masked_mean_max(features, mask):
     """Pool the last dimension, preserving zero for an empty support set."""
+    # Accumulate reductions in FP32 even when the surrounding network uses AMP.
+    if features.dtype in (torch.float16, torch.bfloat16):
+        features = features.float()
     m = mask.unsqueeze(-2)
     safe = torch.where(m, features, torch.zeros_like(features))
     count = mask.sum(-1, keepdim=True).clamp_min(1)
@@ -209,6 +217,10 @@ def ring_support_summary(contact, observed, height):
 
 def sample_feature_at_indices(feature, uv):
     """Bilinear sampling at feature-index coordinates, no hidden stride shift."""
+    # Geometry stays FP64 up to this sampling boundary.  A BF16 grid would
+    # quantize source locations, and CPU grid_sample has no BF16 kernel.
+    if feature.dtype in (torch.float16, torch.bfloat16):
+        feature = feature.float()
     h, w = feature.shape[-2:]
     can_touch = (torch.isfinite(uv).all(-1) & (uv[..., 0] > -1) & (uv[..., 0] < w)
                  & (uv[..., 1] > -1) & (uv[..., 1] < h))
@@ -337,6 +349,48 @@ def prepare_shared_images(observation: Mapping, *, device="cpu", feature_dtype=t
             "observation": observation}
 
 
+def prepare_source_phase_cpu(observation):
+    """Prepare immutable pose identities in a loader worker, without a step.
+
+    Sampling can prefetch beyond the current optimizer update.  Consequently
+    this cache contains pose bytes only: the consuming model supplies the
+    actual update/seed later.  It is not a file checksum or content validator.
+    """
+    points = np.asarray(observation["query_points"], dtype=np.float64)
+    normals = np.asarray(observation["query_normals"], dtype=np.float64)
+    if points.ndim != 2 or points.shape[-1] != 3 or normals.shape != points.shape:
+        raise ValueError("Canonical query points/normals must have matching Qx3 shapes")
+    poses = np.ascontiguousarray(np.concatenate((points, normals), axis=-1))
+    result = dict(observation)
+    result["_route_b_phase_poses"] = {
+        "points": points.copy(), "normals": normals.copy(),
+        "pose_bytes": tuple(pose.tobytes() for pose in poses),
+    }
+    return result
+
+
+def prepare_source_inputs_cpu(observation, *, min_support_points=100):
+    """Prepare a single immutable loader ticket using only CPU/NumPy outputs.
+
+    The original arrays remain read-only for this ticket's lifetime. A copied
+    observation replacing any image/calibration array invalidates the cache.
+    NumPy payloads avoid CUDA or shared torch-storage lifetime dependencies in
+    spawned workers. No update or model weights are captured here.
+    """
+    result = prepare_source_phase_cpu(observation)
+    prepared = prepare_shared_images(result, device="cpu", feature_dtype=torch.float32,
+                                     min_support_points=min_support_points)
+    prepared.pop("observation")
+    prepared = {key: value.numpy() if torch.is_tensor(value) else value
+                for key, value in prepared.items()}
+    result["_route_b_inputs"] = {
+        "spec": CPU_INPUTS_SPEC, "min_support_points": min_support_points,
+        "sources": {key: result[key] for key in _IMAGE_SOURCE_KEYS if key in result},
+        "encoded": prepared,
+    }
+    return result
+
+
 class InstanceSuction2DFastV3(nn.Module):
     """The route-B architecture with a shared encode / arbitrary-pose score API."""
 
@@ -359,6 +413,12 @@ class InstanceSuction2DFastV3(nn.Module):
         self.min_support_points = min_support_points
         self.feature_frame = feature_frame
         self.successful_update = 0
+        self.execution_precision = "fp32"
+        self.dense_query_chunk = None
+        self.compile_mode = None
+        # Ordinary dictionaries do not register compiled wrappers as additional
+        # submodules: checkpoint keys and parameter groups remain unchanged.
+        self._compiled_dense = {}
         self.encoder = ResNet18GN()
         self.midlevel_query_projections = nn.ModuleList([nn.Conv2d(64, 32, 1, bias=True),
                                                         nn.Conv2d(128, 32, 1, bias=True)])
@@ -380,6 +440,43 @@ class InstanceSuction2DFastV3(nn.Module):
     @property
     def feature_dtype(self):
         return next(self.parameters()).dtype
+
+    def configure_execution(self, *, precision="fp32", compile_mode=None, dense_query_chunk=None):
+        """Select explicit execution options without altering stored weights.
+
+        Geometry and image-coordinate sampling stay outside autocast.  Only
+        neural blocks opt into BF16.  Compilation is lazy and optional; it is
+        not a promise of speedup for any GPU or shape distribution.
+        """
+        if precision not in ("fp32", "bf16_dense"):
+            raise ValueError("Route B execution precision must be fp32 or bf16_dense")
+        if compile_mode not in (None, "default", "reduce-overhead", "max-autotune-no-cudagraphs"):
+            raise ValueError("Unsupported route B compile_mode")
+        if (dense_query_chunk is not None and
+                (isinstance(dense_query_chunk, bool) or not isinstance(dense_query_chunk, Integral)
+                 or dense_query_chunk < 1)):
+            raise ValueError("dense_query_chunk must be a positive integer or None")
+        self.execution_precision = precision
+        self.dense_query_chunk = int(dense_query_chunk) if dense_query_chunk is not None else None
+        if compile_mode != self.compile_mode:
+            self._compiled_dense.clear()
+            if compile_mode is not None:
+                if not hasattr(torch, "compile"):
+                    raise RuntimeError("This PyTorch build does not support torch.compile")
+                modules = {"encoder": self.encoder, "query_fusion": self.query_fusion,
+                           **{f"ring_{i}": module for i, module in enumerate(self.ring_encoders)},
+                           **{f"head_{name}": module for name, module in self.output_heads.items()}}
+                self._compiled_dense.update({name: torch.compile(module, mode=compile_mode)
+                                             for name, module in modules.items()})
+            self.compile_mode = compile_mode
+        return self
+
+    def _network_autocast(self):
+        return torch.autocast(device_type=self.device.type, dtype=torch.bfloat16,
+                              enabled=self.training and self.execution_precision == "bf16_dense")
+
+    def _network_call(self, name, module, *args):
+        return self._compiled_dense.get(name, module)(*args)
 
     def architecture_metadata(self):
         """Inspectable feature and geometry semantics, without execution sizes."""
@@ -429,30 +526,37 @@ class InstanceSuction2DFastV3(nn.Module):
                 "heads": list(self.output_heads.parameters())}
 
     def encode_instance(self, observation):
-        encoded = prepare_shared_images(observation, device=self.device, feature_dtype=self.feature_dtype,
-                                        min_support_points=self.min_support_points)
-        l1, l2, l4 = self.encoder(encoded["context"])
-        mask4 = F.adaptive_max_pool2d(encoded["context"][:, -1:], l4.shape[-2:]) > 0
-        pooled = masked_mean_max(l4.flatten(2), mask4[:, 0].flatten(1))
-        g = self.global_projection(pooled)
-        encoded["global_feature"] = g if encoded["instance_valid"] else g * 0
-        encoded["query_features"] = (self.midlevel_query_projections[0](l1),
-                                     self.midlevel_query_projections[1](l2))
-        encoded["texture_feature"] = self.texture_stem(encoded["texture"])
-        return encoded
+        return self.encode_instances([observation])[0]
 
-    def forward_instances(self, observations):
+    def _prepare_encoded(self, observation):
+        cache = observation.get("_route_b_inputs")
+        source_keys = {key for key in _IMAGE_SOURCE_KEYS if key in observation}
+        if (cache is not None and self.feature_dtype == torch.float32
+                and cache.get("spec") == CPU_INPUTS_SPEC
+                and cache.get("min_support_points") == self.min_support_points
+                and set(cache.get("sources", {})) == source_keys
+                and all(cache["sources"][key] is observation[key] for key in source_keys)):
+            prepared = {key: torch.as_tensor(value).to(self.device, non_blocking=True)
+                        if isinstance(value, np.ndarray) else value
+                        for key, value in cache["encoded"].items()}
+            prepared["observation"] = observation
+            prepared["sample_uid"] = str(observation.get("sample_uid", observation.get("instance_uid", "instance")))
+            return prepared
+        return prepare_shared_images(observation, device=self.device, feature_dtype=self.feature_dtype,
+                                     min_support_points=self.min_support_points)
+
+    def encode_instances(self, observations):
         """Batch independent context encodings and exact-size texture ROIs."""
-        if len(observations) == 1:
-            return [self(observations[0])]
-        prepared = [prepare_shared_images(obs, device=self.device, feature_dtype=self.feature_dtype,
-                                          min_support_points=self.min_support_points)
-                    for obs in observations]
-        context = torch.cat([item['context'] for item in prepared])
-        l1, l2, l4 = self.encoder(context)
-        mask = F.adaptive_max_pool2d(context[:, -1:], l4.shape[-2:])[:, 0].flatten(1) > 0
-        global_features = self.global_projection(masked_mean_max(l4.flatten(2), mask))
-        levels = [module(x) for module, x in zip(self.midlevel_query_projections, (l1, l2))]
+        if not observations:
+            return []
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            prepared = [self._prepare_encoded(obs) for obs in observations]
+        context = torch.cat([item["context"] for item in prepared])
+        with self._network_autocast():
+            l1, l2, l4 = self._network_call("encoder", self.encoder, context)
+            mask = F.adaptive_max_pool2d(context[:, -1:], l4.shape[-2:])[:, 0].flatten(1) > 0
+            global_features = self.global_projection(masked_mean_max(l4.flatten(2), mask))
+            levels = [module(x) for module, x in zip(self.midlevel_query_projections, (l1, l2))]
         groups = {}
         for i, item in enumerate(prepared):
             g = global_features[i:i + 1]
@@ -461,11 +565,69 @@ class InstanceSuction2DFastV3(nn.Module):
             groups.setdefault(item['texture'].shape[-2:], []).append(i)
         # Padding dissimilar ROIs to a common size would change GroupNorm statistics.
         for indices in groups.values():
-            features = self.texture_stem(torch.cat([prepared[i]['texture'] for i in indices]))
+            with self._network_autocast():
+                features = self.texture_stem(torch.cat([prepared[i]['texture'] for i in indices]))
             for j, index in enumerate(indices):
                 prepared[index]['texture_feature'] = features[j:j + 1]
-        return [self.score_at_pose(item, obs['query_points'], obs['query_normals'])
-                for item, obs in zip(prepared, observations)]
+        return prepared
+
+    def forward_instances(self, observations):
+        """One context batch, exact ROI buckets, then cross-instance query MLPs.
+
+        ``query_chunk`` bounds each instance's geometric construction;
+        ``dense_query_chunk`` bounds total neural queries across instances.
+        Keeping these separate avoids treating 4096 as a per-instance geometry
+        budget when the actual source query count is only 128.
+        """
+        encoded = self.encode_instances(observations)
+        if not encoded:
+            return []
+        prepared, owners = [], []
+        results = [None] * len(observations)
+        for index, (item, obs) in enumerate(zip(encoded, observations)):
+            points = _tensor(obs["query_points"], self.device, torch.float64)
+            normals = _tensor(obs["query_normals"], self.device, torch.float64)
+            if points.ndim != 2 or points.shape[-1] != 3 or normals.shape != points.shape:
+                raise ValueError("p and n must have matching Qx3 shapes")
+            if not len(points):
+                results[index] = self._empty_scores(points, normals)
+                continue
+            phase = self._canonical_phase(obs)
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                for start in range(0, len(points), self.query_chunk):
+                    stop = start + self.query_chunk
+                    prepared.append(self._prepare_score_chunk(item, points[start:stop], normals[start:stop],
+                                                              phase[start:stop]))
+                    owners.append(index)
+        if not prepared:
+            return results
+        outputs = self._score_prepared_many(prepared)
+        for index in range(len(results)):
+            parts = [part for owner, part in zip(owners, outputs) if owner == index]
+            if parts:
+                results[index] = self._concatenate_scores(parts)
+        return results
+
+    def _canonical_phase(self, observation):
+        """Generate legacy phase from CPU source poses at the consumed step."""
+        if not self.training or not self.training_phase:
+            return torch.zeros(len(observation["query_points"]), device=self.device, dtype=torch.float64)
+        cache = observation.get("_route_b_phase_poses")
+        points, normals = observation["query_points"], observation["query_normals"]
+        # Tensor callers may reside on CUDA; the general arbitrary-pose API
+        # retains its explicit CPU fallback. Dataset/worker inputs are NumPy.
+        if torch.is_tensor(points) or torch.is_tensor(normals):
+            encoded = {"sample_uid": str(observation.get("sample_uid", observation.get("instance_uid", "instance")))}
+            return self._phase(encoded, _tensor(points, self.device, torch.float64),
+                               _tensor(normals, self.device, torch.float64))
+        if (cache is None or not np.array_equal(cache["points"], points, equal_nan=True)
+                or not np.array_equal(cache["normals"], normals, equal_nan=True)):
+            cache = prepare_source_phase_cpu(observation)["_route_b_phase_poses"]
+        uid = str(observation.get("sample_uid", observation.get("instance_uid", "instance")))
+        prefix = f"{self.phase_seed}|{self.successful_update}|{uid}|".encode()
+        values = [int.from_bytes(hashlib.blake2b(prefix + pose, digest_size=8).digest(), "little")
+                  / (1 << 64) * 2 * math.pi for pose in cache["pose_bytes"]]
+        return torch.tensor(values, device=self.device, dtype=torch.float64)
 
     def _phase(self, encoded, points, normals):
         if not self.training or not self.training_phase:
@@ -556,8 +718,8 @@ class InstanceSuction2DFastV3(nn.Module):
                 "source_ids": torch.where(observed, source_id, -torch.ones_like(source_id)),
                 "bilinear_valid": bilinear_ok, "uv": uv}
 
-    def contact_features(self, encoded, points, normals, phase):
-        """Return learned ring features and auditable raw/contact diagnostics."""
+    def _contact_inputs(self, encoded, points, normals, phase):
+        """Construct pose-conditioned tokens and diagnostics in FP64 geometry."""
         radial, _, _ = ring_directions(normals, phase, feature_frame=self.feature_frame)
         radii = points.new_tensor(RADII_M[1:])
         ring_points = points[:, None, None, :] + radii[None, :, None, None] * radial[:, None, :, :]
@@ -584,11 +746,6 @@ class InstanceSuction2DFastV3(nn.Module):
         tokens = torch.cat((slots["texture"], geometry.to(slots["texture"].dtype)), -1)
         contact = gates["contact_valid"]
         tokens = torch.where(contact[..., None], tokens, torch.zeros_like(tokens))
-        ring_features = []
-        for i, encoder in enumerate(self.ring_encoders):
-            zone = slice(3 * i, 3 * i + 3)
-            region_tokens = tokens[:, zone].permute(0, 1, 3, 2).reshape(len(points), 75, ANGLES)
-            ring_features.append(encoder(region_tokens, contact[:, zone].any(1)))
         support, raw = ring_support_summary(contact, slots["observed"], gates["height_m"])
         # Sorting only the fixed 72 source IDs per radius provides an exact
         # independent-pixel count without treating repeated slots as new data.
@@ -616,9 +773,25 @@ class InstanceSuction2DFastV3(nn.Module):
                        "opposite_angle_gate_rejection_fraction": opposite_reject,
                        "native_underresolved_fraction": underresolved, "phase": phase,
                        "support_summary": support, "raw_summary": raw}
-        return torch.cat(ring_features, -1), support, raw, diagnostics
+        return tokens, contact, support, raw, diagnostics
 
-    def _score_chunk(self, encoded, points, normals, phase):
+    def _encode_contact_tokens(self, tokens, contact):
+        ring_features = []
+        with self._network_autocast():
+            for i, encoder in enumerate(self.ring_encoders):
+                zone = slice(3 * i, 3 * i + 3)
+                region_tokens = tokens[:, zone].permute(0, 1, 3, 2).reshape(len(tokens), 75, ANGLES)
+                ring_features.append(self._network_call(f"ring_{i}", encoder, region_tokens,
+                                                        contact[:, zone].any(1)))
+        return torch.cat(ring_features, -1)
+
+    def contact_features(self, encoded, points, normals, phase):
+        """Return learned ring features and auditable raw/contact diagnostics."""
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            tokens, contact, support, raw, diagnostics = self._contact_inputs(encoded, points, normals, phase)
+        return self._encode_contact_tokens(tokens, contact), support, raw, diagnostics
+
+    def _prepare_score_chunk(self, encoded, points, normals, phase):
         finite = torch.isfinite(points).all(-1) & (points[:, 2] > 0) & torch.isfinite(normals).all(-1)
         norm = torch.where(torch.isfinite(normals), normals, torch.zeros_like(normals)).norm(dim=-1)
         finite &= norm > 1e-8
@@ -630,24 +803,85 @@ class InstanceSuction2DFastV3(nn.Module):
         feature_points = torch.where(valid[:, None], safe_points, points.new_tensor((0., 0., 1.)))
         feature_normals = torch.where(valid[:, None], normal, normals.new_tensor((0., 0., -1.)))
         fq = self._query_semantics(encoded, feature_points)
-        ring, support, raw, diagnostics = self.contact_features(encoded, feature_points, feature_normals, phase)
+        tokens, contact, support, raw, diagnostics = self._contact_inputs(encoded, feature_points,
+                                                                        feature_normals, phase)
         descriptor = torch.cat(((feature_points - encoded["centroid"]) / .1, feature_normals,
                                 encoded["gravity"].expand(len(points), -1), encoded["extent"].expand(len(points), -1) / .1), -1)
-        fusion = torch.cat((encoded["global_feature"].expand(len(points), -1), fq, ring,
-                            support.to(fq.dtype), raw.to(fq.dtype), descriptor.to(fq.dtype)), -1)
-        latent = self.query_fusion(fusion)
-        result = {name: head(latent).squeeze(-1) for name, head in self.output_heads.items()}
-        for name in ("q_inst", "seal", "wrench"):
-            result[name] = result[name].sigmoid()
-        result["ell"] = result["ell"].clamp(-6., 1.)
-        result = {key: torch.where(valid, value, torch.zeros_like(value)) for key, value in result.items()}
-        result.update(log_scale=result["ell"], log_variance=math.log(2.) + 2 * result["ell"],
-                      valid=valid, query_valid=valid, points_cam_m=points,
-                      normals_out_cam=torch.where(finite[:, None], normal, torch.zeros_like(normal)),
-                      diagnostics={**diagnostics, "fq": fq, "fusion": fusion,
-                                   "support_count": torch.full_like(valid, encoded["support_count"], dtype=torch.long),
-                                   "support_sufficient": torch.full_like(valid, encoded["support_sufficient"]),
-                                   "query_input_valid": finite, "query_support_valid": valid})
+        return {"tokens": tokens, "contact": contact, "fq": fq, "support": support, "raw": raw,
+                "descriptor": descriptor.to(fq.dtype),
+                "global_feature": encoded["global_feature"].expand(len(points), -1),
+                "valid": valid, "points_cam_m": points,
+                "normals_out_cam": torch.where(finite[:, None], normal, torch.zeros_like(normal)),
+                "diagnostics": {**diagnostics, "fq": fq,
+                    "support_count": torch.full_like(valid, encoded["support_count"], dtype=torch.long),
+                    "support_sufficient": torch.full_like(valid, encoded["support_sufficient"]),
+                    "query_input_valid": finite, "query_support_valid": valid}}
+
+    def _score_prepared_many(self, prepared):
+        """Merge query rows only after each instance's geometric isolation."""
+        if not prepared:
+            return []
+        lengths = [len(item["valid"]) for item in prepared]
+        keys = ("tokens", "contact", "global_feature", "fq", "support", "raw", "descriptor")
+        batch = {key: torch.cat([item[key] for item in prepared]) for key in keys}
+        chunk = self.dense_query_chunk or self.query_chunk
+        predictions, fusions = [], []
+        for start in range(0, sum(lengths), chunk):
+            sl = slice(start, start + chunk)
+            ring = self._encode_contact_tokens(batch["tokens"][sl], batch["contact"][sl])
+            fq = batch["fq"][sl]
+            fusion = torch.cat((batch["global_feature"][sl].to(fq.dtype), fq, ring.to(fq.dtype),
+                                batch["support"][sl].to(fq.dtype), batch["raw"][sl].to(fq.dtype),
+                                batch["descriptor"][sl]), -1)
+            with self._network_autocast():
+                latent = self._network_call("query_fusion", self.query_fusion, fusion)
+                heads = {name: self._network_call(f"head_{name}", head, latent).squeeze(-1)
+                         for name, head in self.output_heads.items()}
+            heads = {name: value.float() if value.dtype in (torch.float16, torch.bfloat16) else value
+                     for name, value in heads.items()}
+            # Loss scale arithmetic and output probabilities are deliberately
+            # FP32. Only the learned convolutions/linear blocks are autocast.
+            with torch.autocast(device_type=self.device.type, enabled=False):
+                for name in ("q_inst", "seal", "wrench"):
+                    heads[name] = heads[name].sigmoid()
+                heads["ell"] = heads["ell"].clamp(-6., 1.)
+            predictions.append(heads)
+            fusions.append(fusion)
+        merged = {name: torch.cat([part[name] for part in predictions]) for name in predictions[0]}
+        fusion = torch.cat(fusions)
+        results, start = [], 0
+        for item, count in zip(prepared, lengths):
+            sl = slice(start, start + count)
+            valid = item["valid"]
+            result = {name: torch.where(valid, value[sl], torch.zeros_like(value[sl]))
+                      for name, value in merged.items()}
+            result.update(log_scale=result["ell"], log_variance=math.log(2.) + 2 * result["ell"],
+                          valid=valid, query_valid=valid, points_cam_m=item["points_cam_m"],
+                          normals_out_cam=item["normals_out_cam"],
+                          diagnostics={**item["diagnostics"], "fusion": fusion[sl]})
+            results.append(result)
+            start += count
+        return results
+
+    def _score_chunk(self, encoded, points, normals, phase):
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            prepared = self._prepare_score_chunk(encoded, points, normals, phase)
+        return self._score_prepared_many([prepared])[0]
+
+    def _empty_scores(self, points, normals):
+        dtype = torch.float32 if self.feature_dtype in (torch.float16, torch.bfloat16) else self.feature_dtype
+        empty = torch.empty((0,), device=self.device, dtype=dtype)
+        valid = torch.empty((0,), device=self.device, dtype=torch.bool)
+        return {**{key: empty for key in ("q_inst", "seal", "wrench", "ell", "log_scale", "log_variance", "task_logit")},
+                "valid": valid, "query_valid": valid, "points_cam_m": points,
+                "normals_out_cam": normals, "diagnostics": {}}
+
+    @staticmethod
+    def _concatenate_scores(parts):
+        result = {key: torch.cat([part[key] for part in parts], 0)
+                  for key in parts[0] if key != "diagnostics"}
+        result["diagnostics"] = {key: torch.cat([part["diagnostics"][key] for part in parts], 0)
+                                 for key in parts[0]["diagnostics"]}
         return result
 
     def score_at_pose(self, encoded, p, n, query_batch_index=None, *, phase=None, query_chunk=None):
@@ -660,11 +894,7 @@ class InstanceSuction2DFastV3(nn.Module):
             if batch.shape != (len(points),) or bool((batch != 0).any()):
                 raise ValueError("An encoded item is one instance; query_batch_index must be all zero")
         if not len(points):
-            empty = next(self.parameters()).new_empty((0,))
-            valid = torch.empty((0,), device=self.device, dtype=torch.bool)
-            return {**{key: empty for key in ("q_inst", "seal", "wrench", "ell", "log_scale", "log_variance", "task_logit")},
-                    "valid": valid, "query_valid": valid, "points_cam_m": points,
-                    "normals_out_cam": normals, "diagnostics": {}}
+            return self._empty_scores(points, normals)
         if phase is None:
             phase = self._phase(encoded, points, normals)
         else:
@@ -677,19 +907,18 @@ class InstanceSuction2DFastV3(nn.Module):
         if chunk <= 0:
             raise ValueError("query_chunk must be positive")
         with torch.autocast(device_type=self.device.type, enabled=False):
-            parts = [self._score_chunk(encoded, points[i:i + chunk], normals[i:i + chunk], phase[i:i + chunk])
-                     for i in range(0, len(points), chunk)]
-        result = {key: torch.cat([part[key] for part in parts], 0) for key in parts[0] if key != "diagnostics"}
-        result["diagnostics"] = {key: torch.cat([part["diagnostics"][key] for part in parts], 0)
-                                 for key in parts[0]["diagnostics"]}
-        return result
+            prepared = [self._prepare_score_chunk(encoded, points[i:i + chunk], normals[i:i + chunk], phase[i:i + chunk])
+                        for i in range(0, len(points), chunk)]
+        return self._concatenate_scores(self._score_prepared_many(prepared))
 
     def forward(self, observation, points=None, normals=None):
+        canonical = points is None and normals is None
         if points is None:
             points = observation["query_points"]
         if normals is None:
             normals = observation["query_normals"]
-        return self.score_at_pose(self.encode_instance(observation), points, normals)
+        phase = self._canonical_phase(observation) if canonical else None
+        return self.score_at_pose(self.encode_instance(observation), points, normals, phase=phase)
 
 
 InstanceRouteB = InstanceSuction2DFastV3
