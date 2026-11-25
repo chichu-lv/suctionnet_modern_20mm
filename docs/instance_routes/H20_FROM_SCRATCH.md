@@ -120,6 +120,14 @@ B使用自己的输入/输出目录。中断可对同一目标加 `--resume`。�
 
 非压缩NPZ避开重复deflate解压，仍有文件读取、数组分配和复制；它不等于mmap或全量数据已在内存。可先使用本地SSD和操作系统页缓存。若选择 `/dev/shm`，先实际检查挂载容量与容器限制，不能把1.8TiB可用主存当作同等大小的内存盘。不要复制全部数据仅为提高RSS或显存占用。
 
+### 源域 CPU 准备与传输
+
+设置 `SUCTION_COMPACT_SOURCE_IPC=1` 可在有准备进程的路线 B 源域训练中启用紧凑传输。有效 batch、微批、准备进程数、抽样次序和 checkpoint 配置沿用当前训练。源域 CPU 增强复用全帧 Pillow 的亮度、对比度和无效像素规则。
+
+启用后，worker 为 context 与纹理实际采样到的像素生成特征。投影使用的四张 FP64 几何或布尔图按有效掩码外接框传输，消费端恢复原始分辨率和像素坐标。保留梯度依赖的网络与每步的相位计算。源域冻结标签仍由原始 NPZ 读取并按原规则验证。
+
+每步的 `timing` 包含等待训练数据、发起源域前向、计算损失及反向与读回、裁剪及优化器与读回的主线程墙钟。CUDA 可异步执行，因此这些数值反映主训练线程的占用和等待。
+
 ## 6. 真实数据压测
 
 保留既有GPU软件版本，不为了本功能升级整个环境。A仍需固定外部骨干；在主环境中构建一次FPS扩展，然后再启动workers：
@@ -246,4 +254,3 @@ A换对应checkpoint/manifest并增加backbone参数。test子集已参与选模
 本次联合工作树执行所有 `tests/test_instance*.py` 与项目内容校验禁用门禁，结果 **456 passed**；其中包含真实spawn、源域/目标域双池的精确恢复和半步worker退出。各独立分支的完整测试结果以对应GitHub Actions为准，联合工作树的测试数量不能冒充单分支数量。
 
 PyTorch参考：[AMP分区](https://docs.pytorch.org/docs/stable/amp.html)、[compile适用条件](https://docs.pytorch.org/docs/stable/generated/torch.compile)、[多进程数据加载](https://docs.pytorch.org/docs/stable/data.html)。本仓库沿用固定PyTorch2.5.1环境，引用说明原理，不据stable文档自动升级安装版本。
-
