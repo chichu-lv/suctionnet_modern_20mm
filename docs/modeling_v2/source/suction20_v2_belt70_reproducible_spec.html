@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Suction20 V2-Belt70 可复现工程规格书</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "IBM Plex Sans", "Noto Sans SC", -apple-system, BlinkMacSystemFont, sans-serif; color: #0f172a; background: #fff; line-height: 1.65; }
+    .layout { display: grid; grid-template-columns: 220px 1fr; max-width: 1320px; margin: 0 auto; }
+    nav.toc { position: sticky; top: 0; height: 100vh; padding: 32px 20px; border-right: 1px solid #e2e8f0; background: #f8fafc; font-size: 13px; }
+    nav.toc h4 { margin: 0 0 14px; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; }
+    nav.toc a { display: block; color: #334155; text-decoration: none; padding: 6px 0; }
+    nav.toc a:hover { color: #1d4ed8; }
+    main { padding: 40px 44px 80px; min-width: 0; }
+    header { border-bottom: 1px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 32px; }
+    h1 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.02em; }
+    h2 { font-size: 20px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; }
+    h3 { font-size: 14.5px; margin: 0 0 8px; }
+    p, li { font-size: 13.5px; color: #334155; margin: 6px 0; }
+    ol { padding-left: 20px; }
+    .accent { color: #1d4ed8; }
+    .sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+    .card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; background: #f8fafc; margin-bottom: 14px; }
+    .svg-wrap { border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; background: #fff; margin: 16px 0 24px; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 24px; font-size: 12.5px; }
+    th, td { border: 1px solid #e2e8f0; padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: #f1f5f9; font-weight: 600; color: #334155; }
+    td.highlight { background: #eff6ff; color: #1e3a8a; font-weight: 500; }
+    .mono, code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+    .mono-box { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; margin-top: 8px; color: #0f172a; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } nav.toc { display: none; } main { padding: 24px 18px; } }
+    @media print { nav.toc { display: none; } .layout { display: block; } .card { break-inside: avoid; } }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <nav class="toc">
+      <h4>文档目录</h4>
+      <a href="#s1">01. 定稿决策与三面板方法图</a>
+      <a href="#s2">02. 数据审计与 R20 转换</a>
+      <a href="#s3">03. 模型输入、补洞与接触规格</a>
+      <a href="#s4">04. 两阶段训练与偏好微调</a>
+      <a href="#s5">05. 代码实现易错清单 (10条)</a>
+    </nav>
+    <main>
+      <header>
+        <h1>Suction20 V2-Belt70 可复现工程技术规格书</h1>
+        <div class="sub">固定顶视单实例推理 · 内置透明空洞自修复 · 70 mm 四区接触包络 · 多源预训练与 400+ 人工偏好对残差微调</div>
+      </header>
+
+      <h2 id="s1">01. 已确认的 5 项设计决策与论文级三面板方法图</h2>
+      
+      <div class="card">
+        <h3>D1 · 相机与推理形态：<span class="accent">固定顶视俯拍 + 按单个目标物品推理</span></h3>
+        <p>重力方向 g_cam 与传送带承载平面恒定已知；采用“目标实例 + 外扩 75 mm 局部背景”单实例推理，无多实例重叠冗余，较全场景 E5 提速 3–5× 且保住传送带/邻物防碰。</p>
+      </div>
+      <div class="card">
+        <h3>D2 · 透明瓶中心掉深修复：<span class="accent">模型内置空洞自修复能力（不强依赖外部独立修复模型）</span></h3>
+        <p>预处理对实例内缺深区做零训练局部几何预填（Zero-Touch 不改有效深）并打上 is_raw_valid / hole_dist 标记；骨干内部增设 Δz_hole 表面修正头，未来同事的专用修复模型就绪后可直接无缝替换输入。</p>
+      </div>
+      <div class="card">
+        <h3>D3 · 多源数据推进排期：<span class="accent">P0：SuctionNet 瘦身 + ClearPose 抽帧；P1：MetaGraspNetV2（同步）+ 压扁瓶合成（待调研）</span></h3>
+        <p>首轮先用 P0 两库快速闭环训练与内置补洞验证；MetaGraspNetV2 同步做 ~100 瓶罐类物体精选与 R20 重算；压扁瓶合成按需以极简 FFD 管线补齐形变长尾。</p>
+      </div>
+      <div class="card">
+        <h3>D4 · 碰撞包络与输出头：<span class="accent">碰撞包络缩短至 70 mm（保留 cup+mount，裁掉 70–150 mm approach）；启用精简解耦输出头</span></h3>
+        <p>外扩 75 mm 裁剪恰好完整覆盖 ρ≤28 mm、z≤70 mm 碰撞包络，零截断；输出头定型为 q_SW (S×W)、p_free (1−C_70mm)、n_hat、Δz_hole（及微调残差头 Δ_θ），推理期可按 α 调节防碰松紧。</p>
+      </div>
+      <div class="card">
+        <h3>D5 · 预训练与偏好微调节奏：<span class="accent">先完成多源预训练；微调集已人工复核 ~400 帧并持续扩充，原始数据与历史 A 位姿齐全</span></h3>
+        <p>400+ 帧量级严格采用“冻结 3D 骨干 + 轻量残差头 Δ_θ + 50%–70% 源域回放”；好点 B 仅存 2D 像素 (u_B, v_B)，经内置补洞转 3D 并扩成 5–8 mm 正邻域 B⁺ 与历史差点 A 构成平滑偏好对。</p>
+      </div>
+      <div class="svg-wrap"><svg id="svg-v2-three-panel" viewBox="0 0 1160 660" class="w-full h-auto" role="img" aria-label="Suction20 V2-Belt70 三面板论文级方法架构图"><defs><marker id="p-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#334155"></path></marker><marker id="p-arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#1d4ed8"></path></marker><marker id="p-arr-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#be123c"></path></marker></defs><rect x="0" y="0" width="1160" height="660" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"></rect><rect x="16" y="16" width="1128" height="296" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"></rect><text x="30" y="38" fill="#0f172a" font-size="13" font-weight="700">Panel A · 单实例局部带背景前向管线与内置空洞修复流（张量形状与梯度流）</text><text x="772" y="38" fill="#64748b" font-size="11" font-family="IBM Plex Mono, monospace">Top-Down Fixed Camera · Per-Instance Inference</text><rect x="30" y="56" width="194" height="118" rx="5" fill="#ffffff" stroke="#94a3b8"></rect><text x="42" y="76" fill="#0f172a" font-size="12" font-weight="600">1. 单实例 +75mm 裁剪</text><text x="42" y="95" fill="#475569" font-size="11">固定顶视 Depth + Mask + K</text><text x="42" y="113" fill="#475569" font-size="11">目标 AABB 外扩 75 mm</text><text x="42" y="131" fill="#475569" font-size="11">保留传送带与邻近异物点</text><text x="42" y="158" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">P_raw + M_hole + z_belt</text><line x1="224" y1="115" x2="252" y2="115" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#p-arr-blue)"></line><rect x="254" y="56" width="206" height="118" rx="5" fill="#eff6ff" stroke="#60a5fa"></rect><text x="266" y="76" fill="#1e3a8a" font-size="12" font-weight="600">2. Zero-Touch 几何预填</text><text x="266" y="95" fill="#1e40af" font-size="11">仅对 M_hole (Valid=0) 插值</text><text x="266" y="113" fill="#334155" font-size="11">· 周边有效点局部二次/IDW 拟合</text><text x="266" y="131" fill="#334155" font-size="11">· 传送带平面下界截断防穿透</text><text x="266" y="158" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">X_in: [M, 12] (全几何特征)</text><line x1="460" y1="115" x2="488" y2="115" stroke="#334155" stroke-width="1.5" marker-end="url(#p-arr)"></line><rect x="490" y="56" width="206" height="118" rx="5" fill="#ffffff" stroke="#334155" stroke-width="1.2"></rect><text x="502" y="76" fill="#0f172a" font-size="12" font-weight="600">3. 稀疏 3D 骨干 (ResUNet14)</text><text x="502" y="95" fill="#475569" font-size="11">Voxel = 2 mm · 12→256 ch</text><text x="502" y="113" fill="#475569" font-size="11">4 级下采样 + 跳连解码</text><text x="502" y="131" fill="#047857" font-size="10.5">不吃 RGB 色彩 · 免疫垃圾脏污</text><text x="502" y="158" fill="#0f172a" font-size="10.5" font-family="IBM Plex Mono, monospace">F_pts: [M, 256] + G_inst: [256]</text><line x1="593" y1="174" x2="593" y2="206" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#p-arr-blue)"></line><rect x="460" y="208" width="266" height="86" rx="5" fill="#eff6ff" stroke="#60a5fa"></rect><text x="472" y="228" fill="#1e3a8a" font-size="12" font-weight="600">3b. 内置空洞隐式表面修正头 Δz_hole</text><text x="472" y="247" fill="#334155" font-size="11">仅作用于 is_raw_valid=0 补洞点：</text><text x="472" y="265" fill="#1d4ed8" font-size="11" font-family="IBM Plex Mono, monospace">p_ref = p_fill + Δz_hole · d_ray</text><text x="472" y="283" fill="#475569" font-size="10.5">由 ClearPose GT + 合成挖洞真值监督</text><rect x="30" y="208" width="400" height="86" rx="5" fill="#ffffff" stroke="#cbd5e1"></rect><text x="42" y="228" fill="#0f172a" font-size="12" font-weight="600">双配额候选采样器（16×16 Bit-Reversed Morton）</text><text x="42" y="247" fill="#475569" font-size="11">在目标 2D Mask 内分层选 K=256 种子（训练 128）：原始有效点与</text><text x="42" y="264" fill="#475569" font-size="11">中心补洞点均可入池，彻底解决透明瓶中心好区域“无种子可选”</text><text x="42" y="283" fill="#64748b" font-size="10.5" font-family="IBM Plex Mono, monospace">Seeds: [K, 3] + n_hat: [K, 3] + hole_dist: [K, 1]</text><line x1="696" y1="115" x2="736" y2="115" stroke="#334155" stroke-width="1.5" marker-end="url(#p-arr)"></line><line x1="726" y1="250" x2="788" y2="250" stroke="#1d4ed8" stroke-width="1.5"></line><line x1="788" y1="250" x2="788" y2="176" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#p-arr-blue)"></line><line x1="430" y1="250" x2="458" y2="250" stroke="#475569" stroke-width="1.2" stroke-dasharray="3 3"></line><rect x="738" y="56" width="186" height="118" rx="5" fill="#ffffff" stroke="#334155" stroke-width="1.2"></rect><text x="750" y="76" fill="#0f172a" font-size="12" font-weight="600">4. V2-Belt70 四区接触</text><text x="750" y="95" fill="#334155" font-size="11">以 (p_ref, n_hat) 建局部柱系</text><text x="750" y="113" fill="#334155" font-size="11">· core + lip (8扇区循环卷)</text><text x="750" y="131" fill="#334155" font-size="11">· cup + mount (至 70 mm)</text><text x="750" y="158" fill="#0f172a" font-size="10.5" font-family="IBM Plex Mono, monospace">F_contact: [K, 512]</text><line x1="924" y1="115" x2="950" y2="115" stroke="#334155" stroke-width="1.5" marker-end="url(#p-arr)"></line><rect x="952" y="56" width="176" height="238" rx="5" fill="#ffffff" stroke="#1d4ed8" stroke-width="1.2"></rect><text x="964" y="76" fill="#1e3a8a" font-size="12" font-weight="600">5. 解耦输出与残差头</text><line x1="964" y1="84" x2="1116" y2="84" stroke="#e2e8f0"></line><text x="964" y="103" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">q_SW   ∈ [0,1] (S×W)</text><text x="964" y="123" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">p_free ∈ [0,1] (1−C70)</text><text x="964" y="143" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">n_hat  ∈ S²    (法向)</text><text x="964" y="163" fill="#64748b" font-size="10.5" font-family="IBM Plex Mono, monospace">seal_aux (仅预训练诊断)</text><line x1="964" y1="176" x2="1116" y2="176" stroke="#e2e8f0"></line><text x="964" y="196" fill="#0f172a" font-size="11" font-weight="600">基础物理分：</text><text x="964" y="214" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">q_base = q_SW·p_free^α</text><text x="964" y="238" fill="#1d4ed8" font-size="11" font-weight="600">微调后最终排序分：</text><text x="964" y="256" fill="#1d4ed8" font-size="11" font-family="IBM Plex Mono, monospace">s = logit(q_base)+Δ_θ</text><text x="964" y="280" fill="#64748b" font-size="10">α 默认 0.5–0.8 可在线调节</text><rect x="16" y="328" width="554" height="316" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"></rect><text x="30" y="350" fill="#0f172a" font-size="13" font-weight="700">Panel B · V2-Belt70 四区接触包络截面（单位 mm，已裁掉 approach）</text><rect x="52" y="376" width="306" height="244" rx="4" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="5 4"></rect><text x="60" y="392" fill="#64748b" font-size="10" font-family="IBM Plex Mono, monospace">局部裁剪边界 (+75 mm 完整覆盖 70 mm 包络)</text><rect x="148" y="398" width="114" height="30" fill="#fff1f2" stroke="#fda4af" stroke-dasharray="3 3"></rect><line x1="148" y1="398" x2="262" y2="428" stroke="#be123c" stroke-width="1"></line><text x="272" y="417" fill="#be123c" font-size="10.5" font-family="IBM Plex Mono, monospace">× 原 approach (70–150) 已裁</text><rect x="148" y="432" width="114" height="78" fill="#e2e8f0" stroke="#475569" stroke-width="1.2"></rect><text x="174" y="475" fill="#0f172a" font-size="11.5" font-weight="600">mount</text><text x="272" y="468" fill="#334155" font-size="10.5" font-family="IBM Plex Mono, monospace">ρ≤28, z∈(25, 70]</text><text x="272" y="484" fill="#64748b" font-size="10">全局部场景 (邻物/法兰防碰)</text><rect x="160" y="510" width="90" height="54" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.2"></rect><text x="192" y="540" fill="#1e3a8a" font-size="11.5" font-weight="600">cup</text><text x="272" y="532" fill="#1e3a8a" font-size="10.5" font-family="IBM Plex Mono, monospace">ρ≤22, z∈[−2, 25]</text><text x="272" y="548" fill="#475569" font-size="10">全局部场景 (自体仅 z&gt;4)</text><rect x="160" y="556" width="14" height="24" fill="#1d4ed8" fill-opacity="0.35" stroke="#1d4ed8"></rect><rect x="236" y="556" width="14" height="24" fill="#1d4ed8" fill-opacity="0.35" stroke="#1d4ed8"></rect><rect x="174" y="556" width="62" height="24" fill="#10b981" fill-opacity="0.22" stroke="#047857"></rect><path d="M 78 584 Q 205 560 332 584" fill="none" stroke="#0f172a" stroke-width="2.2"></path><line x1="205" y1="568" x2="205" y2="410" stroke="#0f172a" stroke-width="1.4" stroke-dasharray="3 2" marker-end="url(#p-arr)"></line><circle cx="205" cy="568" r="3.5" fill="#1d4ed8"></circle><text x="212" y="422" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">n_hat (+z)</text><line x1="60" y1="606" x2="350" y2="606" stroke="#64748b" stroke-width="2"></line><text x="64" y="618" fill="#64748b" font-size="10">传送带承载面 z_belt（提供底部碰撞与补洞下界）</text><text x="272" y="572" fill="#047857" font-size="10.5" font-family="IBM Plex Mono, monospace">core: ρ≤18, z∈[−8, +8]</text><text x="272" y="590" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">lip:  18&lt;ρ≤22 (8扇区)</text><text x="415" y="572" fill="#64748b" font-size="10">仅目标实例</text><text x="415" y="590" fill="#64748b" font-size="10">循环卷积</text><rect x="586" y="328" width="558" height="316" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"></rect><text x="600" y="350" fill="#0f172a" font-size="13" font-weight="700">Panel C · 两阶段训练与目标域偏好残差微调（Gradient &amp; Replay 契约）</text><rect x="602" y="368" width="526" height="114" rx="5" fill="#ffffff" stroke="#cbd5e1"></rect><text x="614" y="388" fill="#0f172a" font-size="12" font-weight="600">Stage 1 · 多源瘦身预训练（全参数 + 合成挖洞）</text><text x="614" y="408" fill="#334155" font-size="11">P0: SuctionNet 瘦身 (256→32 视角 + 合成椭圆挖洞) + ClearPose 抽帧 (真实透明掉深)</text><text x="614" y="426" fill="#64748b" font-size="11">P1 扩展: MetaGraspNetV2 精选 (~100 物体 R20 重算) + 轻量压扁瓶合成</text><rect x="614" y="438" width="500" height="32" rx="4" fill="#f1f5f9"></rect><text x="624" y="458" fill="#0f172a" font-size="11" font-family="IBM Plex Mono, monospace">L_pre = L_SW + 0.6·L_free + 1.5·L_normal + 0.5·L_hole_z + 0.1·L_seal_aux</text><line x1="865" y1="482" x2="865" y2="504" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#p-arr-blue)"></line><text x="875" y="497" fill="#1d4ed8" font-size="10.5">加载最优预训练权重</text><rect x="602" y="506" width="526" height="124" rx="5" fill="#eff6ff" stroke="#60a5fa"></rect><text x="614" y="526" fill="#1e3a8a" font-size="12" font-weight="600">Stage 2 · 目标域偏好对残差微调（400+ 帧持续扩充）</text><text x="614" y="545" fill="#be123c" font-size="11" font-weight="600">[STOP-GRAD] 严格冻结 SpConv 骨干与全部 BN running stats/affine，仅更新 Δ_θ</text><text x="614" y="564" fill="#334155" font-size="11">· 目标域：人工点击 RGB 像素 (u_B, v_B) → 补洞转 3D 扩 5–8 mm 正邻域 B⁺ ≻ 历史差点 A⁻</text><text x="614" y="582" fill="#334155" font-size="11">· 防遗忘：每 Batch 混入 50%–70% Stage 1 源域回放（继续计算 L_pre）</text><rect x="614" y="592" width="500" height="28" rx="4" fill="#ffffff" stroke="#bfdbfe"></rect><text x="624" y="610" fill="#1e3a8a" font-size="10.8" font-family="IBM Plex Mono, monospace">L_ft = L_BradleyTerry(B⁺≻A⁻, ε=0.08, m=0.25) + 0.8·L_source_replay + 0.02·‖Δ_θ‖²</text></svg></div>
+
+      <h2 id="s2">02. 公开数据集 R20 完备性审计与转换管线（P0 → P1）</h2>
+      <div class="svg-wrap"><svg id="svg-data-pipeline" viewBox="0 0 1060 286" class="w-full h-auto" role="img" aria-label="P0 与 P1 多源公开数据集接入 V2-Belt70 R20 Teacher 的处理管线图"><defs><marker id="d-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"></path></marker><marker id="d-arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#1d4ed8"></path></marker></defs><rect x="0" y="0" width="1060" height="286" rx="8" fill="#f8fafc" stroke="#e2e8f0"></rect><text x="22" y="26" fill="#64748b" font-size="11" font-family="IBM Plex Mono, monospace">01. 数据源分层（P0 立刻启动 / P1 同步扩展）</text><rect x="22" y="40" width="276" height="52" rx="5" fill="#eff6ff" stroke="#60a5fa"></rect><text x="34" y="60" fill="#1e3a8a" font-size="12" font-weight="600">[P0] SuctionNet-1B 瘦身版 (~3k 帧)</text><text x="34" y="79" fill="#334155" font-size="10.5">256→32 视角 + Kinect + 踢掉深埋堆叠</text><rect x="22" y="100" width="276" height="52" rx="5" fill="#eff6ff" stroke="#60a5fa"></rect><text x="34" y="120" fill="#1e3a8a" font-size="12" font-weight="600">[P0] ClearPose 轨迹抽帧 (~2.2k 帧)</text><text x="34" y="139" fill="#334155" font-size="10.5">63 透明 CAD + 真实掉深 Raw + GT 深度</text><rect x="22" y="162" width="276" height="48" rx="5" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="4 3"></rect><text x="34" y="182" fill="#0f172a" font-size="12" font-weight="600">[P1 同步] MetaGraspNetV2 仿真精选</text><text x="34" y="199" fill="#64748b" font-size="10.5">从 989 物体先筛 ~100 瓶罐类再算 Seal</text><rect x="22" y="218" width="276" height="48" rx="5" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="4 3"></rect><text x="34" y="238" fill="#0f172a" font-size="12" font-weight="600">[P1 调研] 轻量压扁瓶 + 传送带合成</text><text x="34" y="255" fill="#64748b" font-size="10.5">Trimesh FFD 压扁 Mesh + PyBullet 投放</text><text x="352" y="26" fill="#64748b" font-size="11" font-family="IBM Plex Mono, monospace">02. 统一 R20-Belt70 物理 Teacher 转换</text><rect x="352" y="48" width="328" height="128" rx="6" fill="#ffffff" stroke="#334155" stroke-width="1.2"></rect><text x="366" y="72" fill="#0f172a" font-size="12.5" font-weight="600">统一几何 Adapter → V2-Belt70 Teacher</text><text x="366" y="94" fill="#334155" font-size="11">1. 统一米制相机系、实例 Mask 与承载平面</text><text x="366" y="113" fill="#334155" font-size="11">2. 按 R=20 mm 统一重算 S20 / W20 / gt_normal</text><text x="366" y="132" fill="#334155" font-size="11">3. 碰撞包络统一为 70 mm (cup + mount)，分存 C_self / C_ext</text><text x="366" y="156" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">丢弃外库自带小吸盘分 · 物理口径 100% 统一</text><rect x="352" y="190" width="328" height="76" rx="6" fill="#eff6ff" stroke="#93c5fd"></rect><text x="366" y="212" fill="#1e3a8a" font-size="12.5" font-weight="600">在线空洞构造与 Zero-Touch 预填</text><text x="366" y="232" fill="#334155" font-size="11">· ClearPose：真实 Raw 空洞 → Rendered GT 监督 Δz_hole</text><text x="366" y="250" fill="#334155" font-size="11">· SuctionNet/仿真：50% 概率合成椭圆中心挖洞自监督</text><text x="734" y="26" fill="#64748b" font-size="11" font-family="IBM Plex Mono, monospace">03. 两阶段训练消费</text><rect x="734" y="48" width="304" height="100" rx="6" fill="#ffffff" stroke="#cbd5e1"></rect><text x="748" y="72" fill="#0f172a" font-size="12.5" font-weight="600">Stage 1 · 多源预训练（先启动）</text><text x="748" y="94" fill="#334155" font-size="11">P0 双库先行闭环 → P1 无缝并入同一缓存格式</text><text x="748" y="113" fill="#334155" font-size="11">产出具备内置补洞与 70 mm 防碰能力的通用主干</text><text x="748" y="135" fill="#047857" font-size="10.5" font-family="IBM Plex Mono, monospace">同时留作 Stage 2 的 50%–70% 源域回放池</text><rect x="734" y="164" width="304" height="102" rx="6" fill="#ffffff" stroke="#1d4ed8"></rect><text x="748" y="188" fill="#1e3a8a" font-size="12.5" font-weight="600">Stage 2 · 目标域 400+ 偏好对微调</text><text x="748" y="209" fill="#334155" font-size="11">人工 RGB 点击 (u_B, v_B) + 历史差点 A (p, n)</text><text x="748" y="228" fill="#334155" font-size="11">冻结主干与 BN，仅训残差头 Δ_θ + 源域回放</text><text x="748" y="250" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">过 4 条离线门槛后再上机械臂小批量实测</text><line x1="298" y1="66" x2="350" y2="86" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#d-arr-blue)"></line><line x1="298" y1="126" x2="350" y2="118" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#d-arr-blue)"></line><line x1="298" y1="186" x2="350" y2="146" stroke="#475569" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#d-arr)"></line><line x1="298" y1="242" x2="350" y2="164" stroke="#475569" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#d-arr)"></line><line x1="516" y1="176" x2="516" y2="188" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#d-arr-blue)"></line><line x1="680" y1="108" x2="732" y2="98" stroke="#475569" stroke-width="1.5" marker-end="url(#d-arr)"></line><line x1="680" y1="224" x2="732" y2="124" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#d-arr-blue)"></line><line x1="886" y1="148" x2="886" y2="162" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#d-arr-blue)"></line></svg></div>
+      <table>
+        <thead>
+          <tr><th>数据源与优先级</th><th>建议帧预算</th><th>RGB-D/K</th><th>实例掩码</th><th>完整 CAD</th><th>6DoF</th><th>重力/平面</th><th>GT 深度</th></tr>
+        </thead>
+        <tbody>
+      <tr>
+        <td><strong>[P0] SuctionNet-1B（瘦身过滤 + 双相机 + 合成挖洞）</strong><div class="sub">真实双相机 RealSense D435 + Azure Kinect</div></td>
+        <td>参考 2,800–3,200 帧（待消融）</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#b45309">△ 部分</td>
+      </tr>
+      <tr>
+        <td><strong>[P0] ClearPose（轨迹强降采样版）</strong><div class="sub">真实透明物体 RGB-D（RealSense L515）</div></td>
+        <td>参考 2,000–2,500 帧（待消融）</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#b45309">△ 部分</td>
+        <td style="color:#047857">✓ 完备</td>
+      </tr>
+      <tr>
+        <td><strong>[P1] MetaGraspNetV2（仿真子集 · 瓶罐类精选）</strong><div class="sub">高逼真仿真（同步处理中；舍弃真实子集）</div></td>
+        <td>参考 2,500–3,000 帧（P1 接入）</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+      </tr>
+      <tr>
+        <td><strong>[P1] 轻量压扁瓶 + 传送带合成（待调研路线）</strong><div class="sub">Trimesh / BlenderProc 轻量可控合成</div></td>
+        <td>参考 2,000 帧（P1 调研落地）</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+        <td style="color:#047857">✓ 完备</td>
+      </tr></tbody>
+      </table>
+      
+      <div class="card">
+        <h3>[P0] SuctionNet-1B（瘦身过滤 + 双相机 + 合成挖洞）</h3>
+        <p><strong>定位：</strong>P0 主力几何与遮挡先验；在线施加合成中心掉深训练内置修复分支</p>
+        <p><strong>已有资产：</strong>完整具备 R20 Producer 所需全部 5 项资产（88 个物体 CAD 及已有 seal_r20 缓存、100 训练场景精确 6DoF 位姿、桌面重力坐标系、双传感器）。</p>
+        <p><strong>缺失项与风险：</strong>① 每场景 256 视角高度冗余（E5 实测 2,880 步即达验证峰值 13.12%，后续掉回 12.02%）；② 含大量深埋多层堆叠；③ 缺少真实透明瓶中心掉深。</p>
+        <ol><li>视角等距抽帧：scene 0–99 每场景从 256 视角等距抽 24–32 帧（步长 8–10），同步纳入 Kinect 视角；验证集按 scene 严格切分，严禁同场景跨 split。</li><li>过滤极端多层堆叠：对每个实例计算可见表面占比与上方 z∈[0, 70] mm 邻近异物点占比，剔除被深埋底层（如顶部覆盖率 > 50% 或邻近 40 mm 柱体阻塞过重）的实例，只留表层、半遮挡、贴桌样本。</li><li>将碰撞包络配置中的 approach 段 [0.07, 0.15] 移除，按 V2-Belt70（cup [-2,25] + mount [25,70] mm）重算或筛选 C_70mm。</li><li>训练期在线施加“合成中心透明挖洞（Synthetic Hole Dropout）”：在目标实例内随机生成 1–2 个椭圆空洞（短轴 12–32 mm），将原始有效深度置空作为空洞输入，用挖洞前原始深度监督 Δz_hole。</li></ol>
+      </div>
+      <div class="card">
+        <h3>[P0] ClearPose（轨迹强降采样版）</h3>
+        <p><strong>定位：</strong>P0 核心透明瓶数据源：提供真实透明掉深分布 + 63 个透明 CAD 的 R20 真值与 Δz_hole 真值</p>
+        <p><strong>已有资产：</strong>同时具备 63 个真实扫描透明物体 3D CAD（大量塑料/玻璃瓶）、每帧精确 6DoF 位姿、逐帧实例掩码、真实传感器掉深图 Raw Depth 与 CAD 渲染的真值完整深度 Rendered GT Depth。</p>
+        <p><strong>缺失项与风险：</strong>① 原库为连续视频流（>35 万帧），相邻帧极度重复；② 部分子集无标准桌面外参，需通过场景外参或背景 RANSAC 恢复承载面与重力方向，剔除非平面支撑场景。</p>
+        <ol><li>按序列/场景维度切分 Train/Val；剔除无承载平面的场景，每条视频轨迹按位姿变化或帧步长等距抽 10–20 帧，将总帧数压到 ~2,200 帧高多样性样本。</li><li>对 63 个透明物体 CAD 一次性运行离线 seal_r20（Poisson 采样 + R=20 mm 密封性评估），生成与 SuctionNet 完全一致的 seal_r20 缓存（63 物体离线计算量很小）。</li><li>通过统一 Adapter 导入相机内参、6DoF 位姿、恢复出的承载平面与实例掩码，调用 V2-Belt70 R20 Teacher 计算 S20、W20、C_70mm 与 gt_normal。</li><li>保留真实 Raw Depth 作为网络输入，用 Rendered GT Depth 与 CAD 表面作为内置空洞修复头 Δz_hole 及补洞区 gt_normal 的真值监督。</li></ol>
+      </div>
+      <div class="card">
+        <h3>[P1] MetaGraspNetV2（仿真子集 · 瓶罐类精选）</h3>
+        <p><strong>定位：</strong>P1 扩充物体几何形态多样性（各类塑料瓶、软包、盒罐、半杂乱摆放）</p>
+        <p><strong>已有资产：</strong>仿真子集完整提供 RGB-D、内参、实例与 Amodal 掩码、约 989 个物体 CAD、精确 6DoF 位姿与世界系重力/承载面。</p>
+        <p><strong>缺失项与风险：</strong>① 自带抓取标签为小半径/Dex-Net 口径，严禁直接混训；② 989 个物体全算 R20 Poisson Seal 离线算力过高，必须先精选子集；③ 真实子集 CAD 对齐不全，不建议投入清洗成本。</p>
+        <ol><li>物体级先筛后算（算力止损）：从 989 个物体中优先筛出尺寸适合 R=20 mm 吸盘的瓶、罐、盒、圆柱及不规则容器约 80–120 个核心物体，只对这批物体跑离线 seal_r20。</li><li>仅保留包含上述精选物体的非极端堆叠仿真帧，每场景抽 2–4 帧（控制总量 ~2,500–3,000 帧）。</li><li>经与 ClearPose 相同的统一 Adapter 导出中间格式，丢弃原库抓取分，全部用 V2-Belt70 R20 Teacher 重算标签，并在线叠加合成透明挖洞增强。</li></ol>
+      </div>
+      <div class="card">
+        <h3>[P1] 轻量压扁瓶 + 传送带合成（待调研路线）</h3>
+        <p><strong>定位：</strong>P1 专门补齐所有公开库都缺失的“压扁变形 PET 瓶 + 平面传送带”分布</p>
+        <p><strong>已有资产：</strong>可 100% 原生导出变形后 watertight Mesh、精确 6DoF、恒定顶视传送带平面、少量随机异物半遮挡及干净/退化双深度。</p>
+        <p><strong>缺失项与风险：</strong>待调研选定最省事的离线形变与渲染工具链（不需要做复杂写实光追，几何形态真实 + 掉深分布真实即可）。</p>
+        <ol><li>极简形变方案（最省算力）：收集 20–30 个常见饮料瓶/洗护瓶开源 Mesh，用 Python（Trimesh / Open3D）施加随机轴向压扁（单轴缩放 0.35–0.75 + 局部高斯凹陷 + 轻度弯折），导出 ~150 个变形后 watertight Mesh。</li><li>物理投放（PyBullet）：将 1–4 个压扁瓶与 1–3 个简单异物（折纸板、块状杂物）自由落体到水平传送带平面，按固定顶视相机内参渲染深度与实例掩码。</li><li>对每个变形后 Mesh 跑 V2-Belt70 R20 Teacher，并按现场透明瓶掉深统计在渲染深度上叠加空洞与边缘飞点噪声。</li></ol>
+      </div>
+
+      <h2 id="s3">03. 模型架构、12 维输入张量与内置空洞修复规格</h2>
+      <div class="svg-wrap"><svg id="svg-hole-repair" viewBox="0 0 1060 260" class="w-full h-auto" role="img" aria-label="透明瓶中心深度空洞的 Zero-Touch 几何预填与内置 Δz_hole 表面修正示意图"><defs><marker id="h-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#1d4ed8"></path></marker></defs><rect x="0" y="0" width="1060" height="260" rx="8" fill="#f8fafc" stroke="#e2e8f0"></rect><rect x="20" y="20" width="310" height="220" rx="6" fill="#ffffff" stroke="#cbd5e1"></rect><text x="34" y="42" fill="#0f172a" font-size="12.5" font-weight="600">Step 1 · 透明瓶原始观测（中心掉深）</text><path d="M 52 178 Q 84 114 122 106" fill="none" stroke="#0f172a" stroke-width="3"></path><path d="M 228 106 Q 266 114 298 178" fill="none" stroke="#0f172a" stroke-width="3"></path><rect x="122" y="96" width="106" height="84" fill="#fff1f2" fill-opacity="0.6" stroke="#fda4af" stroke-dasharray="4 3"></rect><text x="136" y="138" fill="#be123c" font-size="11" font-weight="600">深度全空 M_hole</text><text x="132" y="155" fill="#be123c" font-size="10">(2D Mask 仍完整)</text><line x1="40" y1="186" x2="310" y2="186" stroke="#64748b" stroke-width="2"></line><text x="44" y="204" fill="#64748b" font-size="10.5">传送带平面 z_belt（固定顶视已知）</text><text x="34" y="226" fill="#475569" font-size="10.5" font-family="IBM Plex Mono, monospace">原 E5 / Route B：中心无点 → 0 候选</text><line x1="330" y1="130" x2="368" y2="130" stroke="#1d4ed8" stroke-width="1.6" marker-end="url(#h-arr)"></line><rect x="372" y="20" width="314" height="220" rx="6" fill="#ffffff" stroke="#cbd5e1"></rect><text x="386" y="42" fill="#0f172a" font-size="12.5" font-weight="600">Step 2 · Zero-Touch 确定性几何预填</text><path d="M 404 178 Q 436 114 474 106" fill="none" stroke="#0f172a" stroke-width="3"></path><path d="M 580 106 Q 618 114 650 178" fill="none" stroke="#0f172a" stroke-width="3"></path><line x1="474" y1="106" x2="580" y2="106" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="5 3"></line><text x="484" y="96" fill="#b45309" font-size="10.5" font-family="IBM Plex Mono, monospace">p_fill (初始插值弦面)</text><line x1="392" y1="186" x2="664" y2="186" stroke="#64748b" stroke-width="2"></line><text x="386" y="206" fill="#047857" font-size="10.5">· 两侧实线：is_raw_valid=1（绝对不改动）</text><text x="386" y="224" fill="#b45309" font-size="10.5">· 中间虚线：is_raw_valid=0 + hole_dist_norm</text><line x1="686" y1="130" x2="724" y2="130" stroke="#1d4ed8" stroke-width="1.6" marker-end="url(#h-arr)"></line><rect x="728" y="20" width="312" height="220" rx="6" fill="#eff6ff" stroke="#60a5fa"></rect><text x="742" y="42" fill="#1e3a8a" font-size="12.5" font-weight="600">Step 3 · 3D 骨干内部 Δz_hole 曲率还原</text><path d="M 760 178 Q 792 114 830 106" fill="none" stroke="#0f172a" stroke-width="3"></path><path d="M 936 106 Q 974 114 1006 178" fill="none" stroke="#0f172a" stroke-width="3"></path><line x1="830" y1="106" x2="936" y2="106" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="3 3"></line><path d="M 830 106 Q 883 84 936 106" fill="none" stroke="#1d4ed8" stroke-width="3"></path><line x1="883" y1="106" x2="883" y2="95" stroke="#1d4ed8" stroke-width="1.6" marker-end="url(#h-arr)"></line><circle cx="883" cy="95" r="3.5" fill="#1d4ed8"></circle><text x="844" y="80" fill="#1d4ed8" font-size="10.5" font-family="IBM Plex Mono, monospace">p_ref = p_fill + Δz_hole</text><line x1="748" y1="186" x2="1020" y2="186" stroke="#64748b" stroke-width="2"></line><text x="742" y="206" fill="#1e3a8a" font-size="10.5">· 从两侧瓶壁曲率自动推断中心弧面与法向</text><text x="742" y="224" fill="#334155" font-size="10.5">· 未来接同事专用深度修复后自动退化为全有效深</text></svg></div>
+      <h3>3.1 局部带背景稀疏骨干 12 维输入通道定义</h3>
+      <table>
+        <thead><tr><th>通道名</th><th>维度</th><th>点来源</th><th>归一化规则</th><th>缺失/边界处理</th></tr></thead>
+        <tbody>
+      <tr>
+        <td><code>p_rel = p − μ_vis</code></td>
+        <td class="mono">3</td>
+        <td>目标有效点与几何预填点 + 外扩 75 mm 邻近背景点</td>
+        <td>相机系米制坐标减去目标可见点均值 μ_vis，再除以固定尺度 0.10 m（保留真实物理尺度，严禁缩放到单位球）</td>
+        <td>空洞区先经局部几何预填得到 p_fill（且被传送带平面 z_belt 截断防穿透），再计算 p_rel</td>
+      </tr>
+      <tr>
+        <td><code>n_obs</code></td>
+        <td class="mono">3</td>
+        <td>organized_masked3x3_span3 观测外向法向（补洞点用预填曲面法向）</td>
+        <td>单位向量，统一指向相机外侧（dot(n_obs, -p_cam) > 0）</td>
+        <td>无法计算有效差分法向的孤立点置 [0, 0, 0]，由有效掩码显式区分</td>
+      </tr>
+      <tr>
+        <td><code>g_cam</code></td>
+        <td class="mono">3</td>
+        <td>相机系单位重力方向（顶视固定相机可直接标定为常量）</td>
+        <td>单位向量，广播至局部裁剪内每个点，为 Wrench 力矩与姿态倾斜提供物理基准</td>
+        <td>固定顶视相机恒定有效；训练期围绕重力轴做随机绕 Z 旋转与小幅 ±8° 俯仰扰动增强</td>
+      </tr>
+      <tr>
+        <td><code>is_target</code></td>
+        <td class="mono">1</td>
+        <td>实例分割掩码归属标志</td>
+        <td>1.0 表示当前目标瓶子点（含原始有效点与预填补洞点）；0.0 表示外扩 75 mm 内的传送带/邻近异物点</td>
+        <td>不可缺失，决定 core/lip 区域与外部碰撞区域归属</td>
+      </tr>
+      <tr>
+        <td><code>is_raw_valid</code></td>
+        <td class="mono">1</td>
+        <td>原始传感器深度有效性（Zero-Touch 标识）</td>
+        <td>1.0 表示原始传感器有效深度；0.0 表示实例内透明空洞经几何预填生成的点</td>
+        <td>与 hole_dist_norm 联合使用，告诉 3D 骨干哪些点需要依赖周围几何做隐式表面残差修正</td>
+      </tr>
+      <tr>
+        <td><code>hole_dist_norm</code></td>
+        <td class="mono">1</td>
+        <td>补洞点到最近原始有效目标像素的欧氏距离</td>
+        <td>clip(dist_m / 0.030, 0.0, 1.0)；原始有效点恒为 0.0，距离越远不确定度越高</td>
+        <td>当整只瓶子原始有效点 < min_support_points (100) 时返回 insufficient_support 拒绝推理</td>
+      </tr></tbody>
+      </table>
+      <h3>3.2 V2-Belt70 四区接触几何包络（裁掉 70–150 mm approach）</h3>
+      <table>
+        <thead><tr><th>区域</th><th>径向 ρ</th><th>轴向 z</th><th>点来源</th><th>点数上限</th><th>物理含义</th></tr></thead>
+        <tbody>
+      <tr>
+        <td><strong>core（真空内腔）</strong></td>
+        <td class="mono">ρ ≤ 18 mm</td>
+        <td class="mono">−8 ≤ z ≤ +8 mm</td>
+        <td>仅目标实例（含补洞后修正点）</td>
+        <td class="mono">32 (FPS)</td>
+        <td>检测吸盘内腔是否平整、是否存在压扁深凹陷或大范围低置信空洞</td>
+      </tr>
+      <tr>
+        <td><strong>lip（密封唇环）</strong></td>
+        <td class="mono">18 < ρ ≤ 22 mm</td>
+        <td class="mono">−8 ≤ z ≤ +8 mm</td>
+        <td>仅目标实例（按 8 个 45° 方位扇区循环编码）</td>
+        <td class="mono">64 (8扇区×8)</td>
+        <td>决定 R=20 mm 密封唇一周是否闭合贴合；使用循环卷积/圆谐波避免任意切向角不连续</td>
+      </tr>
+      <tr>
+        <td><strong>cup（吸盘本体）</strong></td>
+        <td class="mono">ρ ≤ 22 mm</td>
+        <td class="mono">−2 ≤ z ≤ +25 mm</td>
+        <td>全局部场景（目标自身仅计 z > +4 mm 突出部）</td>
+        <td class="mono">32 (FPS)</td>
+        <td>检测吸盘裙边与瓶口凸起、相邻瓶身或紧贴传送带的近距离干涉</td>
+      </tr>
+      <tr>
+        <td><strong>mount（安装法兰）</strong></td>
+        <td class="mono">ρ ≤ 28 mm</td>
+        <td class="mono">+25 < z ≤ +70 mm</td>
+        <td>全局部场景（目标自身仅计 z > +4 mm 突出部）</td>
+        <td class="mono">32 (FPS)</td>
+        <td>V2-Belt70 碰撞上界：覆盖吸盘接头与邻近高耸垃圾的干涉（已正式裁掉原 70–150 mm approach 段）</td>
+      </tr></tbody>
+      </table>
+      <h3>3.3 精简解耦输出头规格</h3>
+      <table>
+        <thead><tr><th>输出头</th><th>监督目标</th><th>损失函数</th><th>推理与工程用途</th></tr></thead>
+        <tbody>
+      <tr>
+        <td><strong>q_SW（吸附物理主头）</strong></td>
+        <td class="mono">S20 × W20 ∈ [0, 1]</td>
+        <td>SmoothL1(β=0.05) + 实例内 Top-K 排序损失</td>
+        <td>核心吸附力评分，吸收 UISN 合并 S/W 经验，消除双头乘积误差放大</td>
+      </tr>
+      <tr>
+        <td><strong>p_free（70 mm 局部防碰头）</strong></td>
+        <td class="mono">1 − C_70mm ∈ {0, 1}</td>
+        <td>Focal BCE (γ=1.5)，按 C_self 与 C_ext70 分项统计</td>
+        <td>推理期合成 q_base = q_SW · (p_free)^α（传送带推荐 α∈[0.5, 0.8] 可调，不再误杀好点）</td>
+      </tr>
+      <tr>
+        <td><strong>n_hat（接触外向法向头）</strong></td>
+        <td class="mono">gt_normal ∈ S²（单位外法向）</td>
+        <td>1 − cos(n_hat, n_gt)（在质量有效点与补洞 GT 点上监督）</td>
+        <td>由 3D 多尺度体素直接预测，天然平滑压扁折痕与补洞边缘噪声</td>
+      </tr>
+      <tr>
+        <td><strong>Δz_hole（内置空洞表面修正头）</strong></td>
+        <td class="mono">z_gt − z_fill ∈ [−0.04, +0.04] m</td>
+        <td>Masked SmoothL1（仅在 is_raw_valid=0 且有 GT 深度处计算）</td>
+        <td>仅作用于补洞点：p_refined = p_fill + Δz_hole · d_ray，先修正点云表面坐标再进入四区接触编码</td>
+      </tr>
+      <tr>
+        <td><strong>seal_aux（可选诊断辅助头）</strong></td>
+        <td class="mono">S20 ∈ [0, 1]</td>
+        <td>0.1 × SmoothL1（仅预训练期启用，极低权重）</td>
+        <td>不参与推理排序，仅用于离线分析某次失败是密封不足还是偏心力矩过大</td>
+      </tr>
+      <tr>
+        <td><strong>Δ_θ（目标域偏好残差头）</strong></td>
+        <td class="mono">区域偏好 B⁺ ≻ A⁻（仅 Stage 2 启用）</td>
+        <td>平滑 Bradley-Terry 排序损失 + L2 衰减 λ‖Δ_θ‖²</td>
+        <td>s_final = logit(q_base) + Δ_θ(x)，以极小参数量对现场人类偏好做局部纠偏</td>
+      </tr></tbody>
+      </table>
+
+      <h2 id="s4">04. 两阶段训练配方与 400+ 人工偏好对微调协议</h2>
+      <div class="mono-box">
+        <div># Stage 1 多源预训练联合损失</div>
+        <div>L_pretrain = 1.0·L_SW + 0.6·L_free + 1.5·L_normal + 0.5·L_hole_z + 0.1·L_seal_aux</div>
+        <div style="margin-top:8px"># Stage 2 偏好对残差微调损失（冻结 3D 骨干与 BN）</div>
+        <div>s_final(x) = logit(q_SW(x) · p_free(x)^α) + Δ_θ(x)</div>
+        <div>L_pref(B⁺, A⁻) = -(1−ε)·log σ((s(B⁺) − s(A⁻) − m)/τ) − ε·log σ((s(A⁻) − s(B⁺))/τ)</div>
+        <div>L_finetune = L_pref + 0.8·L_source_replay + 0.02·‖Δ_θ‖²   (ε=0.08, m=0.25, τ=1.0)</div>
+      </div>
+      <table>
+        <thead><tr><th>训练配置项</th><th>Stage 1（多源预训练）</th><th>Stage 2（偏好对残差微调）</th><th>状态说明</th></tr></thead>
+        <tbody>
+      <tr>
+        <td><strong>训练数据源与采样比</strong></td>
+        <td>P0：SuctionNet 瘦身 (~55%) + ClearPose 抽帧 (~45%)；P1 加入 MetaGraspNetV2 / 压扁瓶后按四源均衡采样（单库上限 ≤ 35%）</td>
+        <td>每 Batch 混入 50%–70% Stage 1 源域回放样本 + 30%–50% 目标域偏好对（当前 ~400 帧按瓶子/批次 8:2 切分）</td>
+        <td class="sub">P0 配比已定；具体混采比例可在首轮实验微调</td>
+      </tr>
+      <tr>
+        <td><strong>有效 Batch / 优化器</strong></td>
+        <td>AdamW，有效 Batch = 32 实例，Peak LR = 1e-3，Cosine 衰减 + 5% Linear Warmup，Weight Decay = 1e-4</td>
+        <td>AdamW，有效 Batch = 16（含回放），Residual Head LR = 3e-4，其余解冻层（若有）≤ 5e-5，Weight Decay = 1e-2</td>
+        <td class="sub">推荐起点，与单 L20/H20 显存预算匹配</td>
+      </tr>
+      <tr>
+        <td><strong>参数冻结与 BN 策略</strong></td>
+        <td>全量从头训练；SpConv 启用 singleton_bn_policy=running_stats 防单活动体素崩溃</td>
+        <td>严格冻结 3D 稀疏骨干与全部 BatchNorm running_mean/var/affine，仅训残差头 Δ_θ（数据超 1,500 帧后才考虑微解冻接触融合末层）</td>
+        <td class="sub">强约束（防止 400 帧过拟合与 BN 漂移）</td>
+      </tr>
+      <tr>
+        <td><strong>核心损失权重（参考）</strong></td>
+        <td>1.0·L_SW + 0.6·L_free + 1.5·L_normal + 0.5·L_hole_z + 0.1·L_seal_aux</td>
+        <td>1.0·L_pref(ε=0.08, m=0.25) + 0.8·L_source_replay + 0.02·‖Δ_θ‖²</td>
+        <td class="sub">权重为推荐起点（待首轮验证曲线微调）</td>
+      </tr>
+      <tr>
+        <td><strong>在线几何与空洞增强</strong></td>
+        <td>绕重力 Z 轴 0–360° 旋转、±8° 倾角抖动、±1.5 mm 高斯深度噪声、50% 概率合成椭圆中心透明挖洞（短轴 12–32 mm）</td>
+        <td>轻度绕 Z 旋转与 ±1 mm 深度微扰；严禁对人工偏好对施加会改变相对优劣的大幅裁切或重挖洞</td>
+        <td class="sub">强约束（合成挖洞是让 SuctionNet 学会补洞的关键）</td>
+      </tr>
+      <tr>
+        <td><strong>选模与停止协议</strong></td>
+        <td>按固定独立验证场景（SuctionNet Val + ClearPose Val）的 V2-Belt70 实例 Top-1 通过率与补洞区法向中位误差联合选模</td>
+        <td>按 20% 独立批次验证集的 P(s(B⁺)>s(A⁻))、全局 Top-1 命中人工好区率与源域防掉点三条门槛联合选模</td>
+        <td class="sub">严禁同场景/同批次跨 Train/Val 泄漏</td>
+      </tr></tbody>
+      </table>
+      <h3>4.2 上真机前的四条离线验收门槛</h3>
+      <table>
+        <thead><tr><th>验收指标</th><th>对比基线</th><th>放行门槛</th><th>工程意义</th></tr></thead>
+        <tbody>
+      <tr>
+        <td><strong>成对偏好排序准确率 P(s(B⁺) > s(A⁻))</strong></td>
+        <td>Stage 1 预训练直推基线（记录实测值）</td>
+        <td class="highlight">相对基线显著提升并达到 ≥ 85%（20% 独立批次验证集）</td>
+        <td>确认残差头学到了“人工好区域优于历史差点”的相对排序，而非死记训练帧。</td>
+      </tr>
+      <tr>
+        <td><strong>全局 Top-1 命中人工好区率（≤ 15 mm）</strong></td>
+        <td>Stage 1 预训练直推基线</td>
+        <td class="highlight">净提升 ≥ +15 pp，且 Top-1 落回历史差点 A⁻ (≤10 mm) 比例 < 5%</td>
+        <td>防止模型只在 (A, B) 两点拉开差距，却把整只瓶子最高分选到其它异常边缘。</td>
+      </tr>
+      <tr>
+        <td><strong>源域防遗忘回归（SuctionNet + ClearPose Val）</strong></td>
+        <td>Stage 1 最优检查点 Top-1</td>
+        <td class="highlight">Top-1 掉点 ≤ 1.5 pp，70 mm 碰撞率无明显恶化</td>
+        <td>硬性卡控 400+ 帧微调不破坏多源预训练学到的通用 3D 几何与防碰常识。</td>
+      </tr>
+      <tr>
+        <td><strong>透明瓶中心空洞候选覆盖与表面误差</strong></td>
+        <td>原始未补洞点云（中心覆盖率接近 0%）</td>
+        <td class="highlight">透明瓶中心空洞区有效候选覆盖 ≥ 90%，ClearPose 空洞区 Δz_hole 中位误差 < 4 mm</td>
+        <td>定量验证内置空洞修复真正救回了透明瓶中心区域，且没有把曲面补偏。</td>
+      </tr></tbody>
+      </table>
+
+      <h2 id="s5">05. 代码实现易错细节清单（10 条高危陷阱与测试断言）</h2>
+      
+      <div class="card">
+        <h3>P01 · [数据与标签 / 高危] candidate_row 与 candidate_id 混用错位</h3>
+        <p><strong>易错写法：</strong>用 camera-point 文件里的 candidate_id（原 Mesh 顶点索引，如 2476）去索引 seal_r20["scores"] 或 seal_r20["normals"]。</p>
+        <p><strong>真实后果：</strong>越界报错或静默读到完全错误顶点的 Seal 分数与法向，训练信号彻底污染（原仓库 DATA_SCHEMA.md 已专门警示）。</p>
+        <p><strong>正确实现规范：</strong>索引物体 Seal/Wrench/Collision 数组时严格使用 0-based 的 candidate_row；candidate_id 仅用于追溯原始 CAD 顶点。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>断言 matched_xyz 与 transform(seal.points[candidate_row], T_cam_obj) 的欧氏距离 <= match_radius_m (5 mm)。</p>
+      </div>
+      <div class="card">
+        <h3>P02 · [数据与标签 / 高危] 把 gt_valid=False 的未匹配点误当负样本 0 算损失</h3>
+        <p><strong>易错写法：</strong>对整张点云的所有前景点直接算 MSE/SmoothL1(q_pred, gt_SW)，忽略 gt_valid 掩码。</p>
+        <p><strong>真实后果：</strong>大量本应为高分、仅因采样密度未命中 <=5 mm 匹配半径的表面点被强行压向 0，模型输出整体坍缩偏低。</p>
+        <p><strong>正确实现规范：</strong>质量头与碰撞头损失严格只在 gt_valid=True 点上归约；法向损失严格在 quality_valid & axis_finite 点上归约。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>构造含 50% gt_valid=False 且将对应 gt_SW 填为 NaN 的合成 batch，断言前向/反向 loss 有限且梯度不受其影响。</p>
+      </div>
+      <div class="card">
+        <h3>P03 · [数据与标签 / 高危] MetaGraspNetV2 直接混用原标签或对 989 物体全量算 Seal</h3>
+        <p><strong>易错写法：</strong>直接读取 MetaGraspNetV2 自带的吸盘分数与 SuctionNet 混训，或者对全库 989 个 CAD 全跑一遍 R20 Poisson Seal。</p>
+        <p><strong>真实后果：</strong>混用原标签会导致 R10/Dex-Net 口径与 R20 严重冲突；989 物体全量算 R20 Seal 会浪费数天离线算力在无关小零件上。</p>
+        <p><strong>正确实现规范：</strong>先按尺寸（包围盒最大边 >= 50 mm）与形态筛选 80–120 个瓶/罐/盒/容器类物体，只对精选子集跑 V2-Belt70 R20 Teacher。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>核查所有多源缓存 metadata 中的 radius_m=0.020 与 envelope_max_z_m=0.070 一致，禁止跨口径混装。</p>
+      </div>
+      <div class="card">
+        <h3>P04 · [数据与标签 / 中危] ClearPose / SuctionNet 按帧随机切分造成视角泄漏</h3>
+        <p><strong>易错写法：</strong>把 ClearPose 视频帧或 SuctionNet 256 视角打乱后 8:2 随机划分 Train/Val。</p>
+        <p><strong>真实后果：</strong>验证集包含与训练集仅差几度视角的同一场景，验证指标虚高到 95%+，实际泛化能力完全失真。</p>
+        <p><strong>正确实现规范：</strong>严格按 scene_id / video_sequence_id 分组切分；目标域 400+ 偏好对同样按采集批次/独立瓶子切分验证集。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>断言 set(train_scene_ids).isdisjoint(set(val_scene_ids)) 为 True。</p>
+      </div>
+      <div class="card">
+        <h3>P05 · [透明补洞与几何 / 高危] 内置补洞覆盖原始有效深度（违反 Zero-Touch）或穿透传送带</h3>
+        <p><strong>易错写法：</strong>把整个瓶子 ROI 全部替换成平滑/插值深度图，或不做传送带平面深度下界截断。</p>
+        <p><strong>真实后果：</strong>原本清晰的不透明瓶折痕/凹陷被平滑抹平，20 mm 密封评分误报高分；大空洞插值外推可能掉到传送带背面以下。</p>
+        <p><strong>正确实现规范：</strong>严格执行 D_out = is_raw_valid ? D_raw : clamp_above_belt(D_fill)；Δz_hole 残差头同样只加在 is_raw_valid=0 的补洞点上。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>断言所有 is_raw_valid==1 像素在预处理与 Δz_hole 修正后坐标最大绝对差为 0.0，且所有补洞点到传送带高度 >= 2 mm。</p>
+      </div>
+      <div class="card">
+        <h3>P06 · [透明补洞与几何 / 高危] 外扩局部裁剪小于 70 mm 包络导致 mount 区点云被截断</h3>
+        <p><strong>易错写法：</strong>按目标物体紧致包围盒仅外扩 30 mm 裁剪局部点云，然后去算 z∈(25, 70] mm、ρ≤28 mm 的 mount 区碰撞。</p>
+        <p><strong>真实后果：</strong>瓶子侧面斜着贴近的邻近垃圾或上方 50–70 mm 处的障碍物被提前裁掉，模型学成“盲目无碰撞”。</p>
+        <p><strong>正确实现规范：</strong>计算目标 3D AABB（含补洞后范围）并向 6 个方向统一外扩 ≥ 75 mm（同时保留传送带表面点），确保 70 mm 碰撞包络内零截断。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>对任意目标表面点 p 与任意合法外法向 n，断言圆柱 (ρ≤28 mm, z∈[-2,70] mm) 完整落入局部裁剪 AABB 内部。</p>
+      </div>
+      <div class="card">
+        <h3>P07 · [透明补洞与几何 / 高危] 候选采样器在透明瓶上仍被边缘原始点占满，中心补洞区无种子</h3>
+        <p><strong>易错写法：</strong>沿用只在原始有效点上做 FPS 的候选采样器，或把全部补洞点与原始点不加区分混抽导致极端失衡。</p>
+        <p><strong>真实后果：</strong>若只在原始点抽样，即便做了补洞，透明瓶正中心依然没有候选种子进入接触头打分。</p>
+        <p><strong>正确实现规范：</strong>采用双配额分层候选池（256 种子）：在实例 2D 包围盒内按 bit-reversed Morton 16×16 网格分层采样，网格内若中心为补洞点同样允许入池，并记录该候选的 is_raw_valid 与 hole_dist_norm。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>在中心挖出半径 25 mm 圆洞的合成瓶测试样例上，断言至少 15% 候选种子落在原空洞区域内。</p>
+      </div>
+      <div class="card">
+        <h3>P08 · [骨干与接触头 / 高危] 外向法向与接近方向符号翻转，以及切向坐标基极点不连续</h3>
+        <p><strong>易错写法：</strong>训练时用外向法向，推理算碰撞圆柱时按接近方向反向取 z；或在接触头直接把任意构造的局部切向 (u, v) 坐标喂给 MLP。</p>
+        <p><strong>真实后果：</strong>接触包络朝瓶子内部反插导致碰撞率飙升；(u, v) 在 n_z 接近 ±1 处跳变破坏旋转等变性（Route A/B 复盘核心教训）。</p>
+        <p><strong>正确实现规范：</strong>全管线统一定义 n 为指向物体外部的单位法向（固定顶视下 dot(n, -ray) > 0）；lip 环带仅使用旋转不变的 (ρ, h) + 8 扇区循环 Conv1d / 圆谐波，不输入任意切向坐标。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>将同一测试实例绕相机 Z 轴旋转 90° 与 180°，断言各候选点 q_SW 与 p_free 预测差值 < 1e-4。</p>
+      </div>
+      <div class="card">
+        <h3>P09 · [偏好对微调 / 高危] 人工点击透明瓶中心好点 B 被 <=5 mm 原始深度门控静默丢弃</h3>
+        <p><strong>易错写法：</strong>沿用原仓库 score_at_pose 的“查询点 5 mm 内必须有有效原始深度点”检查来处理目标域人工点击点 B。</p>
+        <p><strong>真实后果：</strong>最值钱的透明瓶中心纠偏样本全部被静默 skip，微调集实际上只剩不透明瓶样本。</p>
+        <p><strong>正确实现规范：</strong>标注工具直接存 RGB 像素坐标 (u_B, v_B)；微调查询时走内置几何预填 + Δz_hole 修正后的统一表面点云，并取半径 5–8 mm 同面邻域 B⁺ 聚合打分（历史差点 A 保持原记录 (p_plan, n_plan) 不篡改）。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>构造 B 落在深度全 0 空洞中心的真实目标域样本，断言 B⁺ 有效点数 > 0 且偏好损失产生非零有效梯度。</p>
+      </div>
+      <div class="card">
+        <h3>P10 · [偏好对微调 / 高危] 400 帧小样本微调未冻结 SpConv BN 或未做源域回放</h3>
+        <p><strong>易错写法：</strong>微调期直接 model.train() 解冻全网并只喂 400 帧目标域偏好对。</p>
+        <p><strong>真实后果：</strong>BatchNorm running stats 被小 batch 瞬间带偏，且网络为迎合 400 对局部点击迅速忘光源域 3D 几何常识，复现之前“微调后观感反而不如预训练”的倒退。</p>
+        <p><strong>正确实现规范：</strong>微调期强制 backbone.eval() 且冻结全部 BN running stats/affine，仅更新轻量残差头 Δ_θ，每步强混 50%–70% Stage 1 源域回放样本。</p>
+        <p class="mono-box"><strong>单元测试断言：</strong>对比微调 100 步前后骨干全部参数与 BN running_mean/var，断言最大绝对变化 == 0.0。</p>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

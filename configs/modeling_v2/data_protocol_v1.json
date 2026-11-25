@@ -1,0 +1,289 @@
+{
+  "schema": "plan_v1",
+  "protocol_version": "modeling_v2_data_protocol_v1",
+  "artifact_kind": "asset_plan_and_preflight",
+  "training_ready": false,
+  "seed": 42,
+  "units": {
+    "length": "m",
+    "pixel_order": "u_v"
+  },
+  "suctionnet": {
+    "dataset_release": "SuctionNet-1Billion / original GraspNet scene layout",
+    "source_git_revision": null,
+    "split_key": "scene_id",
+    "train_scenes": [
+      0,
+      89
+    ],
+    "dev_scenes": [
+      90,
+      99
+    ],
+    "reserved_test_scenes": [
+      100,
+      189
+    ],
+    "cameras": [
+      "kinect",
+      "realsense"
+    ],
+    "view_ids": [
+      0,
+      16,
+      32,
+      48,
+      64,
+      80,
+      96,
+      112,
+      128,
+      144,
+      160,
+      176,
+      192,
+      208,
+      224,
+      240
+    ],
+    "expected_selected_camera_frames": {
+      "train": 2880,
+      "dev": 320,
+      "total": 3200
+    },
+    "audit_reserved_test": false
+  },
+  "clearpose": {
+    "dataset_release": "ClearPose / ECCV 2022 public layout",
+    "source_git_revision": null,
+    "split_key": "set_id/scene_id",
+    "official_train_scenes": {
+      "set1": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "set4": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "set5": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "set6": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "set7": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    "dev_scenes": [
+      "set1/scene4",
+      "set4/scene5",
+      "set5/scene5",
+      "set6/scene5",
+      "set7/scene5"
+    ],
+    "max_camera_frames_per_scene": 96,
+    "selection": "sorted_numeric_depth_ids_center_quantile_floor",
+    "expected_camera_frame_budget": {
+      "train": 1824,
+      "dev": 480,
+      "total": 2304
+    },
+    "reserved_test_patterns": [
+      "set1/scene5",
+      "set4/scene6",
+      "set5/scene6",
+      "set6/scene6",
+      "set7/scene6",
+      "set2/scene*",
+      "set3/scene*",
+      "set8/scene*",
+      "set9/scene*"
+    ],
+    "audit_reserved_test": false
+  },
+  "geometry": {
+    "radius_m": 0.02,
+    "lip_inner_radius_m": 0.018,
+    "lip_outer_radius_m": 0.022,
+    "cup": {
+      "z_min_m": -0.002,
+      "z_max_m": 0.025,
+      "radius_m": 0.022
+    },
+    "mount": {
+      "z_min_exclusive_m": 0.025,
+      "z_max_m": 0.07,
+      "radius_m": 0.028
+    },
+    "crop_margin_m": 0.08,
+    "delta_z_bound_m": 0.04,
+    "raw_min_support_points": 100,
+    "hole_dist_scale_m": 0.03,
+    "train_query_count": 128,
+    "inference_query_count": 256,
+    "voxel_size_m": 0.002
+  },
+  "preference": {
+    "split_key": "connected_component_of_bottle_id_and_collection_batch_id",
+    "seed": 42
+  },
+  "preflight": {
+    "checks": [
+      "selected_path_exists",
+      "regular_file",
+      "nonzero_file_size"
+    ],
+    "does_not_check": [
+      "image_or_array_decode",
+      "dtype_and_shape",
+      "finite_values",
+      "camera_calibration",
+      "pose_conventions",
+      "unit_conversion",
+      "CAD_and_instance_correspondence",
+      "support_plane_and_gravity",
+      "R20_teacher_labels",
+      "hole_geometry",
+      "training_readiness"
+    ]
+  },
+  "implementation_contract": {
+    "status": "production_implementation_target",
+    "executed_by_plan_or_audit": false,
+    "note": "These values specify future production conversion and model-facing contracts. The plan/audit tool records them only; file preflight does not implement or validate them.",
+    "candidate_bank": {
+      "max_unique_uv": 1024,
+      "grid_hw": [
+        16,
+        16
+      ],
+      "cell_order": "8bit_bit_reversed_Morton",
+      "raw_quota_fraction_if_both_pools_sufficient": 0.5,
+      "hole_quota_fraction_if_both_pools_sufficient": 0.5,
+      "pool_order": "raw_hole_interleaved_with_refill",
+      "train_query_prefix": 128,
+      "inference_query_cap": 256,
+      "duplicate_padding_is_valid": false
+    },
+    "local_fill": {
+      "mask_connectivity": 8,
+      "depth_reference_support_cap": 16,
+      "support_search_radius_m": 0.03,
+      "max_support_points": 128,
+      "quadratic_min_support_points": 12,
+      "quadratic_required_rank": 6,
+      "idw_min_support_points": 6,
+      "min_covered_quadrants": 3,
+      "max_weighted_design_condition_number": 1000000.0,
+      "max_depth_fit_rms_m": 0.003,
+      "prediction_support_depth_range_padding_m": 0.01,
+      "idw_distance_regularizer_m": 0.002,
+      "support_depth_jump_barrier_m": 0.01,
+      "allow_filled_points_as_support": false,
+      "support_order": "distance_then_pixel_id"
+    },
+    "synthetic_hole": {
+      "train_draw_probability": 0.5,
+      "clearpose_enabled_in_p0": false,
+      "ellipse_count_range": [
+        1,
+        2
+      ],
+      "short_axis_full_diameter_range_m": [
+        0.012,
+        0.032
+      ],
+      "long_to_short_axis_ratio_range": [
+        1.0,
+        2.0
+      ],
+      "angle_range_degrees": [
+        0.0,
+        180.0
+      ],
+      "max_removed_fraction_of_original_valid_target_pixels": 0.4,
+      "min_retained_original_valid_target_pixels": 100,
+      "max_resampling_attempts": 10,
+      "failed_resampling_action": "keep_original_draw_and_record_reason",
+      "random_seed": 42,
+      "random_identity_fields": [
+        "manifest_sample_ordinal",
+        "epoch",
+        "draw_index"
+      ]
+    },
+    "canonical_pose_supervision_gates": {
+      "quality_max_position_error_m": 0.005,
+      "quality_max_normal_angle_degrees": 30.0,
+      "collision_max_position_error_m": 0.002,
+      "collision_max_normal_angle_degrees": 5.0,
+      "detach_gates": true,
+      "meaning": "approximate_canonical_supervision_not_collision_invariance",
+      "final_evaluation_requires_exact_predicted_pose_teacher": true
+    },
+    "support_plane": {
+      "filled_point_min_height_m": 0.002,
+      "background_object_mask_exclusion_dilation_px": 5,
+      "ransac_distance_threshold_m": 0.003,
+      "ransac_max_hypotheses": 2000,
+      "min_inlier_points": 500,
+      "min_inlier_ratio": 0.7,
+      "max_inlier_residual_p95_m": 0.004
+    },
+    "supervision_geometry": {
+      "gt_target_mask_erosion_px": 2,
+      "self_cup_min_height_exclusive_m": 0.004,
+      "collision_boundary_roundoff_tolerance_m": 1e-12,
+      "collision_index_voxel_size_m": 0.003,
+      "collision_index_voxel_replaces_final_geometry": false,
+      "seal_angular_bins": 72,
+      "seal_norm_percentiles": [
+        1,
+        99
+      ],
+      "wrench_mass_kg": 1.0,
+      "wrench_gravity_m_s2": 9.8,
+      "wrench_k": 15.6
+    },
+    "rigid_augmentation": {
+      "yaw_about_gravity_degrees": [
+        0.0,
+        360.0
+      ],
+      "tilt_degrees": [
+        -8.0,
+        8.0
+      ],
+      "transform_observations_labels_gravity_and_plane_together": true,
+      "physical_scale_augmentation_enabled": false
+    },
+    "contact_on_target": {
+      "max_surface_distance_m": 0.005,
+      "required_for_top1_success": true,
+      "check_instance_and_contact_surface": true
+    },
+    "crop_endpoint_strategy": "plane_clamped_residual_endpoints_in_original_camera",
+    "rigid_aug_residual": "R @ (p_fill + delta_z_original_camera * ray_z1) + t",
+    "difficulty_filter": "tag_only",
+    "depth_only_missing_plane_policy": "quarantine_not_consumed_by_p0_main_path"
+  }
+}

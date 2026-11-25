@@ -2,6 +2,12 @@
 
 面向 **半径 20 mm 单吸盘**的 SuctionNet 数据制作、公开数据预训练与少量自有场景微调项目。
 
+## 当前开发：模型化方案 2（V2-Belt70）
+
+开发分支：`modeling/plan2-belt70`。历史 E5、A/B 与优化工作已收拢到 `main`。本分支先完成[数据处理实施文档](docs/modeling_v2/DATA_IMPLEMENTATION.md)、[固定协议配置](configs/modeling_v2/data_protocol_v1.json)、可运行的资产清单/预检工具和几何参考检查。
+
+从[方案 2 入口](docs/modeling_v2/README.md)开始。P0 为 SuctionNet + ClearPose；新切分、补洞、80 mm 保守裁剪、完整场景 C70 和 canonical 标签姿态独立版本管理。真实多源生产转换与模型训练仍按实施文档的开发任务推进，不把历史 A/B teacher 当作新方案已经实现。
+
 当前已纳入的数据流程：SuctionNet 10 mm 标签对照（G0）→ 20 mm Seal 重标注（G1）→ 场景 Wrench/Collision → 每帧 RGB-D 点云与吸取候选映射 → GT-A/GT-B → 数据质量检查（G2）。
 
 **当前实验状态（2026-11-18，北京时间）：** E0–E5 六组从头预训练均已完成，每组230,400有效样本及10次固定开发验证。按预定Top-1主指标采用 **E5 best step2880**；由它初始化的真实场景微调也已完成，当前采用 **step1000**，固定399条历史规划动作验证AUROC由0.6215提高到0.7121。两模型各401帧新候选的推理记录已发布；它们尚不代表新策略实际吸取成功率。完整数据见[实验资料](docs/experiments/CD010-20261117/README.md)，模型选择、模块收益、微调轨迹和动作变化见[独立分析报告](docs/experiments/CD010-20261117/analysis/RESULTS_ANALYSIS.md)。历史训练硬件配方与启动命令继续保留在[选定正式配方](docs/SELECTED_PRETRAINING_RECIPE.md)和[开训记录](docs/performance/CD010_SELECTED_TRAINING_START.md)。
