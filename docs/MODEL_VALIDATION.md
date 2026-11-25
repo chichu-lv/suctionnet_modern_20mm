@@ -1,5 +1,11 @@
 # 模型验证与当前训练状态
 
+## 2026-11-25 A/B 分支收拢联合验证
+
+两条路线及各自最新优化已收拢到同一基线，旧分支 head 与冲突处理见 [分支收拢记录](BRANCH_CONSOLIDATION_20261125.md)。A/B 专属实现保持各自优化版本，共同数据/训练/缓存代码保留一致版本，E0–E5 与主线无内容校验和约束保留。
+
+本地联合套件 `python -m pytest -q --ignore=tests/test_prefetch.py` 为 **1,027 passed / 1 skipped（177.66 秒）**；`test_prefetch.py` 内两项不依赖真实 spawn 的关闭/错误传播测试另有 **2 passed**。唯一条件 skip 需要真实 R20 发布路径。完整套件曾实际尝试，但旧 DataLoader spawn 测试重现已记录的 `_try_get_data` 阻塞；未修改该测试，不宣称完整 CI 通过。noSHA 60 项另行通过且包含于联合套件，不累计重复覆盖。具体环境、命令和最终远端 CI 核对边界见收拢记录。
+
 ## 2026-11-19 L20三分钟实测后的冷路径与只读缓存优化
 
 本轮代码基线 A `4809d6b39ecf11dc31c0ae14c08acdb316be2e46`、B `d1c600b1b8ee81f49c9b988c51e217a311699e3b`。用户提供17:30:08–17:33:08、L20 GPU2/GPU3、预热2步、batch32的180秒窗口，A13.51/B29.51实例每秒，数据等待86.7%/49.9%。服务器原始文件在当前工作区不可访问；[转录记录](../research/instance_runs/20261119/l20-window180-user-reported.json)明确标为用户提供，未确认测试commit或缓存启用，未将其当作本轮代码的GPU复测。最新命令、缓存预算/覆盖与配对步骤见 [L20执行文档](instance_routes/L20_PIPELINE_OPTIMIZATION.md)。
@@ -113,7 +119,7 @@ A 的批量邻居关联在 15,000 支撑点、2,048 主干点下由 **187.740 ms
 
 本地环境Python3.12.14、PyTorch2.5.1+cpu、NumPy2.3.5。新测试覆盖真实teacher合成资产、v3法向/嵌套回填、A CPU注入backbone与完整梯度、B实际GN18网络和投影门控、未知标签损失、阶段BN冻结、优化器/采样/RNG恢复、checkpoint和动作来源身份、NMS及精确SE(3)。A没有在本环境执行真实SpConv/CUDA。全部测试用合成或内存数据，不宣称取得真实数据准确率或机器人成功率。
 
-B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照；每步8个train查询、test完整256候选、RGB增强开启。模型126个张量、优化器、采样器、Python/NumPy/Torch及增强RNG逐项完全相同；7条build后训练/推理/评价CLI成功。无标签缓存与原始RGB-D的Top5输出逐字段相同，SE(3)合法。best停在step1，last在step2，报告清楚区分test_selected与budget_endpoint_or_progress。小汇总在[B分支验证记录](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/CPU_INTEGRATION.json)；脚本级复现也由 `tests/test_instance_route_b_integration.py`覆盖。
+B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照；每步8个train查询、test完整256候选、RGB增强开启。模型126个张量、优化器、采样器、Python/NumPy/Torch及增强RNG逐项完全相同；7条build后训练/推理/评价CLI成功。无标签缓存与原始RGB-D的Top5输出逐字段相同，SE(3)合法。best停在step1，last在step2，报告清楚区分test_selected与budget_endpoint_or_progress。小汇总在[B分支验证记录](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e6d9578f5fb39174cf9a81c769672800c06a9306/docs/instance_routes/route_b/CPU_INTEGRATION.json)；脚本级复现也由 `tests/test_instance_route_b_integration.py`覆盖。
 
 本地联合快照回归为 **481 passed / 21 skipped / 1 deselected**（38.99s）；命令排除 `tests/test_prefetch.py`，并跳过 `test_prefetched_trainer_preserves_ordinary_sequence_and_resume`，这些多进程预取路径交由实际GitHub checkout中的完整CI验证。真实release/GPU等条件项仍按测试自身条件skip。原地初次快照缺Git元数据造成的旧测试失败已通过建立本地测试快照解决，不修改旧训练器。本地新代码测试与远端分支CI状态分别登记，不把旧129项NumPy参考或历史E5测试计数冒充新模型运行。完整真实source/target训练、A GPU稀疏骨干、部署时延与TensorRT导出均未执行。该轮旧checkpoint记录过摘要身份；当前运行按上方无内容校验和规则保存实际配置/数据/teacher定义，FT保存源checkpoint路径/大小和test选择来源。
 
@@ -132,7 +138,7 @@ B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照�
 
 ## 2026-11-18 A/B 独立分支实施文档
 
-从共同的 [v3 设计及架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分别整理 [A：route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) 与 [B：route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)。每条路线提供六篇实施计划及一个总入口，覆盖数据准备、预处理、模型设计、后处理、训练和实验。
+从共同的 [v3 设计及架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分别整理 [A：route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/59e05c0934bf07ea5c6fb47818c61966b3c8bb02/docs/instance_routes/route_a/README.md) 与 [B：route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e6d9578f5fb39174cf9a81c769672800c06a9306/docs/instance_routes/route_b/README.md)。每条路线提供六篇实施计划及一个总入口，覆盖数据准备、预处理、模型设计、后处理、训练和实验。
 
 本轮文档审查核对了划分/标签身份、输入及头部维数、精确历史姿态、预算与损失归约、冻结/恢复、排序/NMS、指标分母、实验阶段和导出边界。A 的 teacher 步骤明确保留 raw Seal 到冻结归一化 S20 的转换；B 明确支持摘要按每半径两字段交错、raw 摘要按每区域四字段排列。
 
@@ -153,7 +159,7 @@ B额外运行实际CLI：source暂停1步→恢复至2步，与连续2步对照�
 
 主线共用旧运行链路的16组回归为 **268 passed / 1 skipped（11.07s）**；覆盖新旧pretrain恢复、optimizer/RNG连续性、微调、备份、导出、截断与配置冲突。唯一skip需要真实 `R20_RELEASE_ROOT`。永久禁用门禁的 **60项测试通过**；原生扩展用GCC成功重编译，数组对照直接比较实际数值。最终各分支完整CI以提交的Actions结果为准，本地合成检查不等于真实GPU或全量数据训练。
 
-A/B实例模型仍分别位于 [A分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) 和 [B分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings)，该次主线尚未合入实例模型；这是 2026-11-18 的历史状态。
+A/B实例模型仍分别位于 [A分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/59e05c0934bf07ea5c6fb47818c61966b3c8bb02) 和 [B分支](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/e6d9578f5fb39174cf9a81c769672800c06a9306)，该次主线尚未合入实例模型；这是 2026-11-18 的历史状态。
 
 
 ## E5完整测试与公开方法对比（2026-11-18）

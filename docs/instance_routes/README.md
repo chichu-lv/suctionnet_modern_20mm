@@ -2,7 +2,7 @@
 
 > **最新性能执行入口（2026-11-19）：** [L20三分钟实测后的优化与执行说明](L20_PIPELINE_OPTIMIZATION.md)，包括A/B优化分支、独立源NPY/静态几何缓存构建、磁盘预算、原生版本与命中检查，以及180秒完整更新配对。该优化不要求重新从头训练。
 
-> **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（各在对应分支），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
+> **2026-11-19：H20 从头训练方案**已新增独立配置 `configs/instance_a_h20.yaml` / `configs/instance_b_h20.yaml`（现已同处收拢基线），采用真实微批 32、140000 个有效实例、4375 次更新、BF16 密集网络与持久 spawn 预取。启动、压测、精度边界与样本预算见 [H20_FROM_SCRATCH.md](H20_FROM_SCRATCH.md)。本页原 `instance_a.yaml` / `instance_b.yaml` 的单实例配方仍用于既有运行；新配置不直接续训旧检查点。
 
 本规范定义单物体 RGB-D 吸取的两条实现路线：A复用稀疏3D骨干与物理接触分组；B采用共享2D图像编码、逐查询语义特征及投影环带读取。两者对明确的接触中心和有向轴预测Seal、Wrench、保留目标自碰的实例质量及历史规划动作成败。
 
@@ -12,12 +12,12 @@
 
 生产代码审查基线为 [`87f29d2`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。初稿保留在 [`e495fd8`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/e495fd89678b5f696e1819437fef5ced5103aa57)；v2修订保留在 [`8e63e92`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/8e63e925bc54c442e8b5df6422ed51a69ce73fc1)；本页及子文档以v3为准。[逐项复核与修正](REVIEW_AND_CORRECTIONS.md)说明初稿缺陷和v2决策；[v3几何边界复核](BOUNDARY_REVIEW.md)说明本次四项修订、数值反例与限制。
 
-## 分支实施入口
+## 收拢后的实施入口
 
-- **A：稀疏 3D + RGB** — [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) / [六部分实施文档](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md)。
-- **B：共享二维编码 + 投影环带** — [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) / [六部分实施文档](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)。
+- **A：稀疏 3D + RGB**：[六部分实施文档](route_a/README.md)。
+- **B：共享二维编码 + 投影环带**：[六部分实施文档](route_b/README.md)。
 
-两分支共同起点为包含本规范及方法图的 `a9f4a8451c6bc42cfd8867dd96c051398644ad71`。路线目录只组织各自实施步骤，公共数据/teacher/查询/训练/评价仍以本目录共同文件为准；共同变更需要同步相同版本。两边的源域次级 selected-Q 选模统计已在共同训练页明确为相同的三层宏平均，`no_pose=0`，未知 teacher 标签不作为零质量。
+2026-11-25 已将共同设计、两路线实现及最新优化收拢，详情见 [分支收拢记录](../BRANCH_CONSOLIDATION_20261125.md)。路线目录组织各自实施步骤，公共数据/teacher/查询/训练/评价以本目录共同文件为准。源域次级 selected-Q 继续使用相同三层宏平均，`no_pose=0`，未知 teacher 标签不作为零质量。
 
 ## 1. 阅读和执行顺序
 
@@ -100,4 +100,3 @@ v3进一步处理：水平吸取时的显式局部角向信息不足；理想环
 5. 报告native INST、历史动作分类、候选覆盖及端到端成本；[公开仅半径协议待定](PUBLIC_METHOD_COMPARISON.md)，不把native结果填成论文AP。
 
 v3设计参考共129项数学/schema检查保留；新代码测试和B实际CNN合成资产链路见[验证说明](../MODEL_VALIDATION.md)。完整真实数据重算/训练和GPU性能仍待执行。
-

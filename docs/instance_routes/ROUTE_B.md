@@ -2,7 +2,7 @@
 
 方法图入口：[三面板架构图、双语图注与关键维度](METHOD_ARCHITECTURE_B.md) · [SVG](../figures/instance-route-b-architecture.svg) · [PDF](../figures/instance-route-b-architecture.pdf)。
 
-本文替换 B v1 的 U-Net 加逐候选切平面栅格方案。基线仓库为 suctionnet_modern_20mm@87f29d29bea8fa5153d6df3f8253d9ced9e4b441；旧设计留存于 [e495fd8](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e495fd89678b5f696e1819437fef5ced5103aa57/docs/instance_routes/ROUTE_B.md)，不作为另一条同时维护的默认路线。**B模型、共同实例数据/teacher与新训练器已实现，已验证CPU合成输入前向/反向与边界行为；真实完整训练、GPU时延和部署引擎尚未完成。** 执行入口为[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md)，模型位于 `models/instance_route_b.py`，运行配置为 `configs/instance_b.yaml`。公共定义见[数据与标签](DATA_AND_LABELS.md)与[训练复现](TRAIN_EVAL_REPRODUCE.md)。
+本文替换 B v1 的 U-Net 加逐候选切平面栅格方案。基线仓库为 suctionnet_modern_20mm@87f29d29bea8fa5153d6df3f8253d9ced9e4b441；旧设计留存于 [e495fd8](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e495fd89678b5f696e1819437fef5ced5103aa57/docs/instance_routes/ROUTE_B.md)，不作为另一条同时维护的默认路线。**B模型、共同实例数据/teacher与新训练器已实现，已验证CPU合成输入前向/反向与边界行为；真实完整训练、GPU时延和部署引擎尚未完成。** 执行入口为[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e6d9578f5fb39174cf9a81c769672800c06a9306/docs/instance_routes/route_b/README.md)，模型位于 `models/instance_route_b.py`，运行配置为 `configs/instance_b.yaml`。公共定义见[数据与标签](DATA_AND_LABELS.md)与[训练复现](TRAIN_EVAL_REPRODUCE.md)。
 
 ## 1. 本次结构修正及路线边界
 
@@ -240,7 +240,7 @@ q_inst 监督 Q_inst20=S20·W20·(1−C_self)。q_sw 只作为独立缓存物理
 
 源域只对本 query 姿态的有效 teacher 标签计算损失。默认使用共同候选清单前128项，teacher 生成、缓存身份、仅自碰物理定义、样本预算与验证频率见共同文档。颜色增强在全局图和原生纹理图共享同一实例级参数；相位增强只改变环采样，不改 teacher 姿态。
 
-本轮直接从头使用source scene 0–99全部100场景，固定140000个成功受监督实例/8750次更新；不再拆90/10或追加final refit。每875成功步在test scene 100–189各固定8帧上选best，8750步共10次，checkpoint与该成绩明确标记 `test_selected`、非独立测试估计，同时保存预算终点last。选择帧固定为0、32、64、96、128、160、192、224，scope为fixed_test_subset；每875步另存last进度。训练后用独立CLI评价固定best的完整test，不重新选模。目标域仍按1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”已设为deferred，不是开训门槛；论文对比表保持B待测，不能用test-selected实例指标代替公开AP。可运行命令与身份见[训练方案](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/TRAINING_PLAN.md)。
+本轮直接从头使用source scene 0–99全部100场景，固定140000个成功受监督实例/8750次更新；不再拆90/10或追加final refit。每875成功步在test scene 100–189各固定8帧上选best，8750步共10次，checkpoint与该成绩明确标记 `test_selected`、非独立测试估计，同时保存预算终点last。选择帧固定为0、32、64、96、128、160、192、224，scope为fixed_test_subset；每875步另存last进度。训练后用独立CLI评价固定best的完整test，不重新选模。目标域仍按1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”已设为deferred，不是开训门槛；论文对比表保持B待测，不能用test-selected实例指标代替公开AP。可运行命令与身份见[训练方案](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/e6d9578f5fb39174cf9a81c769672800c06a9306/docs/instance_routes/route_b/TRAINING_PLAN.md)。
 
 目标域对历史 p_plan、n_plan 计算一次 BCEWithLogits。actual_execution_verified=false 意味着标签可能包含落点、跟踪和执行误差，不能把单点监督写成真实执行位姿已知。轻度毫米/角度微扰只作为需预注册、在验证集评估的鲁棒正则，遵循共同训练说明；不恢复半径20 mm的标签扩散。
 

@@ -8,7 +8,7 @@
 
 路线 A 保留稀疏 3D 骨干，在目标物体的可见 RGB-D 上预测指定接触姿态的 Seal、Wrench、含目标自碰约束的实例质量，以及历史规划动作成败。它不输入其它物体或场景背景。共同数据、法向、查询和 teacher 定义见 [DATA_AND_LABELS.md](DATA_AND_LABELS.md)，训练与评价见 [TRAIN_EVAL_REPRODUCE.md](TRAIN_EVAL_REPRODUCE.md)。
 
-既有生产代码基线为 [`87f29d29`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。A分支的v3模型 `InstanceSuction3D` 已实现在 `models/instance_route_a.py`，确定性几何、共同实例builder/teacher、新训练及原生推理评价也已接线；运行配置为 `configs/instance_a.yaml`，详见[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md)。**13项CPU模型/几何测试使用显式注入的测试backbone；真实SpConv/GPU、完整真实训练和时延尚未验证。** [route_a.json](reference/route_a.json) 继续作为设计合同；旧E5输入与checkpoint不能直接恢复为新模型。
+既有生产代码基线为 [`87f29d29`](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/87f29d29bea8fa5153d6df3f8253d9ced9e4b441)。A分支的v3模型 `InstanceSuction3D` 已实现在 `models/instance_route_a.py`，确定性几何、共同实例builder/teacher、新训练及原生推理评价也已接线；运行配置为 `configs/instance_a.yaml`，详见[实施卷宗](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/59e05c0934bf07ea5c6fb47818c61966b3c8bb02/docs/instance_routes/route_a/README.md)。**13项CPU模型/几何测试使用显式注入的测试backbone；真实SpConv/GPU、完整真实训练和时延尚未验证。** [route_a.json](reference/route_a.json) 继续作为设计合同；旧E5输入与checkpoint不能直接恢复为新模型。
 
 v2已经保留目标自碰、移除全量逐点PCA及任意切向坐标输入，并增加覆盖诊断和原始RGB旁路。v3进一步为水平吸取的局部无序集合补充中心化高度圆谐波摘要；共同法向与候选回填遵循新的v3规范。物理目标定义未变，仍使用 `gt_INST20_pose_v2`，而输入/法向/查询身份需要更新。
 
@@ -84,7 +84,7 @@ teacher 始终对实际参与监督的同一 `(p_cam_m,n_out_cam)` 计算 S、W�
 
 **v2生成器把目标和外部场景碰撞拆开**：保留目标密封腔与目标包络检查，删除仅对其它实例/环境做的检查，再生成 `q_inst=S*W*(1-C_self)`。Seal和Wrench复用 `seal_at_pose`、`wrench_scores_dual` 的冻结定义。生成器已实现在 `suction20/instance_teacher.py`，缓存schema与执行合同见 [DATA_AND_LABELS.md](DATA_AND_LABELS.md)；真实完整资产重算尚未运行。
 
-旧 `evaluate_poses` 是核对同姿态S/W及原完整协议的参考路径，仍会计算外部碰撞；原v1中仅丢弃C、生成SW的示例不再作为生产标签命令。现有 `scripts/build_instance_dataset.py` 直接接新teacher，完整命令见[数据准备](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/DATA_PREPARATION.md)。[既有任意姿态评价器](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/eval_r20.py)
+旧 `evaluate_poses` 是核对同姿态S/W及原完整协议的参考路径，仍会计算外部碰撞；原v1中仅丢弃C、生成SW的示例不再作为生产标签命令。现有 `scripts/build_instance_dataset.py` 直接接新teacher，完整命令见[数据准备](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/59e05c0934bf07ea5c6fb47818c61966b3c8bb02/docs/instance_routes/route_a/DATA_PREPARATION.md)。[既有任意姿态评价器](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/87f29d29bea8fa5153d6df3f8253d9ced9e4b441/suction20/eval_r20.py)
 
 先用固定少量真实场景/帧比较新旧 S/W一致性、目标碰撞组成和每查询耗时，再按128查询训练清单生成缓存。缓存按观测/查询身份去重复用并允许断点续建；不预先重算所有训练帧的256查询。改变法向、点位置、工具几何或容差必须改变缓存身份。旧参考工具的SW校验只覆盖其明确声明的schema，不能冒充已验证的自碰teacher。
 
@@ -210,7 +210,7 @@ scores = model.score_at_pose(encoded, p_cam_m, n_out_cam, query_batch_index)
 
 历史动作默认以原 `planned_pipeline_contact` 的一个task logit计算一次BCEWithLogits，源回放系数0.5。`actual_execution_verified=false`意味着输出应解释为给定规划命令及观测的成败概率，不是已知真实执行落点的成功概率。只有完全缺少合法几何关联的动作才跳过并报告原因；不能仅因 `Fq` 缺失就删除历史样本。
 
-本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每875成功步在test scene 100–189各固定8帧上选best，8750步共10次，明确 `test_selected`、非独立测试估计，同时保留预算终点last。选择帧固定为0、32、64、96、128、160、192、224，scope为fixed_test_subset；每875步另存last进度。训练后用独立CLI评价固定best的完整test，不重新选模。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/TRAINING_PLAN.md)
+本轮从头直接使用source scene 0–99全部100场景，固定140000成功实例暴露/8750次更新；每875成功步在test scene 100–189各固定8帧上选best，8750步共10次，明确 `test_selected`、非独立测试估计，同时保留预算终点last。选择帧固定为0、32、64、96、128、160、192、224，scope为fixed_test_subset；每875步另存last进度。训练后用独立CLI评价固定best的完整test，不重新选模。目标仍为1676 train/399 val/87 test，val选微调best。公开评价“只参数化半径”为deferred，不是开训门槛；实例test成绩不填公开AP表。[实际训练命令](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/59e05c0934bf07ea5c6fb47818c61966b3c8bb02/docs/instance_routes/route_a/TRAINING_PLAN.md)
 
 轻度位姿微扰是可选正则，按共同训练规范启用，默认关闭；不能复制S/W标签到新姿态，也不把一个动作拆成多个独立成败样本。前200步和后800步的参数组必须覆盖本模型的实际新增层，不照搬旧E5组名。
 

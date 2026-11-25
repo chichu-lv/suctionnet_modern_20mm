@@ -239,4 +239,3 @@ source评价保留少支持/无输出实例的失败分母；所需teacher标签
 运行 `python -m pytest -q`。新的 `tests/test_instance_*.py`覆盖几何、缓存、teacher、真实B网络前后向、A显式测试骨干、损失、参数冻结、精确resume和CLI。B集成测试以合成的官方文件格式执行teacher→训练更新→256-query选best→保存/恢复→推理/评价。它验证接线与数值一致性，不是正式数据准确率实验。
 
 当前未执行完整真实数据预训练/微调、A真实SpConv GPU验收、GPU时延或ONNX/TensorRT导出。训练数据与训练权重不提交GitHub。详细证据见[MODEL_VALIDATION.md](../MODEL_VALIDATION.md)。
-

@@ -318,4 +318,3 @@ B当前新运行使用 `feature_frame=two_fixed_z_charts_rodrigues_z05_v1`，并
 本次增加了实际模型、teacher、损失/冻结、暂停恢复、推理/评价测试；B用合成官方RGB-D/MAT/pose及完整对象资产执行真实CNN更新、完整256-query选择、保存/恢复和CLI预测。A的CPU模型测试使用显式注入backbone，真实SpConv/CUDA未在本环境执行。当前没有真实数据完整训练、GPU时延或机器人成功率结果。精确测试范围及CI记录见[验证说明](../MODEL_VALIDATION.md)。旧129项NumPy参考仍是独立数学/schema证据，不累加为新模型准确率。
 
 完整数据执行需另记录法向有效率、候选覆盖、B径向/角槽拒绝与缺测比例、A主干关联距离和真实teacher构建耗时。未知teacher标签不能变成0；窄物体法向失效不能暗中退回旧算法；从FP32升至float64不能恢复原始精度。数据和权重保存在外部数据/运行目录，仓库只提交代码、配置、测试和可复核汇总。
-

@@ -8,16 +8,16 @@
 
 **公开方法对比（2026-11-18）：** E5 best 已完成 RealSense 官方三个测试划分的全量评价（90场景、23,040帧）。官方 R10 的 Seen/Similar/Novel AP Top50 为 **16.33/20.22/5.69%**，AP Top1 为 **47.60/51.49/20.22%**。与 SuctionNet、Diffusion-Suction、MultiGraspNet、UISN 完整版及 Only Depth 的对照、R20候选覆盖分析见[方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)，紧凑数值见[结果表与来源](docs/experiments/COMPARISON-20261118/README.md)。这些是 GT 实例输入、R20 训练条件下的结果；论文值与本项目计算值分别标明。
 
-## 单物体路线开发分支
+## 已收拢的单物体路线 A/B
 
-两条路线从共同的 [v3 设计与架构图提交 a9f4a84](https://github.com/chichu-lv/suctionnet_modern_20mm/commit/a9f4a8451c6bc42cfd8867dd96c051398644ad71) 分出，各自维护数据准备、预处理、模型设计、后处理、训练和实验六篇实施文档。
+2026-11-25 将共同设计、A/B 实现与各自最新优化合并到同一基线，保留 E0–E5 以及完整提交历史。旧分支头、合并决策及联合验证见 [分支收拢记录](docs/BRANCH_CONSOLIDATION_20261125.md)。新方案开发从这个基线另开分支。
 
-| 路线 | 开发分支 | 实施文档入口 |
+| 路线 | 实现 | 实施文档入口 |
 |---|---|---|
-| A：单物体稀疏 3D + RGB | [route-a-3d-rgb](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-a-3d-rgb) | [A 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) |
-| B：共享二维编码 + 投影环带 | [route-b-2d-projected-rings](https://github.com/chichu-lv/suctionnet_modern_20mm/tree/route-b-2d-projected-rings) | [B 六部分实施计划](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) |
+| A：单物体稀疏 3D + RGB | [模型](models/instance_route_a.py) | [A 六部分实施计划](docs/instance_routes/route_a/README.md) |
+| B：共享二维编码 + 投影环带 | [模型](models/instance_route_b.py) | [B 六部分实施计划](docs/instance_routes/route_b/README.md) |
 
-两分支现已实现对应网络、共同实例数据/teacher、预训练/微调、严格恢复、无标签推理和native评价，实际命令见[代码运行说明](docs/instance_routes/IMPLEMENTATION.md)。源域直接使用100个训练场景，默认每875步在90个test场景各固定8帧上选择best，标记test_selected与fixed_test_subset，同时保存last；训练后可独立报告完整test，不重新选模。目标域1676/399/87划分不变。已完成CPU与合成官方格式链路验证，完整真实数据训练、A真实SpConv GPU、性能与部署导出仍待执行。
+本次收拢保留两路线已实现的网络、共同实例数据/teacher、预训练/微调、严格恢复、无标签推理和native评价，实际命令见[代码运行说明](docs/instance_routes/IMPLEMENTATION.md)。源域直接使用100个训练场景，默认每875步在90个test场景各固定8帧上选择best，标记test_selected与fixed_test_subset，同时保存last；训练后可独立报告完整test，不重新选模。目标域1676/399/87划分不变。已完成CPU与合成官方格式链路验证，完整真实数据训练、A真实SpConv GPU、性能与部署导出仍待执行。
 
 公开对照采用[逐方法成对协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)：每条路线分别对照S1B、Diffusion-Suction、UISN两种前端配置，以及待核验的MultiGraspNet两种配置。论文值已登记，本方法待测；公开评价仅参数化半径的方案待定，不阻塞开训；不做参考方法之间的排行榜。
 
@@ -31,7 +31,7 @@
 
 - [x] 按项目约束移除 SHA-256 计算与校验，覆盖数据、缓存、checkpoint、备份、导出、原生扩展和基准脚本；保留实际结构/配置/事务检查，并增加 [永久约束](AGENTS.md) 与 [回归门禁](tests/test_no_sha256_verification.py)。兼容范围见[当前读取规则](docs/NO_CONTENT_CHECKSUMS.md)。
 - [x] 整理[A/B与公开方法的比较协议](docs/instance_routes/PUBLIC_METHOD_COMPARISON.md)及[论文数值目录](docs/instance_routes/reference/paper_baselines.json)：保留六组成对表与论文原始数值；公开仅半径方案已移为待定备忘，当前不实施该评价器。
-- [x] 分别整理 [A](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-a-3d-rgb/docs/instance_routes/route_a/README.md) / [B](https://github.com/chichu-lv/suctionnet_modern_20mm/blob/route-b-2d-projected-rings/docs/instance_routes/route_b/README.md) 的六部分实施计划及独立开发分支，明确输入产物、实现接口、失败处理、训练配方和实验验收；实际数据、模型、训练与推理代码已接通，完整真实实验继续列为待办。
+- [x] 分别整理 [A](docs/instance_routes/route_a/README.md) / [B](docs/instance_routes/route_b/README.md) 的六部分实施计划及独立开发分支，明确输入产物、实现接口、失败处理、训练配方和实验验收；实际数据、模型、训练与推理代码已接通，完整真实实验继续列为待办。
 - [x] [单物体路线 A/B 工程实施规范](docs/instance_routes/README.md)：已完成v3几何边界复核、保留目标自碰的同姿态标签、谐波/投影门控、稳健法向及候选回填规范；参考工具共129项合成检查通过。A/B模型、teacher、训练/微调、保存恢复及native推理/评价已实现；测试范围见[验证说明](docs/MODEL_VALIDATION.md)。
 - [x] 单物体 v3 方法架构图：[路线 A](docs/instance_routes/METHOD_ARCHITECTURE_A.md) · [路线 B](docs/instance_routes/METHOD_ARCHITECTURE_B.md)；沿用论文式三面板版式，提供可编辑 SVG、PDF、高清 PNG、双语图注及确定性绘图脚本。
 - [x] [完整测试与公开方法效果对比](docs/SUCTIONNET_METHOD_COMPARISON.md)：E5完整90场景官方R10及项目R20已计算，补齐UISN两种分割版本与Only Depth消融；发布六指标CSV、来源和候选覆盖分解图。已有precision重聚合与汇总一致，未复现对方模型。
@@ -148,7 +148,3 @@ bash scripts/run_data_pipeline.sh
 - 不重新发布第三方原始标注脚本或数据；需要在本地拉取上游开源仓库。
 
 原始数据使用和科研结果均需遵守 SuctionNet/GraspNet 的相应许可证。
-
-
-
-
