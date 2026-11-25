@@ -1,0 +1,57 @@
+{
+  "scope": "Synthetic CPU contact preparation only. Current A FP64 reference versus native three-region grid/query/filter/FPS/summary/descriptor engine. Native timing includes building its CSR grid and allocating outputs. Reference reuses its existing cKDTree. Both exclude reader, RGB augmentation, backbone selection/association, IPC, H2D and network. This is not a training-throughput or L20 measurement.",
+  "seed": 20261119,
+  "support_count": 32000,
+  "query_count": 128,
+  "workers": 1,
+  "warmup_calls_each": 1,
+  "alternating_rounds": 7,
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "machine": "x86_64",
+    "thread_env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1"
+    },
+    "native_route_a_abi": 1,
+    "native_route_a_source": "route_a_contact_v1",
+    "compiler": "14.2.0",
+    "compile_flags": "-O3 -fno-fast-math -ffp-contract=off -pthread",
+    "fps_axes": [
+      0,
+      2,
+      1
+    ]
+  },
+  "sampling_masks_counts_angular_support_exact": true,
+  "fp64_max_absolute_error": {
+    "descriptor": 3.3306690738754696e-16,
+    "summary": 8.881784197001252e-16
+  },
+  "fp64_comparison_rtol": 2e-13,
+  "fp64_comparison_atol": 2e-13,
+  "boundary_reference_rows": 0,
+  "reference_ms": [
+    226.5379810014565,
+    178.96773299798951,
+    174.34873700040043,
+    173.56594399825553,
+    173.17743800231256,
+    178.41130300075747,
+    179.20380899886368
+  ],
+  "native_ms": [
+    135.54367300093872,
+    134.50741300039226,
+    108.45187000086298,
+    108.99360899929889,
+    115.9599500024342,
+    115.68035800155485,
+    119.29041000257712
+  ],
+  "reference_median_ms": 178.41130300075747,
+  "native_median_ms": 115.9599500024342,
+  "contact_only_speedup": 1.53855967510345
+}

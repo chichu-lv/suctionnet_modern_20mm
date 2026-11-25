@@ -1,0 +1,141 @@
+# A 训练方案：物理预训练与历史动作适配
+
+A新训练器已实现在 `scripts/train_instance.py` / `suction20/instance_training.py`，运行配置为 `configs/instance_a.yaml`。[route_a.json](../reference/route_a.json) 继续作为design_spec，不直接传给旧E5脚本。当前从头直接100场景训练，best只使用source test全部90场景各固定8帧的子集选择；公开半径-only协议deferred。真实SpConv/GPU和完整训练尚未执行；先完成[数据](DATA_PREPARATION.md)和[真实短链路验收](EXPERIMENT_PLAN.md)。
+
+## 1. 环境、初始化和运行身份
+
+A优先沿用仓库已记录的Python3.10、PyTorch2.5.1+cu124、spconv-cu120 2.3.6组合，安装依据见[既有运行指南](../../MODEL_USAGE.md)。新12通道架构从头初始化；旧E5的8通道或跨路线checkpoint不能改键、补零后伪装为正常resume。数学参考及CPU测试使用独立Python3.12.14/NumPy2.3.5环境；13项A测试显式注入测试backbone，不代表上述真实GPU环境已验证，不为执行参考工具升级GPU环境。
+
+每次真实运行保存完整运行配置、environment.txt、代码commit、GPU/CPU线程、Torch/CUDA/cuDNN/spconv版本、真实microbatch、数据/标签来源路径、实际标定参数、normal/sampler/precision和query语义ID及随机种子。初始化和同身份resume互斥，保持当前checkpoint政策。
+
+## 2. 源域损失与有效归约
+
+模型q、Seal、Wrench经sigmoid；ell为Laplace `log b`，初始化log(.1)、前向限制[-6,1]。同姿态真值为 `Q_inst=S20*W20*(1-C_self)`：
+
+```text
+Lq = exp(-ell) * abs(q_inst_hat - Q_inst) + ell
+Lpre = Lq + 0.5*SmoothL1_beta0.05(seal_hat, S20)
+          + 0.25*SmoothL1_beta0.05(wrench_hat, W20)
+```
+
+省略常数log2，ell不是log方差；对应残差方差是 `2*exp(2*ell)`。ell不是已校准的任务概率，不进入默认排序。
+
+首版三个物理损失使用共同label_valid：S/W及两个self分项全部已知。先选有效query，再对单实例平均，最后对batch中有监督实例平均。未知标签和padding不参与计算，不能NaN乘零；Q_inst=0仍是合法负例。全false实例返回no-supervision并计数，不计为成功更新的受监督实例暴露；运行数据计划应提供足量合法项，替补/跳过与额外消费必须记录。
+
+## 3. 直接100场景源预训练
+
+source train为scene 0–99全部100场景、frame 0–255，模型从头初始化；best选择集为source test scene 100–189全部90场景各固定8帧，共720帧。完整90场景×256帧test留作训练后固定best的报告。不再执行90/10开发后final refit。test子集不参与反向传播，但其选模用途必须进入结果身份。
+
+| 参数 | A默认 |
+|---|---|
+| 采样单位/顺序 | 先均匀选100个train scene，再均匀frame，再均匀该frame训练有效实例；seed=42 |
+| query | 每实例共同完整池前128；64属于独立可选配置 |
+| 成功预算 | 140000个参与成功更新的实例暴露 |
+| 有效batch | 16实例；单GPU默认microbatch1、累积16 |
+| 成功optimizer更新 | 8750 |
+| 优化器 | AdamW，betas(.9,.999)、eps1e-8、weight_decay .01 |
+| 学习率 | peak3e-4，前438个成功更新线性warmup，之后cosine至1e-5 |
+| 精度 | 网络FP32；从原数据构造float64接触几何与边界判定，冻结teacher保留原算术 |
+| 选模评价 | `pretrain.evaluate_every: 875`；8750成功步内共10次，每次固定90场景×8帧、每实例完整最多256-query |
+| 选择范围 | `pretrain.selection_frames_per_scene: 8`；`selection_scope=fixed_test_subset` |
+| 选模 | scene-macro InstTop1_INST20@0.4最大，再按所选Q_inst宏平均最大，仍平局选更早步 |
+| 保存 | test-selected best.pt；`pretrain.checkpoint_every: 875`，每875成功步保存last.pt，最终步记录预算完成；完整状态 |
+
+子集评价与恢复checkpoint保存使用独立配置，默认间隔都为875步；保存last本身不触发额外评价。每次源评价均使用相同的90场景×8帧，共10次，原预算终点也在这个子集上评价，不在末步自动切换到全量test。微调仍每100成功步评价并保存。若另设源评价节点，`evaluation_steps`须为预算内严格递增的正整数列表，不能与`evaluate_every`同时配置；训练器始终将原预算终点纳入评价。帧数、节点和保存间隔进入运行配置，严格resume时保持一致。
+
+`pretrain.selection_frames_per_scene`默认8，固定帧ID为 `0,32,64,96,128,160,192,224`，按8位bit-reversal前缀取样并排序；16帧配置包含这些帧，256帧配置才使用完整test。旧配置未声明该字段时仍保持256帧语义。全部90个场景的所需帧及其中全部可见实例保留，每实例仍使用完整最多256个query；GT空帧以显式声明计入覆盖，无法向、少支持或无输出实例仍进入相应分母。完整test manifest会自动筛选，也可直接使用只含固定所选帧的正式selection清单，均不需`--allow-partial-manifests`。
+
+固定小子集减少周期评价成本，但较少观测可能使相近checkpoint的排名波动；重复使用同一帧集合只能消除每次随机换样本的差异，不能保证选出的best在完整test上最优。训练结束后由独立CLI对已固定best生成完整test报告，不用该报告重新选择checkpoint。
+
+训练与回放的raw支持、主干点采用同一实例级RGB变换：brightness/contrast/saturation=.2、hue=.05、灰度概率.2；mean/std依预处理合同。首版不做几何缩放。验证保持固定实例/query顺序和归一化。
+
+次级所选Q_inst宏平均采用与主指标相同的frame内实例→scene内frame→scene等权聚合，no_pose贡献0，空GT帧排除并另计；另报有输出姿态的条件Q微平均及输出数。这是共同评价口径的细化，不改变物理目标。若被选姿态或候选覆盖指标所需query的teacher标签未知/非法，该次评价标不完整并修复，不能将未知标签补0或删除实例分母后参与选模。
+
+best及其source test子集成绩标记 `selection_role=test_selected`、`selection_scope=fixed_test_subset`、`independent_test_estimate=false`，不能作为独立盲测或填写论文全景AP。训练后完整test报告也保留这一选模来源，不因覆盖更多帧变成独立估计。8750成功步的last是固定预算终点；提前暂停的last仅表示进度。
+
+默认 `singleton_bn_policy=running_stats` 仅在训练时某BN每通道输入值数≤1时使用已有running mean/variance，不更新该次统计/计数；其余源训练输入保持普通BN路径，不将源预训练全部BN设eval。微调冻结规则见下一节。此策略进入架构身份，不用增加伪造活动点避免BN退化。
+
+140000是新工程预算，不由旧E5的场景更新步数证明最优。成功步、成功实例暴露和已消费样本分别记录；后续AMP发生skip时不能消耗了数据却增加成功预算。microbatch×累积须为16，但不同microbatch会改变BN前向统计，不宣称逐位等价。PyTorch/CUDA仍需记录实际确定性限制。
+
+周期源评价只遍历全部90场景的固定8帧、共720帧对应实例，`evaluation_stepXXXXXX.json`保存该子集指标/选择键、selection范围和`record_details`。默认 `evaluation_records=best_and_final` 将逐实例/动作明细流式写入临时 `.records.jsonl.gz`，只在当次更新best或最终步保留，其余删除；最终步明细仍是固定子集，不代表已完成完整test。可选 `all` 保留各节点、`none` 完全不写明细；不内嵌records数组，也不把全部明细常驻内存。该策略减少长期存储，仍有一次临时压缩流写入。
+
+实际源训练/评价阈值来自 `model.min_support_points`，默认100；无有效标签和支持不足分别记账，不把任一跳过项计入140000成功实例预算。builder的准备阈值另存于metadata，不在训练器内硬编码100。
+
+## 4. 1000步目标域微调
+
+从同路线、同模型语义配置的源域best初始化新的task适配，允许的执行参数变化见第6节。每次成功更新抽2个target实例观测和2个source实例观测；target按train观测均匀，不默认按成败1:1重采样。每观测若有多条有效历史动作，先在观测内平均其BCE：
+
+```text
+Lt(obs) = mean(BCEWithLogits(score_at_pose(p_plan,n_plan).task_logit, outcome))
+Lft = (Lt1 + Lt2)/2 + 0.5*(Ls1 + Ls2)/2
+```
+
+逐条反向时两个target各权重0.5、两个source各0.25；之后不再整体除4。任务BCE读取原始logit。历史结果不产生Seal/Wrench标签，也不向20mm圆盘扩散。source回放使用同一v3 query身份及物理v2标签，默认128 query。
+
+| 成功更新 | A可训练模块 | 学习率 |
+|---|---|---|
+| 1–200 | q/Seal/Wrench/ell/task输出头 | heads3e-4 |
+| 201–1000 | 上述头 + decoder、接触编码、query融合及对象池化投影 | heads1e-4，其余1e-5 |
+| 全程 | encoder冻结；所有BatchNorm running stats与affine冻结 | — |
+
+新增层的实际成员必须与checkpoint中的参数组名称、完整成员清单一致；不能直接照搬E5组名。第201步切换保留head的Adam moments，只新增/解冻既定组，不重建优化器丢失状态。
+
+每次 `model.train()`之后重新将所有有running stats的BN设eval并冻结affine；仅requires_grad=false不足以冻结统计。拒绝不具备tracked running stats却声称执行同一冻结策略的实现。微调前后比较running_mean、running_var、num_batches_tracked及affine保持不变；梯度累积不等于BN看到了batch16。 两个评价入口都逐模块保存 `.training`，正常返回或异常退出均直接恢复各层原状态；不以根模块 `train(True)` 覆盖冻结BN，也不等待下一训练步修复。
+
+## 5. 目标验证与可选姿态一致性
+
+每100个成功更新在固定399条val动作上评价。以AUROC最大选择best，再按BCE低、再按更早步。总399、有效数、正负数和排除原因同时报告；保持固定可比较的动作子集，单类group的AUROC记未定义。
+
+默认 `pose_consistency.enabled=false`；当前训练CLI未实现该可选微扰正则，不能把它标成已启用。若目标399 val暴露执行偏差敏感性，须先实现并验证，随后可按共同规范预注册一次对照：每动作最多2个合法微扰，切平面半径2mm均匀圆盘、原轴2°立体角均匀球冠；原动作保留唯一BCE，增加权重.1的概率一致性MSE，以精确姿态概率stopgrad为参照。扰动需同实例/组件和合法支持，J=0时该项为0，不复制源物理标签到新p/n。这些数值不是已测执行误差，不作为新默认。
+
+目标87条test在权重和ranking模式冻结后使用一次，不用于选alpha、法向或学习率。当前目标监督估计的是给定观测与规划命令的成败；实际末端执行轨迹未核验。后处理按[固定模式](POSTPROCESSING.md)执行。
+
+## 6. Checkpoint和恢复验收
+
+checkpoint保存架构/12通道/531融合/谐波与singleton BN配置，normal/sampler/precision，query/label数组对齐合同，物理self/INST与已知physics，RGB归一化与ranking，模型/优化器、成功步和成功/消费暴露数、完整参数组成员、sampler/RNG、源/目标manifest路径与采样ID序列，以及完整config_definition/显式runtime_contract。旧校验和字段忽略；不计算文件或数组校验和。physics缺失记null，不伪称来源已知；模型、配置、已知物理与预处理不符仍拒绝恢复。
+
+**微调初始化与同一次运行的resume分开检查。** `--init-checkpoint`先验证源checkpoint本身的配置与已有`identity.config_definition`自洽，再比较源/目标的模型语义。A的`model`配置仅允许`backbone_root`和`query_chunk_size`不同：前者是机器挂载路径，后者是查询分块大小。`backbone_points`、`min_support_points`、`backbone_coordinate_fastpath`、`singleton_bn_policy`及其他语义参数继续严格匹配；路线、质量、数据/teacher合同和权重也继续检查，`state_dict`使用`strict=True`。不能先覆盖路径或chunk再掩盖源checkpoint内部的矛盾。
+
+初始化记录中的`model_compatibility`保存`semantic_model`、`source_execution`和`target_execution`，使原路径/分块与新运行的实际执行选项都可回读。路线B对应的唯一分块字段是`query_chunk`，其phase配置仍属于模型语义；两条路线之间不能交叉初始化。普通`--resume`仍要求完整运行配置一致，包含路径、chunk、评价节点及保存间隔，并恢复优化器/采样/RNG；不能将微调初始化的执行字段例外用于同一次运行的resume。
+
+短链路必须证明：物理/任务loss实际反向且相应目标可下降；保存恢复后的下一批实例/query、学习率和采样RNG一致；第201步参数组正确、head moments保留；无监督项不伪装成功曝光；BN冻结真实生效。完成后才运行正式8750/1000步预算，不用旧迁移白名单绕过身份错误。
+
+## 7. 可执行命令与运行产物
+
+按[数据准备](DATA_PREPARATION.md)生成全部100场景的完整train缓存和正式固定帧selection缓存。以下示例沿用已有完整test manifest，训练入口仍按配置自动筛为每场景8帧；也可将各条源训练命令的`--selection-manifest`替换为数据准备页得到的`"$SELECTION_MANIFEST"`，无需先构建完整test。两种来源都不加`--allow-partial-manifests`，同一次运行的resume继续使用相同数据路径和定义。真实A运行需要兼容PyTorch/CUDA/spconv环境及固定外部骨干文件；`backbone_root`不是可选的测试替代入口。已有下载与固定Git blob源码核验命令如下：
+
+```bash
+python scripts/setup_backbone.py --output /data/backbones/graspness_modern
+python scripts/train_instance.py --config configs/instance_a.yaml --stage pretrain --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --selection-manifest /data/instance_v3/test/manifest_test.jsonl --run-dir /data/runs/a_source100 --device cuda
+```
+
+以上路径须替换为真实目录。也可在runtime YAML中设置 `model.backbone_root`，CLI覆盖值会进入运行配置身份。如果配置仍为`null`且未给`--backbone-root`，训练CLI会在读取任何manifest前报错；不会猜测外部代码位置。wrapper默认8通道保留旧E5，A显式传12，从头初始化；首轮不传 `--init-checkpoint` 或目标数据。CPU单元测试的注入backbone不能由CLI自动替换真实SpConv，也不能用这些单元测试生成可发布的A训练结果。
+
+`train_instance.py`、`infer_instance.py`、`evaluate_instance.py`均支持正整数`--query-chunk-size`。对A它覆盖`model.query_chunk_size`，默认32，例如附加`--query-chunk-size 16`可减小一次处理的query块。微调初始化和独立推理/评价可使用不同于源checkpoint的分块；这不是修改候选池或监督query数。训练时覆盖值写入新运行配置，后续`--resume`必须复用该值。跨容器微调可同时用`--backbone-root`指定新挂载位置，但固定上游骨干代码身份仍须满足；不同设备/分块的浮点逐位一致性不由此保证。
+
+需要暂停后恢复时，使用以下两条命令代替一次性完整执行，保持相同8750步预算、配置、路径和数据身份：
+
+```bash
+python scripts/train_instance.py --config configs/instance_a.yaml --stage pretrain --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --selection-manifest /data/instance_v3/test/manifest_test.jsonl --run-dir /data/runs/a_source100 --device cuda --stop-after 10
+python scripts/train_instance.py --config configs/instance_a.yaml --stage pretrain --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --selection-manifest /data/instance_v3/test/manifest_test.jsonl --run-dir /data/runs/a_source100 --device cuda --resume /data/runs/a_source100/last.pt
+```
+
+`--stop-after`只在成功更新边界暂停，不缩短原正式预算；提前暂停的last不是预算完成。正式运行要求100个train场景各256帧，以及90个test场景各配置所需的固定8帧；完整覆盖这套selection不属于partial运行。真正缺少所需scene/frame的接线任务才显式使用`--allow-partial-manifests`，身份记录partial；未知/错姿态teacher标签不能补0后继续选best。
+
+训练结束后的全量报告使用已经固定的源best和完整test清单，命令见[后处理](POSTPROCESSING.md)。`evaluate_instance.py`直接评价完整manifest，不继承训练的子集view，也不改写`best.pt`。报告中`evaluation_scope=complete_manifest`描述本次评价覆盖，`source_pretrain_selection_scope=fixed_test_subset`描述源checkpoint的选模来源；两个字段用途不同。全量报告包含曾用于选模的帧，继续保留`test_selected`和`independent_test_estimate=false`。
+
+目标微调从同路线源best初始化，source train用于回放，目标train用于BCE，目标399 val作selection：
+
+```bash
+python scripts/train_instance.py --config configs/instance_a.yaml --stage finetune --backbone-root /data/backbones/graspness_modern --source-manifest /data/instance_v3/train/manifest_train.jsonl --target-manifest /data/attempts/train.jsonl --selection-manifest /data/attempts/val.jsonl --init-checkpoint /data/runs/a_source100/best.pt --run-dir /data/runs/a_target --device cuda
+```
+
+目标manifest须具备原RGB-D/instance mask及规划p/n；旧pointcloud-only清单需补原资产。目标87 test不传入训练器。微调best为validation-selected，仍保留源预训练test选模来源。恢复微调用 `--resume /data/runs/a_target/last.pt` 替换 `--init-checkpoint`，二者互斥。
+
+运行目录保存配置、数据/模型身份、事件、best/last模型和优化器、成功步/实际监督计数、source/target sampler、增强及全局RNG、参数组和选模策略。默认网络FP32、接触几何CPU float64；没有从CPU单元测试推导已达到GPU吞吐。真实资产、真实SpConv前后向和正式训练仍待完成。
+
+## 8. 公开比较暂缓
+
+`public_evaluation.status=deferred`、`radius_only_protocol=null`。本轮不实现或运行“官方评价器只改半径”，不再创建单独public20 final-refit或指定last-only公开权重，也不把R10等价门禁作为开训条件。各论文原值继续保留，本方法公开结果待测。
+
+未来恢复公开评价时，先冻结每方法的测试/指标/输入权限和半径口径，并披露source test选模。当前test-selected实例Top1不能填入论文全景AP列，更不能标成与对手仅吸盘尺寸不同的独立测试结果。

@@ -36,13 +36,35 @@
 
 可选sidecar缓存与residual uncertainty工具尚未交付，仅在实际需要时安排。最新完成项与待办摘要见 [README](../README.md)，正式运行命令见 [MODEL_USAGE](MODEL_USAGE.md)。
 
+## 单物体路线 A/B 设计与实施
+
+- [x] 2026-11-19 接收用户GPU2/GPU3的180秒稳态窗口，实施[冷几何、NPY/mmap、持久静态包与B消费端优化](instance_routes/L20_PIPELINE_OPTIMIZATION.md)，增加有限磁盘预算、不可变来源/布局检查、命中遥测和固定墙钟窗口。
+- [ ] 以原L20 batch32、A6/B8 workers复测新实现，核对缓存覆盖/页缓存与真实吞吐；随后再决定H2D/pinning、B同步点和A接触并集的优先级。
+
+- [x] 2026-11-19 [性能能力定向适配](instance_routes/E5_PERFORMANCE_MIGRATION.md)：A 原生完整三区接触、静态几何包及可选按需投影；B 静态图像 ROI 到消费者；路线白名单、少拷贝、每 worker 有界缓存和冷恢复对照。
+- [ ] 按原 L20 配置验收新实现的真实 GPU 数值、缓存实际命中、供给等待和同步端到端吞吐，再决定 pinned/H2D 及正式检查点切换；不以局部 CPU warm 数字代替训练加速。
+
+- [x] 2026-11-19 [E5问题在新路线中的针对性审查](instance_routes/E5_PROBLEM_AUDIT.md)：落实源训练按需读取、A消费者固定统计前移、B反向切片分配优化和更新边界指标读回；当前证据为CPU合成对照和回归。
+- [ ] 同卡、同有效batch32、同抽样/增强验证上述新增改动的L20吞吐、CUDA/SpConv数值、资源及正常恢复；完成后再更新正式运行记录。
+
+- [x] [A/B独立分支与六部分实施文档](instance_routes/README.md)，v3架构图、几何边界及物理v2目标自碰合同已整理。
+- [x] 共同 `instance_geometry/data/teacher`、官方格式builder、精确p/n标签、对象资产/缓存身份；CPU与合成官方格式验证。
+- [x] A的12通道SpConv包装、raw支持谐波/分组、531融合与精确姿态接口；CPU测试显式注入骨干，真实SpConv尚待GPU检查。
+- [x] B原生Torch GN18/Fq/共享纹理、577槽投影、环带缺测/门控与330融合；真实CNN CPU更新和推理已验证。
+- [x] 直接100场景source训练、90个test场景各固定8帧选择best并标记test_selected/fixed_test_subset、保留last；两阶段目标微调及严格暂停恢复、native推理/评价已接通。完整test由训练后独立CLI报告，不重新选模。[运行命令](instance_routes/IMPLEMENTATION.md)
+- [x] [公开方法逐一对比](instance_routes/PUBLIC_METHOD_COMPARISON.md)的论文值与成对表保留；仅半径协议设置deferred，不作为训练门禁。
+- [ ] 用完整真实资产执行缓存重算、既定8750步source预训练及1000步目标微调，记录teacher成本和候选覆盖；目标原划分不变。
+- [ ] A真实CUDA/SpConv链路、同硬件GPU端到端成本及B的ONNX/TensorRT导出。15–30ms、2–5ms仍是未验证目标。
+- [ ] 公开物理评价与权重规则待定后执行完整场景AP；当前native test选模成绩不称独立公开测试估计。
+
 ## 代码管理
 
-- [x] 全项目移除 SHA-256 计算与校验，保留实际配置/数据结构/事务检查并加入永久回归门禁；[现行规则](NO_CONTENT_CHECKSUMS.md)。A/B模型维护在各自开发分支，不合并进本主线。
+- [x] 项目所有执行路径移除 SHA-256 计算和校验；当前[可读元数据与恢复规则](NO_CONTENT_CHECKSUMS.md)及根 AGENTS 约束持续生效。
 - `main` 保持可阅读、可测试的主线。
 - 新算法、标签公式或数据格式改动使用独立分支和 Pull Request。
 - 代码不覆盖 SuctionNet 官方源文件；生成数据存储于外部 `$OUT`。
 - Python 变更需运行 `pytest -q`；数据标签变更需附至少一个可视化示例和指标对比。
 - 不将大型原始数据、隐私配置、训练权重默认提交进 Git。
+
 
 

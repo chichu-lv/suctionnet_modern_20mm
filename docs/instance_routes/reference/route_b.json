@@ -1,0 +1,545 @@
+{
+  "schema_version": "suction20.instance_routes.design.v3",
+  "artifact_kind": "design_spec",
+  "trainer_implemented": true,
+  "base_repository_commit": "87f29d29bea8fa5153d6df3f8253d9ced9e4b441",
+  "quality_contract": "gt_INST20_pose_v2",
+  "coordinate_contract": {
+    "units": "m",
+    "axis": "outward_normal_camera",
+    "tool_plus_z": "negative_outward_normal",
+    "roll": "stateless_cross_least_aligned_camera_axis_tie_xyz_output_only",
+    "feature_frame": "two_fixed_z_charts_rodrigues_z05_v1",
+    "roll_continuity_guaranteed": false,
+    "feature_frame_positive_chart_if": "normal_z > 0.5",
+    "feature_frame_global_denominator_min": 0.5,
+    "feature_frame_seam_continuous": false,
+    "legacy_feature_frame": "two_fixed_z_charts_rodrigues_v2",
+    "missing_checkpoint_feature_frame": "two_fixed_z_charts_rodrigues_v2"
+  },
+  "observation": {
+    "min_source_training_points": 100,
+    "position_scale_m": 0.1,
+    "normal": {
+      "method": "organized_masked3x3_span3_v3",
+      "same_instance_required": true,
+      "raw_validity": "finite_XYZ_positive_Z_and_upstream_depth_bounds",
+      "smoothing": {
+        "input": "raw_XYZ",
+        "window_pixels": [
+          3,
+          3
+        ],
+        "operation": "masked_equal_weight_mean",
+        "center_raw_valid_required": true,
+        "minimum_valid_neighbors_including_center": 5,
+        "neighbor_center_raw_depth_abs_max_m": 0.01,
+        "depth_comparison": "strict_less_than",
+        "invalid_neighbor_arithmetic": "select_before_sum_not_NaN_times_zero",
+        "changes_query_center_or_raw_support": false
+      },
+      "finite_difference_pixel_offset": 3,
+      "difference_input": "smoothed_XYZ",
+      "center_and_four_endpoints_smooth_valid_required": true,
+      "all_intermediate_raw_path_pixels_valid_same_instance_required": true,
+      "adjacent_raw_path_depth_jump_abs_max_m": 0.01,
+      "adjacent_depth_jump_comparison": "strict_less_than",
+      "opposite_endpoint_total_depth_gate": false,
+      "cross_norm_min": 1e-08,
+      "cross_norm_units": "m^2",
+      "cross_norm_comparison": "strict_greater_than",
+      "proposal_orientation": "dot(n,-raw_p)>=0",
+      "historical_query_orientation": "preserve_supplied_sign",
+      "invalid_normal": "zero_with_false_normal_valid",
+      "fallback_to_span1": false,
+      "full_support_pca": false,
+      "optional_pca_requires_distinct_config_and_cache": true,
+      "reference_arithmetic": "float64",
+      "physical_support_is_constant": false,
+      "measured_real_sensor_noise_reduction": false
+    },
+    "gravity_components": 3
+  },
+  "query": {
+    "max_candidates": 256,
+    "train_candidate_prefix": 128,
+    "optional_train_candidate_prefix": 64,
+    "method": "image_stratified_morton_refill_v3",
+    "grid_cells_xy": [
+      16,
+      16
+    ],
+    "bbox": "full_instance_mask_pixel_outer_edges",
+    "cell_representative": "closest_eligible_pixel_to_cell_center",
+    "tie_break": "minimum_source_point_id",
+    "cell_order": "ascending_bit_reverse_8bit_morton_x_even_y_odd",
+    "empty_cells": "omit",
+    "direct_historical_pose": true,
+    "historical_support_anchor_max_distance_m": 0.005,
+    "historical_anchor_moves_query_center": false,
+    "build_full_max_candidate_sequence_before_prefix": true,
+    "refill": {
+      "enabled": true,
+      "round_order": "same_bit_reversed_morton_nonexhausted_cells",
+      "per_cell_per_round": 1,
+      "within_cell_selection": "maximize_min_squared_pixel_distance_to_selected_in_same_cell",
+      "tie_break": "minimum_source_point_id",
+      "replacement": false,
+      "stop": "max_candidates_or_all_eligible_pixels_exhausted"
+    },
+    "diagnostics": [
+      "eligible_pixel_count",
+      "nonempty_cell_count",
+      "first_pass_count",
+      "refill_count",
+      "refill_rounds",
+      "candidate_count",
+      "stop_reason"
+    ],
+    "uniform_3d_surface_area_guaranteed": false
+  },
+  "contact": {
+    "core_radius_m": [
+      0,
+      0.01
+    ],
+    "inner_radius_m": [
+      0.01,
+      0.018
+    ],
+    "lip_radius_m": [
+      0.018,
+      0.022
+    ],
+    "lip_outer_inclusive": true,
+    "height_feature_scale_m": 0.04,
+    "height_is_hard_gate": false
+  },
+  "rgb": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "brightness": 0.2,
+    "contrast": 0.2,
+    "saturation": 0.2,
+    "hue": 0.05,
+    "grayscale_probability": 0.2
+  },
+  "loss": {
+    "q": "laplace_nll_log_scale",
+    "log_scale_min": -6,
+    "log_scale_max": 1,
+    "log_scale_init": -2.3025850929940455,
+    "seal_weight": 0.5,
+    "wrench_weight": 0.25,
+    "smooth_l1_beta": 0.05,
+    "q_target": "q_inst",
+    "separate_collision_head": false
+  },
+  "pretrain": {
+    "seed": 42,
+    "successful_instance_draws": 140000,
+    "effective_batch": 16,
+    "microbatch": 1,
+    "accumulation": 16,
+    "max_successful_updates": 8750,
+    "precision": "float32",
+    "optimizer": "AdamW",
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "epsilon": 1e-08,
+    "weight_decay": 0.01,
+    "peak_lr": 0.0003,
+    "min_lr": 1e-05,
+    "warmup_updates": 438,
+    "schedule": "linear_warmup_then_cosine",
+    "validation_every_updates": 875,
+    "selection_metric": "scene_macro_InstTop1_INST20_at_0.4",
+    "queries_per_instance_max": 128,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "selection_split": "test",
+    "selection_scene_range": [
+      100,
+      189
+    ],
+    "selection_views_per_scene": 8,
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "from_scratch": true,
+    "keep_last": true,
+    "final_refit": false,
+    "selection_scope": "fixed_test_subset",
+    "selection_frame_ids": [
+      0,
+      32,
+      64,
+      96,
+      128,
+      160,
+      192,
+      224
+    ],
+    "selection_frame_sampler": "bit_reverse8_prefix_v1",
+    "selection_evaluate_every": 875,
+    "full_test_reporting": "after_training_without_checkpoint_reselection"
+  },
+  "finetune": {
+    "successful_updates": 1000,
+    "head_only_updates": 200,
+    "head_lr_stage1": 0.0003,
+    "head_lr_stage2": 0.0001,
+    "decoder_contact_lr_stage2": 1e-05,
+    "target_observations_per_update": 2,
+    "source_observations_per_update": 2,
+    "source_loss_weight": 0.5,
+    "encoder_frozen": true,
+    "batchnorm_frozen": true,
+    "validation_every_updates": 100,
+    "selection_metric": "fixed_historical_action_AUROC",
+    "unfreeze_stage2": [
+      "query_fusion",
+      "output_heads",
+      "midlevel_query_projections",
+      "global_projection",
+      "texture_stem",
+      "ring_encoders"
+    ],
+    "normalization_affine_follows_module_freeze": true,
+    "batchnorm_present": false,
+    "stage1_modules": [
+      "output_heads"
+    ],
+    "pose_consistency": {
+      "enabled": false,
+      "weight": 0.1,
+      "max_perturbations": 2,
+      "translation_radius_m": 0.002,
+      "translation_distribution": "uniform_tangent_disk",
+      "axis_angle_bound_deg": 2.0,
+      "axis_distribution": "uniform_solid_angle_cap",
+      "loss": "mean_squared_probability_difference_with_stopgrad_exact_pose",
+      "same_instance_observed_component_required": true,
+      "parameters_are_measured_execution_noise": false,
+      "source_pose_labels_reused_after_jitter": false,
+      "one_supervised_bce_per_attempt": true
+    },
+    "task_estimand": "success_given_planned_command_and_observation",
+    "train_attempts": 1676,
+    "selection_split": "val",
+    "validation_attempts": 399,
+    "test_attempts": 87
+  },
+  "inference": {
+    "ranking_source": "q_inst",
+    "ranking_target": "task_probability",
+    "alpha": 0,
+    "optional_heuristic_alpha": 0.5,
+    "mc_dropout_samples": 1,
+    "nms_distance_m": 0.01,
+    "nms_axis_angle_deg": 15,
+    "top_k": 5,
+    "no_output_status": "no_pose",
+    "latency_measured": false
+  },
+  "route": "b",
+  "model": {
+    "class": "InstanceSuction2DFastV3",
+    "implementation_status": "implemented_cpu_verified",
+    "global_backbone": "ResNet18_encoder_only_GN8",
+    "weights": null,
+    "global_input_shape": [
+      13,
+      128,
+      128
+    ],
+    "global_crop": "full_instance_bbox_10_percent_margin_square_letterbox",
+    "global_normalization": {
+      "type": "GroupNorm",
+      "groups": 8,
+      "eps": 1e-05,
+      "affine": true
+    },
+    "global_pooled_input_dim": 1024,
+    "global_pooled_dim": 128,
+    "query_feature_sources": [
+      {
+        "stage": "layer1",
+        "channels": 64,
+        "stride": 4,
+        "projected_channels": 32
+      },
+      {
+        "stage": "layer2",
+        "channels": 128,
+        "stride": 8,
+        "projected_channels": 32
+      }
+    ],
+    "query_feature_dim": 64,
+    "feature_centers_origin_input_pixel": 0,
+    "texture_input_channels": 5,
+    "texture_input": "native_resolution_full_instance_roi_with_3_pixel_margin",
+    "texture_resize": false,
+    "texture_stem": [
+      {
+        "in_channels": 5,
+        "out_channels": 16,
+        "kernel": 3,
+        "stride": 1,
+        "padding": 1,
+        "groups": 1
+      },
+      {
+        "in_channels": 16,
+        "out_channels": 16,
+        "kernel": 3,
+        "stride": 1,
+        "padding": 1,
+        "groups": 16
+      },
+      {
+        "in_channels": 16,
+        "out_channels": 16,
+        "kernel": 1,
+        "stride": 1,
+        "padding": 0,
+        "groups": 1
+      }
+    ],
+    "texture_conv_bias": false,
+    "texture_normalization": {
+      "type": "GroupNorm",
+      "groups": 8,
+      "eps": 1e-05,
+      "affine": true
+    },
+    "texture_activation": "ReLU_after_each_layer",
+    "texture_feature_channels": 16,
+    "per_query_image_raster": false,
+    "per_query_2d_cnn": false,
+    "ring_radii_m": {
+      "core": [
+        0,
+        0.005,
+        0.009
+      ],
+      "inner": [
+        0.01,
+        0.014,
+        0.017
+      ],
+      "lip": [
+        0.018,
+        0.02,
+        0.022
+      ]
+    },
+    "ring_angles": 72,
+    "ring_angle_rule": "2*pi*(j+0.5)/72+phase",
+    "training_ring_phase": "uniform_0_2pi_seeded_per_sample_query_update",
+    "evaluation_ring_phase": 0,
+    "unique_ring_samples_per_query_max": 577,
+    "ring_support_gate": {
+      "observation_validity": "finite_original_depth_same_target_instance",
+      "observed_normal_required": false,
+      "positive_radius": {
+        "actual_radius_in_nominal_region_required": true,
+        "absolute_radial_error_max_m": 0.003,
+        "absolute_tangential_offset_max_m": 0.003,
+        "distance_comparison": "less_than_or_equal",
+        "radial_projection_min_m": 0.0,
+        "radial_projection_comparison": "strict_greater_than"
+      },
+      "zero_radius": {
+        "actual_radius_max_m": 0.003,
+        "actual_radius_in_core_required": true,
+        "phase_dependent_tangential_gate": false,
+        "read_once_broadcast_observation_and_contact_validity": true
+      },
+      "thresholds_are_measured_sensor_noise": false,
+      "height_hard_gate": false,
+      "full_token_zero_when_contact_invalid": true,
+      "finite_values_before_mask_multiplication": true,
+      "rejected_observations_retained_in_raw_height_summary": true,
+      "contact_rejection_is_teacher_failure_label": false
+    },
+    "ring_token_dim": 25,
+    "ring_geometry_tokens": [
+      "height",
+      "radial_error",
+      "tangential_offset",
+      "normal_alignment",
+      "normal_valid",
+      "observed_valid",
+      "in_region",
+      "gravity_radial",
+      "gravity_normal"
+    ],
+    "ring_encoder_input_dim": 75,
+    "ring_encoder_channels": [
+      16,
+      16,
+      16
+    ],
+    "ring_encoder_kernels": [
+      1,
+      3,
+      3
+    ],
+    "ring_encoder_stride": [
+      1,
+      1,
+      1
+    ],
+    "ring_encoder_padding": "circular_for_kernel3",
+    "ring_encoder_conv_bias": false,
+    "ring_encoder_normalization": {
+      "type": "LayerNorm",
+      "normalized_shape": 16,
+      "input_layout_during_normalization": "Q_angle_channel",
+      "statistic_axes": [
+        "channel"
+      ],
+      "eps": 1e-05,
+      "elementwise_affine": true,
+      "bias": true
+    },
+    "ring_encoders_share_architecture_not_weights": true,
+    "ring_angle_mask": "any_of_three_radius_contact_valid_at_original_angle",
+    "ring_mask_before_each_convolution": true,
+    "ring_mask_after_each_normalization_and_relu": true,
+    "ring_mask_dilation": false,
+    "ring_compress_valid_angles": false,
+    "ring_partial_convolution_rescaling": false,
+    "ring_pool": "masked_mean_max_over_original_angle_support",
+    "ring_pool_empty_result": "all_zero_features",
+    "ring_feature_dim": 96,
+    "ring_support_summary": {
+      "dimension": 18,
+      "order": "core_inner_lip_then_listed_radius_then_fields",
+      "fields": [
+        "contact_fraction",
+        "maximum_invalid_cyclic_gap_fraction"
+      ],
+      "denominator": 72,
+      "all_valid_gap": 0.0,
+      "all_invalid_gap": 1.0,
+      "zero_radius_is_center_support_not_circumference_coverage": true,
+      "zero_radius_pair": "[center_valid, 1-center_valid]"
+    },
+    "ring_raw_observation_summary": {
+      "dimension": 12,
+      "order": "core_inner_lip_then_fields",
+      "grouping": "nominal_template_radius_region_before_contact_gate",
+      "fields": [
+        "observed_fraction",
+        "contact_rejection_fraction_of_observed",
+        "max_positive_height",
+        "max_negative_height"
+      ],
+      "observed_fraction_denominator": 216,
+      "contact_rejection_denominator": "observed_count",
+      "height_scale_m": 0.04,
+      "height_summary_clipped": false,
+      "height_extrema_floor_m": 0.0,
+      "empty_result": "all_four_values_zero",
+      "center_broadcast_counts_as_one_radius_weight": true,
+      "observed_extrema_are_collision_certification": false,
+      "center_core_raw_coverage_weight": 0.3333333333333333
+    },
+    "ring_summary_dim": 30,
+    "query_descriptor_dim": 12,
+    "query_input_dim": 330,
+    "query_mlp": [
+      330,
+      128,
+      128
+    ],
+    "head_mlp": [
+      128,
+      64,
+      1
+    ],
+    "query_chunk": 64,
+    "sampling": {
+      "texture": "bilinear_when_four_corners_valid_same_instance_and_depth_range_le_10mm_else_nearest",
+      "geometry": "nearest_source_pixel",
+      "align_corners": false,
+      "padding_mode": "zeros",
+      "invalid_grid": "finite_placeholder_plus_mask"
+    },
+    "export_roi_profiles": "dynamic_profiles_preserve_actual_contract_padded_dimensions",
+    "entire_pipeline_export_verified": false,
+    "variant": "b_v3_supported_projected_rings",
+    "sampling_diagnostics_outside_fusion": [
+      "unique_original_source_pixels_per_radius",
+      "radial_gate_rejection_fraction",
+      "tangential_gate_rejection_fraction",
+      "opposite_angle_gate_rejection_fraction",
+      "native_resolution_underresolved_fraction",
+      "support_count",
+      "support_sufficient"
+    ],
+    "texture_padding": "right_bottom_to_minimum_multiple_of_32",
+    "feature_chart_names": [
+      "negative_z",
+      "positive_z"
+    ],
+    "implementation_file": "models/instance_route_b.py",
+    "training_phase_query_identity": "sample_uid_and_exact_pose_bytes_independent_of_query_order_or_chunk",
+    "min_support_points": 100,
+    "architecture_id": "instance_route_b_v3_support100_chart_policy_v1",
+    "architecture_metadata_implemented": true,
+    "support_count_semantics": "finite_positive_depth_instance_pixels_independent_of_normal_validity"
+  },
+  "quality": {
+    "q_target": "seal*wrench*(1-collision_self)",
+    "collision_true_means": "target_collision",
+    "target_collision_components": [
+      "collision_self_seal",
+      "collision_self_envelope"
+    ],
+    "external_scene_collision_in_target": false,
+    "diagnostic_q_sw": "seal*wrench",
+    "joint_label_mask": "label_valid",
+    "teacher_implemented": true,
+    "real_full_dataset_recompute_completed": false
+  },
+  "reference_numeric_contract": {
+    "contact_geometry_arithmetic": "float64",
+    "radial_boundary_roundoff_m": 1e-12,
+    "scope": "float64_reference_roundoff_not_sensor_noise_allowance",
+    "production_dtype_requires_boundary_parity_validation": true,
+    "input_construction": "raw_depth_and_intrinsics_to_XYZ_canonical_query_and_rings_in_float64",
+    "correctness_baseline_geometry": "float64_before_network_feature_cast",
+    "network_feature_dtype": "float32",
+    "float32_XYZ_upcast_restores_precision": false,
+    "historical_query": "read_recorded_p_and_n_in_float64_preserve_pose_do_not_reconstruct_from_depth"
+  },
+  "runtime_config": "configs/instance_b.yaml",
+  "implementation_validation": {
+    "model_cpu_forward_backward": "passed",
+    "real_full_training_completed": false,
+    "gpu_latency_measured": false,
+    "deployment_engine_verified": false,
+    "current_validation_record": "docs/MODEL_VALIDATION.md"
+  },
+  "public_evaluation": {
+    "status": "deferred",
+    "radius_only_protocol": null,
+    "required_for_training": false,
+    "paper_comparison_ready": false
+  }
+}

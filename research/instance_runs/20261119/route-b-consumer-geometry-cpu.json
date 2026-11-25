@@ -1,0 +1,241 @@
+{
+  "scope": "synthetic CPU projected-ring consumer only; no I/O, IPC, CUDA or end-to-end training throughput",
+  "torch_version": "2.5.1+cpu",
+  "numpy_version": "2.3.5",
+  "device": "cpu",
+  "torch_threads": 1,
+  "baseline_commit": "d1c600b1b8ee81f49c9b988c51e217a311699e3b",
+  "candidate": "current working-tree route-B model and preparation module",
+  "image_hw": [
+    720,
+    1280
+  ],
+  "support_points": 32000,
+  "queries": 128,
+  "slots_per_query": 577,
+  "rounds": 9,
+  "order": "alternating baseline/candidate, each after two contact warmups",
+  "timings_ms": {
+    "baseline": {
+      "slots": [
+        52.199728997948114,
+        38.76070000114851,
+        47.40835000120569,
+        41.264798997872276,
+        37.95577600249089,
+        39.427506999345496,
+        46.06704599791556,
+        41.40258700135746,
+        44.04170899942983
+      ],
+      "contacts": [
+        75.18964700284414,
+        66.90871500177309,
+        66.86172499757959,
+        59.35810200026026,
+        63.339450000057695,
+        59.996855998178944,
+        72.91053200242459,
+        73.26639000166324,
+        82.2595050012751
+      ]
+    },
+    "candidate": {
+      "slots": [
+        27.746100000513252,
+        26.035547998617403,
+        30.64176900079474,
+        32.459001002280274,
+        25.43492200129549,
+        23.23710500058951,
+        39.502343999629375,
+        25.391185001353733,
+        39.3895489978604
+      ],
+      "contacts": [
+        52.69603899796493,
+        48.272033000102965,
+        57.487719001073856,
+        48.18637300195405,
+        44.682405998173635,
+        45.47015400021337,
+        51.57731099825469,
+        57.9248190006183,
+        57.2406069986755
+      ]
+    }
+  },
+  "median_ms": {
+    "baseline": {
+      "slots": 41.40258700135746,
+      "contacts": 66.90871500177309
+    },
+    "candidate": {
+      "slots": 27.746100000513252,
+      "contacts": 51.57731099825469
+    }
+  },
+  "profile": {
+    "baseline": {
+      "slots": {
+        "operator_calls_total": 1226,
+        "cumulative_positive_self_cpu_allocated_bytes": 162926368,
+        "operators": {
+          "aten::where": {
+            "calls": 21,
+            "cpu_output_bytes": 28803840
+          },
+          "aten::clamp": {
+            "calls": 50,
+            "cpu_output_bytes": 29542400
+          },
+          "aten::index": {
+            "calls": 13,
+            "cpu_output_bytes": 15805184
+          },
+          "aten::grid_sampler_2d": {
+            "calls": 1,
+            "cpu_output_bytes": 4726784
+          }
+        }
+      },
+      "contacts": {
+        "operator_calls_total": 2795,
+        "cumulative_positive_self_cpu_allocated_bytes": 277715128,
+        "operators": {
+          "aten::where": {
+            "calls": 37,
+            "cpu_output_bytes": 47055616
+          },
+          "aten::linalg_cross": {
+            "calls": 14,
+            "cpu_output_bytes": 43008
+          },
+          "aten::cos": {
+            "calls": 4,
+            "cpu_output_bytes": 294912
+          },
+          "aten::sin": {
+            "calls": 4,
+            "cpu_output_bytes": 294912
+          },
+          "aten::clamp": {
+            "calls": 50,
+            "cpu_output_bytes": 29542400
+          },
+          "aten::index": {
+            "calls": 13,
+            "cpu_output_bytes": 15805184
+          },
+          "aten::grid_sampler_2d": {
+            "calls": 1,
+            "cpu_output_bytes": 4726784
+          },
+          "aten::sort": {
+            "calls": 1,
+            "cpu_output_bytes": 1327104
+          }
+        }
+      }
+    },
+    "candidate": {
+      "slots": {
+        "operator_calls_total": 587,
+        "cumulative_positive_self_cpu_allocated_bytes": 89587344,
+        "operators": {
+          "aten::where": {
+            "calls": 14,
+            "cpu_output_bytes": 21492096
+          },
+          "aten::clamp": {
+            "calls": 10,
+            "cpu_output_bytes": 5908480
+          },
+          "aten::index": {
+            "calls": 6,
+            "cpu_output_bytes": 8493440
+          },
+          "aten::grid_sampler_2d": {
+            "calls": 1,
+            "cpu_output_bytes": 4726784
+          }
+        }
+      },
+      "contacts": {
+        "operator_calls_total": 1912,
+        "cumulative_positive_self_cpu_allocated_bytes": 202464968,
+        "operators": {
+          "aten::where": {
+            "calls": 28,
+            "cpu_output_bytes": 39741824
+          },
+          "aten::linalg_cross": {
+            "calls": 7,
+            "cpu_output_bytes": 21504
+          },
+          "aten::cos": {
+            "calls": 1,
+            "cpu_output_bytes": 73728
+          },
+          "aten::sin": {
+            "calls": 1,
+            "cpu_output_bytes": 73728
+          },
+          "aten::clamp": {
+            "calls": 10,
+            "cpu_output_bytes": 5908480
+          },
+          "aten::index": {
+            "calls": 6,
+            "cpu_output_bytes": 8493440
+          },
+          "aten::grid_sampler_2d": {
+            "calls": 1,
+            "cpu_output_bytes": 4726784
+          },
+          "aten::sort": {
+            "calls": 1,
+            "cpu_output_bytes": 1327104
+          }
+        }
+      }
+    }
+  },
+  "allocation_scope": "sum of positive self CPU operator allocations, not peak RSS or GPU memory",
+  "static_quad_map": {
+    "shape": [
+      160,
+      200
+    ],
+    "bytes": 32000,
+    "precompute_median_ms": 0.7913640001788735
+  },
+  "wire_numeric_bytes": {
+    "baseline": 4092792,
+    "candidate": 4124792
+  },
+  "contact_equivalence": {
+    "tensor_count": 19,
+    "all_contact_tensors_exact": true,
+    "mismatches": [],
+    "texture_gradient_exact": true,
+    "texture_gradient_max_absolute_error": 0.0
+  },
+  "full_network_equivalence": {
+    "all_prediction_tensors_exact": true,
+    "prediction_tensor_count": 256,
+    "prediction_keys_match": true,
+    "prediction_mismatches": [],
+    "parameter_gradient_count": 126,
+    "gradient_parameter_keys_match": true,
+    "all_parameter_gradients_exact": true,
+    "all_parameter_gradients_close": true,
+    "gradient_tolerance": {
+      "rtol": 0.001,
+      "atol": 2e-05
+    },
+    "max_gradient_absolute_error": 0.0,
+    "max_gradient_error_parameter": null
+  },
+  "remaining": "CUDA nonzero in arbitrary/canonical support checking and real GPU timing are not changed or measured"
+}

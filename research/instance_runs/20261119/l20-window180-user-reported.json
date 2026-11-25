@@ -1,0 +1,85 @@
+{
+  "schema": "instance_l20_user_report_v1",
+  "provenance": "Values transcribed from the user's 2026-11-19 message; remote raw artifacts were not accessible in the implementation workspace.",
+  "raw_artifacts_independently_read": false,
+  "window_start": "2026-11-19T17:30:08+08:00",
+  "window_end": "2026-11-19T17:33:08+08:00",
+  "window_seconds": 180,
+  "warmup_updates": 2,
+  "effective_batch_instances": 32,
+  "code_commits_confirmed": false,
+  "native_backend_and_cache_hits_confirmed": false,
+  "routes": {
+    "a": {
+      "gpu": "L20 GPU2",
+      "workers": 6,
+      "updates": 76,
+      "effective_instances": 2432,
+      "instances_per_second": 13.51,
+      "step_seconds_mean": 2.361,
+      "step_seconds_p95": 3.102,
+      "gpu_utilization_percent_mean": 7.3,
+      "gpu_utilization_percent_peak": 92,
+      "gpu_memory_mib_mean": 5642,
+      "gpu_memory_mib_peak": 5660,
+      "gpu_samples": 359,
+      "main_process_seconds_per_update": {
+        "data_wait": 2.048,
+        "forward": 0.170,
+        "loss_backward": 0.123,
+        "clip_optimizer_metrics": 0.008,
+        "other_sync": 0.012
+      },
+      "worker_ms_per_instance": {
+        "compressed_member_read": 22.2,
+        "zlib": 41.9,
+        "other_npz_parse_arrays_metadata": 99.7,
+        "validation_alignment": 3.4,
+        "rgb_augmentation": 8.3,
+        "geometry_inputs": 210.3,
+        "compact_serialize_send": 22.5
+      }
+    },
+    "b": {
+      "gpu": "L20 GPU3",
+      "workers": 8,
+      "updates": 166,
+      "effective_instances": 5312,
+      "instances_per_second": 29.51,
+      "step_seconds_mean": 1.079,
+      "step_seconds_p95": 1.247,
+      "gpu_utilization_percent_mean": 15.5,
+      "gpu_utilization_percent_peak": 74,
+      "gpu_memory_mib_mean": 4293,
+      "gpu_memory_mib_peak": 4300,
+      "gpu_samples": 359,
+      "main_process_seconds_per_update": {
+        "data_wait": 0.538,
+        "forward": 0.456,
+        "loss_backward": 0.071,
+        "clip_optimizer_metrics": 0.005,
+        "other_sync": 0.008
+      },
+      "worker_ms_per_instance": {
+        "compressed_member_read": 19.8,
+        "zlib": 38.4,
+        "other_npz_parse_arrays_metadata": 93.0,
+        "validation_alignment": 3.7,
+        "rgb_augmentation": 7.6,
+        "geometry_inputs": 23.1,
+        "compact_serialize_send": 12.7
+      }
+    }
+  },
+  "interpretation_limits": [
+    "Worker timings are per-instance service work and must not be added directly to per-update main-process timings.",
+    "Forward/backward are main-thread wall-clock spans; asynchronous CUDA work can settle at later synchronization.",
+    "The earlier A utilization value of 61.2 percent was a ten-second startup-adjacent mean, not this steady-state window.",
+    "No new GPU measurements from the subsequent code changes are included here."
+  ],
+  "remote_artifact_references": {
+    "summary": "/home/databeyond/work/pose_model/artifacts/l20-e5-window180-20261119/summary.json",
+    "a_steps": "/home/databeyond/work/pose_model/artifacts/l20-e5-window180-20261119/a/step-times.csv",
+    "b_steps": "/home/databeyond/work/pose_model/artifacts/l20-e5-window180-20261119/b/step-times.csv"
+  }
+}

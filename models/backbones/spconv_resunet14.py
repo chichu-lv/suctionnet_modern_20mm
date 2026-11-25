@@ -85,10 +85,13 @@ def _load_external(root):
 
 
 class SpconvResUNet14(nn.Module):
-    def __init__(self, backbone_root, *, backbone_coordinate_fastpath=False):
+    def __init__(self, backbone_root, *, backbone_coordinate_fastpath=False, in_channels=8):
         super().__init__()
+        if isinstance(in_channels, bool) or not isinstance(in_channels, int) or in_channels < 1:
+            raise ValueError('in_channels must be a positive integer')
+        self.in_channels = in_channels
         self.backbone_coordinate_fastpath = bool(backbone_coordinate_fastpath)
-        self.network = _load_external(backbone_root)(8, 512)
+        self.network = _load_external(backbone_root)(in_channels, 512)
         self.projection = mlp((512, 256))
 
     def forward(self, inputs):
@@ -100,7 +103,9 @@ class SpconvResUNet14(nn.Module):
             return self.projection(inputs['voxel_features'].new_empty((0, 512)))
         import spconv.pytorch as spconv
         # Four stride-2 stages require at least 16 cells along each axis.
-        shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
+        shape = inputs.get('spatial_shape')
+        if shape is None:
+            shape = (coords[:, 1:].max(0).values + 1).clamp_min(16).tolist()
         device_type = inputs['voxel_features'].device.type
         autocast_enabled = torch.is_autocast_enabled(device_type)
         bf16_dense = (autocast_enabled and

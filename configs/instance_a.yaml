@@ -1,0 +1,35 @@
+schema: instance_runtime_v1
+route: a
+quality_contract: gt_INST20_pose_v2
+seed: 42
+rgb_augmentation: true
+max_grad_norm: 10.0
+max_draw_multiplier: 20
+model:
+  backbone_root: null
+  backbone_points: 2048
+  min_support_points: 100
+  query_chunk_size: 32
+  singleton_bn_policy: running_stats
+pretrain:
+  train_scene_range: [0, 99]
+  selection_split: test
+  selection_frames_per_scene: 8
+  steps: 8750
+  accumulate_instances: 16
+  queries: 128
+  peak_lr: 0.0003
+  final_lr: 0.00001
+  warmup_steps: 438
+  evaluate_every: 875
+  evaluation_records: best_and_final
+  checkpoint_every: 875
+finetune:
+  steps: 1000
+  head_only_steps: 200
+  evaluate_every: 100
+  evaluation_records: best_and_final
+  checkpoint_every: 100
+public_evaluation:
+  status: deferred
+  radius_only_protocol: null

@@ -1,0 +1,852 @@
+{
+  "schema_version": "suction20.paper_comparison_catalog.v1",
+  "artifact_kind": "documentation_reference_catalog_not_runtime_config",
+  "verified_date_local": "2026-11-18",
+  "timezone": "Asia/Shanghai",
+  "protocol_document": "../PUBLIC_METHOD_COMPARISON.md",
+  "metric_order": [
+    "AP_top50",
+    "AP04_top50",
+    "AP08_top50",
+    "AP_top1",
+    "AP04_top1",
+    "AP08_top1"
+  ],
+  "units": "percent",
+  "comparison_policy": {
+    "pairwise_only": true,
+    "reference_to_reference_comparisons": false,
+    "reuse_ours_predictions_across_pairs": true,
+    "retrain_reference_methods": false,
+    "missing_values": "null with status; never zero-fill",
+    "paper_numbers_are_not_radius_converted": true,
+    "prediction_reuse_requires": [
+      "same_scoring_checkpoint",
+      "same_frontend_assets",
+      "same_workspace_profile",
+      "same_prediction_hash"
+    ]
+  },
+  "our_protocol": {
+    "id": null,
+    "implementation_status": "deferred",
+    "radius_only_protocol": null,
+    "training_prerequisite": false,
+    "paper_comparison_ready": false
+  },
+  "baselines": [
+    {
+      "id": "suctionnet_s1b",
+      "method": "SuctionNet / S1B",
+      "variant": "original baseline",
+      "source_url": "https://arxiv.org/pdf/2103.12311v2",
+      "paper_version": "arXiv:2103.12311v2",
+      "table": "IV",
+      "pdf_page_1based": 6,
+      "verification": "primary_paper_verified_this_revision",
+      "camera_evidence": "Table IV Kinect/RealSense, use after slash",
+      "radius_m": 0.01,
+      "radius_evidence": "official_api_default_R10",
+      "input": "full-scene RGB-D; no oracle instance mask",
+      "protocol_status": "official_protocol_reference",
+      "unknown_fields": [
+        "historical_api_sha",
+        "historical_dense_model_hash"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 28.31,
+          "AP04_top50": 38.56,
+          "AP08_top50": 3.41,
+          "AP_top1": 43.98,
+          "AP04_top1": 60.81,
+          "AP08_top1": 7.79
+        },
+        "similar": {
+          "AP_top50": 26.64,
+          "AP04_top50": 35.34,
+          "AP08_top50": 3.42,
+          "AP_top1": 36.59,
+          "AP04_top1": 49.3,
+          "AP08_top1": 6.54
+        },
+        "novel": {
+          "AP_top50": 8.23,
+          "AP04_top50": 10.29,
+          "AP08_top50": 0.35,
+          "AP_top1": 14.32,
+          "AP04_top1": 19.95,
+          "AP08_top1": 0.38
+        }
+      }
+    },
+    {
+      "id": "diffusion_suction",
+      "method": "Diffusion-Suction",
+      "variant": "SuctionNet Table I",
+      "source_url": "https://arxiv.org/html/2502.07238v2",
+      "paper_version": "arXiv:2502.07238v2",
+      "table": "I",
+      "pdf_page_1based": 7,
+      "verification": "primary_paper_verified_this_revision",
+      "camera_evidence": "Table I Kinect/RealSense, use after slash",
+      "radius_m": 0.01,
+      "radius_evidence": "inferred_from_declared_official_protocol_default; paper_run_radius_unreported",
+      "input": "scene point cloud with normal prior; exact RGB and segmentation use not fully verified",
+      "protocol_status": "author_declared_official_protocol_with_unreported_fields",
+      "unknown_fields": [
+        "historical_api_sha",
+        "historical_dense_model_hash",
+        "SuctionNet_training_recipe",
+        "SuctionNet_checkpoint",
+        "test_mask_filtering",
+        "full_frame_manifest",
+        "paper_run_radius",
+        "historical_workspace_preprocessing"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 31.9,
+          "AP04_top50": 42.78,
+          "AP08_top50": 4.79,
+          "AP_top1": 54.79,
+          "AP04_top1": 68.59,
+          "AP08_top1": 21.03
+        },
+        "similar": {
+          "AP_top50": 31.59,
+          "AP04_top50": 41.38,
+          "AP08_top50": 4.27,
+          "AP_top1": 47.0,
+          "AP04_top1": 59.36,
+          "AP08_top1": 16.08
+        },
+        "novel": {
+          "AP_top50": 10.0,
+          "AP04_top50": 12.32,
+          "AP08_top50": 0.76,
+          "AP_top1": 14.14,
+          "AP04_top1": 17.67,
+          "AP08_top1": 2.42
+        }
+      }
+    },
+    {
+      "id": "uisn_uois",
+      "method": "UISN",
+      "variant": "UOIS-Net + UISN",
+      "source_url": "https://doi.org/10.1109/LRA.2024.3385609",
+      "paper_version": "RA-L 9(6):4934-4941 (2024)",
+      "table": "I",
+      "pdf_page_1based": 6,
+      "printed_page": 4939,
+      "verification": "existing_repo_primary_pdf_transcription; author_code_verified_this_revision; pdf_not_reopened_this_revision",
+      "camera_evidence": "Table I footnote Kinect/RealSense; Section IV-B reversed wording; table and S1B crosscheck retained",
+      "radius_m": 0.01,
+      "radius_evidence": "official_api_default_R10; historical_run_dependency_unreported",
+      "input": "RGB-D instances from predicted UOIS masks",
+      "protocol_status": "official_api_call_verified_frontend_match_required",
+      "unknown_fields": [
+        "historical_api_sha",
+        "historical_dense_model_hash",
+        "exact_historical_frontend_assets"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 37.98,
+          "AP04_top50": 49.83,
+          "AP08_top50": 9.99,
+          "AP_top1": 63.88,
+          "AP04_top1": 76.64,
+          "AP08_top1": 31.72
+        },
+        "similar": {
+          "AP_top50": 37.83,
+          "AP04_top50": 49.35,
+          "AP08_top50": 8.89,
+          "AP_top1": 48.68,
+          "AP04_top1": 60.01,
+          "AP08_top1": 16.72
+        },
+        "novel": {
+          "AP_top50": 9.47,
+          "AP04_top50": 12.63,
+          "AP08_top50": 1.17,
+          "AP_top1": 11.83,
+          "AP04_top1": 15.47,
+          "AP08_top1": 2.76
+        }
+      },
+      "transcription_url": "https://github.com/chichu-lv/suctionnet_modern_20mm/blob/a9f4a8451c6bc42cfd8867dd96c051398644ad71/docs/experiments/COMPARISON-20261118/method_metrics.csv",
+      "author_code_commit": "4ad50bfb4c29fc47f1e80eb8e4d95e666e8e48f2"
+    },
+    {
+      "id": "uisn_uoais",
+      "method": "UISN",
+      "variant": "UOAIS-Net + UISN",
+      "source_url": "https://doi.org/10.1109/LRA.2024.3385609",
+      "paper_version": "RA-L 9(6):4934-4941 (2024)",
+      "table": "I",
+      "pdf_page_1based": 6,
+      "printed_page": 4939,
+      "verification": "existing_repo_primary_pdf_transcription; author_code_verified_this_revision; pdf_not_reopened_this_revision",
+      "camera_evidence": "Table I footnote Kinect/RealSense; Section IV-B reversed wording; table and S1B crosscheck retained",
+      "radius_m": 0.01,
+      "radius_evidence": "official_api_default_R10; historical_run_dependency_unreported",
+      "input": "RGB-D instances from predicted UOAIS masks",
+      "protocol_status": "official_api_call_verified_frontend_match_required",
+      "unknown_fields": [
+        "historical_api_sha",
+        "historical_dense_model_hash",
+        "exact_historical_frontend_assets"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 38.27,
+          "AP04_top50": 50.57,
+          "AP08_top50": 10.56,
+          "AP_top1": 66.11,
+          "AP04_top1": 78.35,
+          "AP08_top1": 35.29
+        },
+        "similar": {
+          "AP_top50": 36.54,
+          "AP04_top50": 47.77,
+          "AP08_top50": 8.74,
+          "AP_top1": 49.2,
+          "AP04_top1": 61.45,
+          "AP08_top1": 17.2
+        },
+        "novel": {
+          "AP_top50": 9.08,
+          "AP04_top50": 12.05,
+          "AP08_top50": 1.04,
+          "AP_top1": 11.94,
+          "AP04_top1": 15.4,
+          "AP08_top1": 2.07
+        }
+      },
+      "transcription_url": "https://github.com/chichu-lv/suctionnet_modern_20mm/blob/a9f4a8451c6bc42cfd8867dd96c051398644ad71/docs/experiments/COMPARISON-20261118/method_metrics.csv",
+      "author_code_commit": "4ad50bfb4c29fc47f1e80eb8e4d95e666e8e48f2"
+    },
+    {
+      "id": "multigraspnet_vac",
+      "method": "MultiGraspNet",
+      "variant": "MultiGraspNet-vac.",
+      "source_url": "https://arxiv.org/html/2602.06504v2",
+      "paper_version": "arXiv:2602.06504v2",
+      "table": "I (Vacuum)",
+      "pdf_page_1based": 5,
+      "verification": "primary_paper_verified_this_revision",
+      "camera_evidence": "Table I explicitly RealSense",
+      "radius_m": null,
+      "radius_evidence": "unreported; official protocol default R10 is not run evidence",
+      "input": "scene point cloud; learned objectness; vacuum task variant",
+      "protocol_status": "reference_only_protocol_unverified",
+      "unknown_fields": [
+        "radius_m",
+        "seal_coefficient_equals_Seal_times_Wrench",
+        "historical_api_sha",
+        "historical_dense_model_hash",
+        "full_frame_manifest",
+        "postprocessing_implementation"
+      ],
+      "unreported_metrics": [
+        "AP_top1",
+        "AP04_top1",
+        "AP08_top1"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 28.26,
+          "AP04_top50": 36.39,
+          "AP08_top50": 3.6,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": 31.37,
+          "AP04_top50": 41.63,
+          "AP08_top50": 3.88,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": 8.07,
+          "AP04_top50": 10.03,
+          "AP08_top50": 0.48,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      }
+    },
+    {
+      "id": "multigraspnet_joint",
+      "method": "MultiGraspNet",
+      "variant": "joint multitask without switching in Table I",
+      "source_url": "https://arxiv.org/html/2602.06504v2",
+      "paper_version": "arXiv:2602.06504v2",
+      "table": "I (Vacuum)",
+      "pdf_page_1based": 5,
+      "verification": "primary_paper_verified_this_revision",
+      "camera_evidence": "Table I explicitly RealSense",
+      "radius_m": null,
+      "radius_evidence": "unreported; official protocol default R10 is not run evidence",
+      "input": "scene point cloud; learned objectness; additional parallel-gripper training supervision",
+      "protocol_status": "reference_only_protocol_unverified",
+      "unknown_fields": [
+        "radius_m",
+        "seal_coefficient_equals_Seal_times_Wrench",
+        "historical_api_sha",
+        "historical_dense_model_hash",
+        "full_frame_manifest",
+        "postprocessing_implementation"
+      ],
+      "unreported_metrics": [
+        "AP_top1",
+        "AP04_top1",
+        "AP08_top1"
+      ],
+      "result_kind": "paper_reported_not_reproduced",
+      "camera": "realsense",
+      "units": "percent",
+      "paper_source_api_commit": null,
+      "paper_source_api_commit_status": "unreported",
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": 28.07,
+          "AP04_top50": 35.81,
+          "AP08_top50": 3.62,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": 31.22,
+          "AP04_top50": 41.65,
+          "AP08_top50": 3.53,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": 7.38,
+          "AP04_top50": 8.92,
+          "AP08_top50": 0.46,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      }
+    }
+  ],
+  "our_run_slots": [
+    {
+      "id": "route_a_public20_uois_no_gt_workspace",
+      "route": "route_a",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uois_no_gt_workspace",
+      "frontend": "uois",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "none",
+      "workspace_source": "none",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": null,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    },
+    {
+      "id": "route_a_public20_uois_uisn_gt_aabb20",
+      "route": "route_a",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uois_uisn_gt_aabb20",
+      "frontend": "uois",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "uisn_gt_foreground_aabb",
+      "workspace_source": "GT_seg_gt_0_union_not_instance_ids",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": 0.02,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    },
+    {
+      "id": "route_a_public20_uoais_uisn_gt_aabb20",
+      "route": "route_a",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uoais_uisn_gt_aabb20",
+      "frontend": "uoais",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "uisn_gt_foreground_aabb",
+      "workspace_source": "GT_seg_gt_0_union_not_instance_ids",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": 0.02,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    },
+    {
+      "id": "route_b_public20_uois_no_gt_workspace",
+      "route": "route_b",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uois_no_gt_workspace",
+      "frontend": "uois",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "none",
+      "workspace_source": "none",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": null,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    },
+    {
+      "id": "route_b_public20_uois_uisn_gt_aabb20",
+      "route": "route_b",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uois_uisn_gt_aabb20",
+      "frontend": "uois",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "uisn_gt_foreground_aabb",
+      "workspace_source": "GT_seg_gt_0_union_not_instance_ids",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": 0.02,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    },
+    {
+      "id": "route_b_public20_uoais_uisn_gt_aabb20",
+      "route": "route_b",
+      "training_profile": "native_inst20_direct100",
+      "inference_profile": "uoais_uisn_gt_aabb20",
+      "frontend": "uoais",
+      "frontend_assets_sha": null,
+      "frontend_match_status": "not_verified_yet",
+      "workspace_mode": "uisn_gt_foreground_aabb",
+      "workspace_source": "GT_seg_gt_0_union_not_instance_ids",
+      "workspace_stage": "after_full_image_segmentation_before_predicted_instance_grouping",
+      "workspace_outlier_m": 0.02,
+      "scoring_checkpoint_sha": null,
+      "result_kind": "planned_not_measured",
+      "status": "deferred_public_protocol",
+      "camera": "realsense",
+      "evaluator_family": null,
+      "radius_m": 0.02,
+      "metrics_by_split": {
+        "seen": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "similar": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        },
+        "novel": {
+          "AP_top50": null,
+          "AP04_top50": null,
+          "AP08_top50": null,
+          "AP_top1": null,
+          "AP04_top1": null,
+          "AP08_top1": null
+        }
+      },
+      "complete_test_frame_count": null,
+      "checkpoint_selection": "test_selected_current_run; public_checkpoint_choice_pending",
+      "independent_test_estimate": false
+    }
+  ],
+  "pair_templates": [
+    {
+      "baseline_id": "suctionnet_s1b",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uois_no_gt_workspace",
+        "route_b": "route_b_public20_uois_no_gt_workspace"
+      },
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    },
+    {
+      "baseline_id": "diffusion_suction",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uois_no_gt_workspace",
+        "route_b": "route_b_public20_uois_no_gt_workspace"
+      },
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    },
+    {
+      "baseline_id": "uisn_uois",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uois_uisn_gt_aabb20",
+        "route_b": "route_b_public20_uois_uisn_gt_aabb20"
+      },
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    },
+    {
+      "baseline_id": "uisn_uoais",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uoais_uisn_gt_aabb20",
+        "route_b": "route_b_public20_uoais_uisn_gt_aabb20"
+      },
+      "comparison_status": "deferred_pending_public_protocol_and_own_measurement",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    },
+    {
+      "baseline_id": "multigraspnet_vac",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uois_no_gt_workspace",
+        "route_b": "route_b_public20_uois_no_gt_workspace"
+      },
+      "comparison_status": "reference_only_protocol_unverified",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    },
+    {
+      "baseline_id": "multigraspnet_joint",
+      "our_run_ids": {
+        "route_a": "route_a_public20_uois_no_gt_workspace",
+        "route_b": "route_b_public20_uois_no_gt_workspace"
+      },
+      "comparison_status": "reference_only_protocol_unverified",
+      "delta_unit": "percentage_points",
+      "delta_direction": "ours_minus_this_reference_only",
+      "delta_values": null,
+      "delta_allowed_now": false
+    }
+  ],
+  "deferred_radius_proposal": {
+    "id": "sn-paper-radius-v1",
+    "implementation_status": "deferred_not_implemented",
+    "ours_api_base_commit": "0dac9f7e5b2f7ea801cddf9655cb82a259681976",
+    "adapter_patch_sha": null,
+    "r10_equivalence_status": "not_run",
+    "primary_radius_m": 0.02,
+    "optional_same_prediction_radius_m": 0.01,
+    "ring_half_width_m": 0.001,
+    "seal_angular_bins": 72,
+    "target_self_height_threshold_m": 0.005,
+    "external_collision_axial_range_m": [
+      0.01,
+      0.1
+    ],
+    "official_nms_translation_m": 0.02,
+    "official_nms_angle_degrees": 181,
+    "model_association_voxel_m": 0.005,
+    "max_candidates_per_gt_object": 10,
+    "precision_shape_per_frame": [
+      50,
+      4
+    ],
+    "quality_thresholds": [
+      0.2,
+      0.4,
+      0.6,
+      0.8
+    ],
+    "quality_comparison": ">=",
+    "missing_candidate_denominator": "k",
+    "ranking_score": "source_only_q_inst",
+    "prediction_columns": [
+      "score",
+      "nx_out",
+      "ny_out",
+      "nz_out",
+      "px_m",
+      "py_m",
+      "pz_m"
+    ],
+    "prediction_npz_key": "arr_0",
+    "empty_frame": "explicit (0,7) -> 50x4 zero precision; retain frame denominator",
+    "missing_prediction_file": "incomplete, not an empty prediction",
+    "test_scenes": {
+      "seen": [
+        100,
+        129
+      ],
+      "similar": [
+        130,
+        159
+      ],
+      "novel": [
+        160,
+        189
+      ]
+    },
+    "views_per_scene": 256,
+    "test_frames_per_split": 7680,
+    "test_frames_total": 23040,
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "train_successful_instance_exposures": 140000,
+    "train_successful_updates": 8750,
+    "checkpoint_selection": "superseded_by_direct_100_train_test_selected_policy",
+    "target_domain_data_allowed": false,
+    "test_oracle_instances_allowed": false,
+    "prediction_relative_path": "<test_seen|test_similar|test_novel>/scene_XXXX/realsense/suction/YYYY.npz",
+    "r10_equivalence_scope": "upstream-defined nonempty cases; separate zero extension for empty frames",
+    "nonfinite_official_quality": "match upstream nonfinite masks and >= threshold misses; retain ranking slot; JSON null plus status",
+    "empty_frame_adapter_sha": null,
+    "prediction_dtype": "float32",
+    "prediction_root_scope": "one inference profile per API dump_folder",
+    "binding_for_current_training": false
+  },
+  "source_training_policy": {
+    "profile": "native_inst20_direct100",
+    "train_scene_range": [
+      0,
+      99
+    ],
+    "views_per_scene": 256,
+    "selection_split": "test",
+    "selection_scene_range": [
+      100,
+      189
+    ],
+    "selection_role": "test_selected",
+    "independent_test_estimate": false,
+    "last_retained": true,
+    "successful_instance_exposures": 140000,
+    "successful_updates": 8750,
+    "target_split_unchanged": [
+      1676,
+      399,
+      87
+    ],
+    "selection_frames_per_scene": 8,
+    "selection_scope": "fixed_test_subset",
+    "selection_frame_ids": [
+      0,
+      32,
+      64,
+      96,
+      128,
+      160,
+      192,
+      224
+    ],
+    "selection_frame_sampler": "bit_reverse8_prefix_v1",
+    "selection_evaluate_every": 875,
+    "full_test_reporting": "after_training_without_checkpoint_reselection"
+  },
+  "verification_note": "Paper values preserved from the preceding documented source audit; this implementation revision does not claim a new paper re-verification."
+}
